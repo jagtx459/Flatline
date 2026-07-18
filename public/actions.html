@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flatline — Actions</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link rel="icon" type="image/png" href="/assets/Logo.png">
+</head>
+
+<body>
+  <div class="container">
+    <header class="site">
+      <span class="brand"><img src="/assets/Logo.png" alt="Flatline logo">FLATLINE</span>
+      <nav>
+        <a href="/">Dashboard</a>
+        <a href="/flatline">Flatline</a>
+        <a href="/actions" class="active">Actions</a>
+        <a href="/config">Config</a>
+      </nav>
+      <div class="header-actions">
+        <span class="header-version" id="header-version"></span>
+        <a class="icon-link" href="https://github.com/jagtx459/Flatline" target="_blank" rel="noopener noreferrer"
+          title="View on GitHub" aria-label="View on GitHub">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd"
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.22.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z">
+            </path></svg>
+        </a>
+        <button type="button" class="btn ghost small" id="header-logout" style="display:none">Log out</button>
+      </div>
+    </header>
+
+    <div class="card">
+      <h2>Action targets</h2>
+      <div id="target-table"></div>
+    </div>
+
+    <div class="card">
+      <h2>Action groups</h2>
+      <div id="igroup-table"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header" id="target-form-header">
+        <h2 id="target-form-title">Add action target</h2>
+        <span class="chevron">▸</span>
+      </div>
+      <div class="card-body" id="target-form-body">
+      <p class="hint-row">Each target defines a machine or service <em>and exactly what runs on it</em>
+        when triggered. Credentials are encrypted at rest and never sent back to the browser —
+        when editing, leave a credential blank to keep the stored value.</p>
+      <form id="target-form" method="post">
+        <div class="grid">
+          <label class="field">
+            <span class="cap">Name</span>
+            <input type="text" name="name" required maxlength="100" placeholder="NAS / ESXi host / k8s prod">
+          </label>
+          <label class="field">
+            <span class="cap">Connection type</span>
+            <select name="kind" id="t-kind">
+              <option value="ssh">SSH</option>
+              <option value="rdp">RDP (Windows)</option>
+              <option value="k8s">Kubernetes cluster</option>
+              <option value="http">HTTP(S) endpoint</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- SSH -->
+        <div class="kind-section" data-kind="ssh">
+          <p class="hint-row">▶ On trigger: Flatline connects over SSH with these credentials and
+            <strong>runs the command below</strong> on the host.
+          </p>
+          <div class="grid">
+            <label class="field"><span class="cap">Host</span><input type="text" name="ssh_host" maxlength="2000"
+                placeholder="192.168.1.50"></label>
+            <label class="field"><span class="cap">Port</span><input type="number" name="ssh_port" min="1" max="65535"
+                value="22"></label>
+            <label class="field"><span class="cap">Authentication</span>
+              <select name="ssh_auth_method">
+                <option value="password">Password</option>
+                <option value="key">Private key</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid" style="margin-top:10px">
+            <label class="field"><span class="cap">Username</span><input type="text" name="ssh_username"
+                maxlength="2000" autocomplete="off"></label>
+            <label class="field secret" data-secret="password" data-ssh-auth="password"><span class="cap">Password <span
+                  class="secret-state"></span></span>
+              <input type="password" name="ssh_password" autocomplete="new-password"></label>
+            <label class="field secret" data-secret="passphrase" data-ssh-auth="key"><span class="cap">Key passphrase
+                (optional) <span class="secret-state"></span></span>
+              <input type="password" name="ssh_passphrase" autocomplete="new-password"></label>
+          </div>
+          <label class="field secret" data-secret="private_key" data-ssh-auth="key" style="margin-top:10px">
+            <span class="cap">Private key (PEM) <span class="secret-state"></span></span>
+            <textarea name="ssh_private_key" rows="4" spellcheck="false"
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+          </label>
+          <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
+            <input type="text" name="ssh_command" maxlength="10000" placeholder="sudo shutdown -h +0">
+          </label>
+          <p class="hint-row" style="margin-top:10px">If the command needs <code>sudo</code>, the cleanest fix is
+            passwordless sudo for it on the host (<code>NOPASSWD:</code> in sudoers) — nothing to store here.
+            Otherwise set a sudo password below; Flatline writes it to the command's stdin on trigger, so the
+            command must read it there itself (e.g. start it with <code>sudo -S</code>).</p>
+          <div class="grid">
+            <label class="field secret" data-secret="sudo_password"><span class="cap">Sudo password (optional) <span
+                  class="secret-state"></span></span>
+              <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
+          </div>
+          <p class="hint-row" style="margin-top:10px">Optional restore command — run from the target's Restore
+            button to undo the command above (e.g. cancel a pending shutdown). Runs over the same connection,
+            with the sudo password above if set. Leave blank if there's nothing to undo.</p>
+          <label class="field"><span class="cap">Restore command (optional)</span>
+            <input type="text" name="ssh_restore_command" maxlength="10000" placeholder="sudo shutdown -c">
+          </label>
+        </div>
+
+        <!-- RDP -->
+        <div class="kind-section" data-kind="rdp">
+          <p class="hint-row">▶ On trigger: Flatline signs in to the Windows host with these
+            credentials (via remote PowerShell/WinRM — the RDP details identify the machine and login)
+            and <strong>runs the command below</strong>.</p>
+          <div class="grid">
+            <label class="field"><span class="cap">Host</span><input type="text" name="rdp_host" maxlength="2000"
+                placeholder="192.168.1.60"></label>
+            <label class="field"><span class="cap">Port</span><input type="number" name="rdp_port" min="1" max="65535"
+                value="3389"></label>
+          </div>
+          <div class="grid">
+            <label class="field"><span class="cap">Domain (optional)</span><input type="text" name="rdp_domain"
+                maxlength="2000"></label>
+            <label class="field"><span class="cap">Username</span><input type="text" name="rdp_username"
+                maxlength="2000" autocomplete="off"></label>
+            <label class="field secret" data-secret="password"><span class="cap">Password <span
+                  class="secret-state"></span></span>
+              <input type="password" name="rdp_password" autocomplete="new-password"></label>
+          </div>
+          <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
+            <input type="text" name="rdp_command" maxlength="10000"
+              value="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
+          </label>
+        </div>
+
+        <!-- K8s -->
+        <div class="kind-section" data-kind="k8s">
+          <p class="hint-row">▶ On trigger: Flatline authenticates to the cluster API and
+            <strong>performs the selected action</strong> below.
+          </p>
+          <div class="grid">
+            <label class="field"><span class="cap">API server URL</span><input type="text" name="k8s_api_url"
+                maxlength="2000" placeholder="https://10.0.0.10:6443"></label>
+            <label class="field"><span class="cap">Authentication</span>
+              <select name="k8s_auth_method">
+                <option value="token">Bearer token</option>
+                <option value="kubeconfig">Kubeconfig</option>
+              </select>
+            </label>
+            <label class="field secret" data-secret="token" data-k8s-auth="token"><span class="cap">Bearer token <span
+                  class="secret-state"></span></span>
+              <input type="password" name="k8s_token" autocomplete="new-password"></label>
+          </div>
+          <label class="field secret" data-secret="kubeconfig" data-k8s-auth="kubeconfig" style="margin-top:10px">
+            <span class="cap">Kubeconfig (YAML) <span class="secret-state"></span></span>
+            <textarea name="k8s_kubeconfig" rows="4" spellcheck="false"
+              placeholder="apiVersion: v1&#10;kind: Config&#10;..."></textarea>
+          </label>
+          <div class="grid">
+            <label class="field"><span class="cap">Action on trigger</span>
+              <select name="k8s_action">
+                <option value="drain">Cordon + drain all nodes</option>
+                <option value="custom">Custom command</option>
+              </select>
+            </label>
+          </div>
+
+          <div data-k8s-action="custom" style="margin-top:10px">
+            <p class="hint-row">A raw Kubernetes API request: method + path (relative to the API server
+              URL above) + optional JSON body. E.g. to scale a Deployment to 0:
+              <code>PATCH apis/apps/v1/namespaces/default/deployments/myapp/scale</code> with body
+              <code>{"spec":{"replicas":0}}</code>.</p>
+            <div class="grid">
+              <label class="field"><span class="cap">Method</span>
+                <select name="k8s_command_method">
+                  <option>GET</option><option>POST</option><option>PUT</option>
+                  <option selected>PATCH</option><option>DELETE</option>
+                </select>
+              </label>
+              <label class="field"><span class="cap">API path</span>
+                <input type="text" name="k8s_command_path" maxlength="2000"
+                  placeholder="apis/apps/v1/namespaces/default/deployments/myapp/scale"></label>
+            </div>
+            <label class="field" style="margin-top:10px"><span class="cap">Body (JSON, optional)</span>
+              <textarea name="k8s_command_body" rows="3" spellcheck="false"
+                placeholder='{"spec":{"replicas":0}}'></textarea></label>
+
+            <p class="hint-row" style="margin-top:10px">Optional restore request — run from the target's
+              Restore button to undo the command above (e.g. scale back up). Leave blank if there's
+              nothing to undo.</p>
+            <div class="grid">
+              <label class="field"><span class="cap">Restore method</span>
+                <select name="k8s_restore_method">
+                  <option>GET</option><option>POST</option><option>PUT</option>
+                  <option selected>PATCH</option><option>DELETE</option>
+                </select>
+              </label>
+              <label class="field"><span class="cap">Restore API path (optional)</span>
+                <input type="text" name="k8s_restore_path" maxlength="2000"
+                  placeholder="same path, to undo the command above"></label>
+            </div>
+            <label class="field" style="margin-top:10px"><span class="cap">Restore body (JSON, optional)</span>
+              <textarea name="k8s_restore_body" rows="3" spellcheck="false"
+                placeholder='{"spec":{"replicas":3}}'></textarea></label>
+          </div>
+        </div>
+
+        <!-- HTTP -->
+        <div class="kind-section" data-kind="http">
+          <p class="hint-row">▶ On trigger: Flatline <strong>sends exactly this request</strong>
+            (method, body, and auth below) — use it for webhooks or services with their own shutdown API.</p>
+          <div class="grid">
+            <label class="field"><span class="cap">URL</span><input type="text" name="http_url" maxlength="2000"
+                placeholder="https://host/api/shutdown"></label>
+            <label class="field"><span class="cap">Method</span>
+              <select name="http_method">
+                <option>POST</option>
+                <option>GET</option>
+                <option>PUT</option>
+                <option>DELETE</option>
+              </select>
+            </label>
+            <label class="field"><span class="cap">Auth scheme</span>
+              <select name="http_auth_scheme" id="http-auth-scheme">
+                <option value="none">None</option>
+                <option value="bearer">Bearer / JWT</option>
+                <option value="header">Custom header token</option>
+                <option value="basic">Basic auth</option>
+              </select>
+            </label>
+            <label class="field" data-http="header"><span class="cap">Header name</span>
+              <input type="text" name="http_header_name" maxlength="2000" placeholder="X-Api-Key"></label>
+            <label class="field" data-http="basic"><span class="cap">Username</span>
+              <input type="text" name="http_username" maxlength="2000" autocomplete="off"></label>
+            <label class="field secret" data-secret="token" data-http="bearer header"><span class="cap">Token / JWT
+                <span class="secret-state"></span></span>
+              <input type="password" name="http_token" autocomplete="new-password"></label>
+            <label class="field secret" data-secret="password" data-http="basic"><span class="cap">Password <span
+                  class="secret-state"></span></span>
+              <input type="password" name="http_password" autocomplete="new-password"></label>
+          </div>
+          <label class="field" style="margin-top:10px"><span class="cap">Request body sent on trigger (optional)</span>
+            <textarea name="http_body" rows="3" spellcheck="false" placeholder='{"action":"shutdown"}'></textarea>
+          </label>
+
+          <p class="hint-row" style="margin-top:10px">Optional restore request — run from the target's Restore
+            button to undo the request above. Uses the same auth as the trigger request. Leave blank if there's
+            nothing to undo.</p>
+          <div class="grid">
+            <label class="field"><span class="cap">Restore method</span>
+              <select name="http_restore_method">
+                <option>GET</option><option selected>POST</option><option>PUT</option><option>DELETE</option>
+              </select>
+            </label>
+            <label class="field" style="grid-column: span 2"><span class="cap">Restore URL (optional)</span>
+              <input type="text" name="http_restore_url" maxlength="2000" placeholder="https://host/api/cancel-shutdown"></label>
+          </div>
+          <label class="field" style="margin-top:10px"><span class="cap">Restore request body (optional)</span>
+            <textarea name="http_restore_body" rows="3" spellcheck="false" placeholder='{"action":"cancel"}'></textarea>
+          </label>
+        </div>
+
+        <div style="margin-top:12px">
+          <label class="check">
+            <input type="checkbox" name="enabled" checked>
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="target-submit">Add target</button>
+          <button type="button" class="btn ghost" id="target-test">Test connection</button>
+          <button class="btn ghost" id="target-cancel" style="display:none">Cancel</button>
+          <span class="note" id="target-save-note"></span>
+          <span class="note" id="target-test-result"></span>
+          <span class="error" id="target-error"></span>
+        </div>
+      </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header" id="igroup-form-header">
+        <h2 id="igroup-form-title">Add action group</h2>
+        <span class="chevron">▸</span>
+      </div>
+      <div class="card-body" id="igroup-form-body">
+      <p class="hint-row">An action group is an ordered sequence of steps. On trigger the steps run
+        top to bottom, each with its own timeout. Pick which Flatline groups run this action group
+        below — Flatline groups themselves are managed on the <a href="/flatline">Flatline page</a>.</p>
+      <form id="igroup-form" method="post">
+        <div class="grid">
+          <label class="field">
+            <span class="cap">Name</span>
+            <input type="text" name="name" required maxlength="100" placeholder="Rack A / Lab VMs">
+          </label>
+          <label class="field" style="grid-column: span 2">
+            <span class="cap">If a step fails</span>
+            <select name="on_failure">
+              <option value="continue">Continue with the remaining steps</option>
+              <option value="stop">Stop — don't run the remaining steps</option>
+            </select>
+          </label>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <span class="cap">Steps (run in order)</span>
+          <div id="step-list" class="step-list"></div>
+          <div class="step-add">
+            <select id="step-target-select"></select>
+            <button type="button" class="btn ghost small" id="step-add-btn">+ Add step</button>
+          </div>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <span class="cap">Flatline groups that run this action group</span>
+          <div class="check-scroll" id="ig-flatline-group-checks"></div>
+        </div>
+        <div style="margin-top:12px">
+          <label class="check">
+            <input type="checkbox" name="enabled" checked>
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="igroup-submit">Add group</button>
+          <button class="btn ghost" id="igroup-cancel" style="display:none">Cancel</button>
+          <span class="note" id="igroup-save-note"></span>
+          <span class="error" id="igroup-error"></span>
+        </div>
+      </form>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/scripts/actions.js"></script>
+</body>
+
+</html>

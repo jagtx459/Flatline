@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flatline — Config</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link rel="icon" type="image/png" href="/assets/Logo.png">
+</head>
+
+<body>
+  <div class="container">
+    <header class="site">
+      <span class="brand"><img src="/assets/Logo.png" alt="Flatline logo">FLATLINE</span>
+      <nav>
+        <a href="/">Dashboard</a>
+        <a href="/flatline">Flatline</a>
+        <a href="/actions">Actions</a>
+        <a href="/config" class="active">Config</a>
+      </nav>
+      <div class="header-actions">
+        <span class="header-version" id="header-version"></span>
+        <a class="icon-link" href="https://github.com/jagtx459/Flatline" target="_blank" rel="noopener noreferrer"
+          title="View on GitHub" aria-label="View on GitHub">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd"
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.22.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z">
+            </path></svg>
+        </a>
+        <button type="button" class="btn ghost small" id="header-logout" style="display:none">Log out</button>
+      </div>
+    </header>
+
+    <div class="card">
+      <h2>Notification channels</h2>
+      <div id="channel-table"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header" id="channel-form-header">
+        <h2 id="channel-form-title">Add notification channel</h2>
+        <span class="chevron">▸</span>
+      </div>
+      <div class="card-body" id="channel-form-body">
+      <p class="hint-row">A channel delivers Flatline events (endpoint down/up, group armed/triggered,
+        action results) to an external service. Webhook URLs and tokens are encrypted at rest and never
+        sent back to the browser — when editing, leave a credential blank to keep the stored value.</p>
+      <form id="channel-form" method="post">
+        <div class="grid">
+          <label class="field">
+            <span class="cap">Name</span>
+            <input type="text" name="name" required maxlength="100" placeholder="Homelab Discord / Phone">
+          </label>
+          <label class="field">
+            <span class="cap">Service</span>
+            <select name="kind" id="c-kind">
+              <option value="webhook">Generic webhook (JSON POST)</option>
+              <option value="discord">Discord</option>
+              <option value="ntfy">ntfy</option>
+              <option value="email">Email (SMTP)</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- webhook -->
+        <div class="kind-section" data-kind="webhook">
+          <p class="hint-row">Sends <code>POST {"event", "title", "message", "timestamp"}</code> to your URL,
+            with an optional bearer token.</p>
+          <div class="grid">
+            <label class="field secret" data-secret="url" style="grid-column: span 2"><span class="cap">URL <span
+                  class="secret-state"></span></span>
+              <input type="text" name="webhook_url_field" maxlength="2000" autocomplete="off"
+                placeholder="https://host/hook"></label>
+            <label class="field secret" data-secret="token"><span class="cap">Bearer token (optional) <span
+                  class="secret-state"></span></span>
+              <input type="password" name="webhook_token" autocomplete="new-password"></label>
+          </div>
+        </div>
+
+        <!-- discord -->
+        <div class="kind-section" data-kind="discord">
+          <p class="hint-row">Server settings → Integrations → Webhooks → copy the webhook URL.</p>
+          <label class="field secret" data-secret="webhook_url"><span class="cap">Webhook URL <span
+                class="secret-state"></span></span>
+            <input type="password" name="discord_webhook_url" autocomplete="new-password"
+              placeholder="https://discord.com/api/webhooks/..."></label>
+        </div>
+
+        <!-- ntfy -->
+        <div class="kind-section" data-kind="ntfy">
+          <div class="grid">
+            <label class="field"><span class="cap">Server</span>
+              <input type="text" name="ntfy_server_url" maxlength="2000" placeholder="https://ntfy.sh"></label>
+            <label class="field"><span class="cap">Topic</span>
+              <input type="text" name="ntfy_topic" maxlength="64" placeholder="flatline-alerts"></label>
+            <label class="field"><span class="cap">Priority (1–5, optional)</span>
+              <input type="number" name="ntfy_priority" min="1" max="5" placeholder="3"></label>
+            <label class="field"><span class="cap">Authentication</span>
+              <select name="ntfy_auth_scheme" id="ntfy-auth-scheme">
+                <option value="none">None (public topic)</option>
+                <option value="token">Access token</option>
+                <option value="basic">Username / password</option>
+              </select>
+            </label>
+            <label class="field secret" data-secret="token" data-ntfy-auth="token"><span class="cap">Access token <span
+                  class="secret-state"></span></span>
+              <input type="password" name="ntfy_token" autocomplete="new-password"></label>
+            <label class="field" data-ntfy-auth="basic"><span class="cap">Username</span>
+              <input type="text" name="ntfy_username" maxlength="2000" autocomplete="off"></label>
+            <label class="field secret" data-secret="password" data-ntfy-auth="basic"><span class="cap">Password <span
+                  class="secret-state"></span></span>
+              <input type="password" name="ntfy_password" autocomplete="new-password"></label>
+          </div>
+        </div>
+
+        <!-- email -->
+        <div class="kind-section" data-kind="email">
+          <p class="hint-row">Sends plain-text mail through your SMTP server. Port 587 uses STARTTLS when
+            the server offers it; check "implicit TLS" for port 465.</p>
+          <div class="grid">
+            <label class="field"><span class="cap">SMTP host</span>
+              <input type="text" name="email_host" maxlength="253" placeholder="smtp.example.com"></label>
+            <label class="field"><span class="cap">Port</span>
+              <input type="number" name="email_port" min="1" max="65535" value="587"></label>
+            <div class="field" style="align-self:end">
+              <label class="check"><input type="checkbox" name="email_secure"><span>Implicit TLS (port 465)</span></label>
+            </div>
+          </div>
+          <div class="grid" style="margin-top:10px">
+            <label class="field"><span class="cap">From</span>
+              <input type="text" name="email_from" maxlength="254" placeholder="flatline@example.com"></label>
+            <label class="field" style="grid-column: span 2"><span class="cap">To (comma-separated)</span>
+              <input type="text" name="email_to" maxlength="2000" placeholder="you@example.com"></label>
+          </div>
+          <div class="grid" style="margin-top:10px">
+            <label class="field"><span class="cap">Username (optional)</span>
+              <input type="text" name="email_username" maxlength="254" autocomplete="off"></label>
+            <label class="field secret" data-secret="password"><span class="cap">Password <span
+                  class="secret-state"></span></span>
+              <input type="password" name="email_password" autocomplete="new-password"></label>
+          </div>
+        </div>
+
+        <div class="field" style="margin-top:12px">
+          <span class="cap">Send on these events</span>
+          <div class="check-scroll" id="channel-event-checks"></div>
+        </div>
+
+        <div class="grid" style="margin-top:12px">
+          <label class="field"><span class="cap">Title template</span>
+            <input type="text" name="title_template" maxlength="500" placeholder="Flatline: {event}"></label>
+          <label class="field" style="grid-column: span 2"><span class="cap">Body template</span>
+            <textarea name="body_template" rows="2" maxlength="500" spellcheck="false"
+              placeholder="{message}&#10;{time}"></textarea></label>
+        </div>
+        <p class="hint-row">Placeholders: <code>{event}</code> label, <code>{kind}</code> raw event key,
+          <code>{endpoint}</code> endpoint name, <code>{message}</code> details, <code>{time}</code>,
+          <code>{state}</code>. Leave blank for the defaults.</p>
+
+        <div style="margin-top:12px">
+          <label class="check">
+            <input type="checkbox" name="enabled" checked>
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="channel-submit">Add channel</button>
+          <button type="button" class="btn ghost" id="channel-test">Send test</button>
+          <button class="btn ghost" id="channel-cancel" style="display:none">Cancel</button>
+          <span class="note" id="channel-save-note"></span>
+          <span class="note" id="channel-test-result"></span>
+          <span class="error" id="channel-error"></span>
+        </div>
+      </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>General</h2>
+      <form id="settings-form" method="post">
+        <div class="grid">
+          <label class="field">
+            <span class="cap">History retention (days, max 14)</span>
+            <input type="number" name="retention_days" min="1" max="14" value="14">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn">Save settings</button>
+          <span class="note" id="settings-note"></span>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Encryption key</h2>
+      <p class="hint-row">Stored credentials (passwords, SSH keys, tokens, webhook URLs) are encrypted with
+        AES-256-GCM. Rotating re-encrypts everything under a fresh key in one step; nothing has to be
+        re-entered. <strong>Back the key up</strong> — without it stored credentials are unrecoverable.</p>
+      <p class="note" id="key-status">Loading key status…</p>
+
+      <div id="key-rotate-section">
+        <div class="form-actions">
+          <button type="button" class="btn" id="key-rotate">Rotate key (generate new)</button>
+        </div>
+      </div>
+
+      <form id="key-form" method="post" style="margin-top:12px">
+        <div class="grid">
+          <label class="field" style="grid-column: span 2">
+            <span class="cap">Set key manually (64 hex chars or base64 for 32 bytes)</span>
+            <input type="text" name="key" maxlength="64" autocomplete="off" spellcheck="false"
+              placeholder="paste or generate a key">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn danger-soft" id="key-set">Re-encrypt with this key</button>
+          <button type="button" class="btn ghost" id="key-generate">Generate</button>
+          <span class="note" id="key-note"></span>
+          <span class="error" id="key-error"></span>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Site access</h2>
+      <p class="note" id="auth-status">Loading…</p>
+
+      <form id="password-form" method="post" style="margin-top:12px">
+        <div class="grid">
+          <label class="field"><span class="cap" id="password-cap">Set a site password (min 8 chars)</span>
+            <input type="password" name="password" minlength="8" maxlength="200" autocomplete="new-password"></label>
+          <label class="field"><span class="cap">Confirm password</span>
+            <input type="password" name="password2" maxlength="200" autocomplete="new-password"></label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="password-set">Set password</button>
+          <button type="button" class="btn danger-ghost" id="password-remove" style="display:none">Remove password</button>
+          <span class="note" id="password-note"></span>
+          <span class="error" id="password-error"></span>
+        </div>
+      </form>
+
+      <form id="hosts-form" method="post" style="margin-top:16px">
+        <div class="grid">
+          <label class="field" style="grid-column: span 3">
+            <span class="cap">Allowed hostnames (comma-separated — IPs and localhost always work)</span>
+            <input type="text" name="allowed_hosts" maxlength="2000" autocomplete="off" spellcheck="false"
+              placeholder="flatline.lan, monitor.home.arpa">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="hosts-save">Save allowed hosts</button>
+          <span class="note" id="hosts-note"></span>
+          <span class="error" id="hosts-error"></span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/scripts/config.js"></script>
+</body>
+
+</html>

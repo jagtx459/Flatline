@@ -1,0 +1,67 @@
+<div align="center">
+    
+#  <img src="public/assets/Logo.png" alt="icon" width="32" height="32"> Flatline
+
+</div>
+
+###
+
+A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for graceful shutdown or migrations of infrastructure during a power outage to avoid data corruption and loss.  
+
+<div align="center"><img src="docs/screenshots/dashboard.png" alt="icon" width="480" height="480">
+
+****This is for homelab and testing environements only, use at your own risk!*** *
+</div>
+
+## How it works
+
+1. Each **Flatline Endpoint** is checked on its own interval (ICMP or HTTP via `fetch`, optionally verifying the response status and that the response JSON contains an expected subset).
+2. An endpoint flips DOWN after N consecutive failures and back UP after M consecutive successes (both configurable per endpoint).
+3. Endpoints must be placed in a **Flatline Group**. A group fails when its endpoints are down; either **all** of them or **any** one, per group.
+
+<div align="center"><img src="docs/screenshots/endpoints.png" alt="icon" width="480" height="480"></div>
+
+4. A failing group will arm a countdown. If it recovers before the group's grace period elapses, it disarms; otherwise the group's assigned **Action Group** will run.
+5. **Action Groups** are created from **Action Targets** and run in the configured order you set. **Action Targets** are pieces of infrastructure that should shut down or otherwise run script against for the environment.
+
+<div align="center"><img src="docs/screenshots/actions.png" alt="icon" width="480" height="480"></div>
+
+## Notifications
+
+Flatline supports a few, for now, notification platforms for several different events and has basic template support for messages.
+
+## Security
+
+****Again, Flatline is intended for homelab use; do NOT expose to the internet!*** *
+
+- **Optional login**: set a password on the `/config` page (stored as a scrypt hash) or via `FLATLINE_PASSWORD` (which ovverides when both are set). Without a password, anyone who can reach the port has full control.
+
+- **Non-root container**: the image runs as the unprivileged `node` user; only the `iputils` ping binary gets `cap_net_raw` (a file capability) so ICMP checks work without root.
+
+- **Credentials**: Infrastructure credentials  (passwords, SSH keys, tokens, kubeconfigs, webhook URLs) are encrypted at rest with AES-256-GCM and are write-only through the API. The server only reports *which* fields are set, never their values. The key comes from `FLATLINE_SECRET_KEY` (32 bytes as 64 hex chars or base64) or is auto-generated at `<data dir>/secret.key` on first use. **Back that key up** without it, stored credentials are unrecoverable and must be re-entered. The key can be rotated from the `/config` page: a new key is staged, every encrypted blob is re-encrypted in a single transaction, and the key file is atomically swapped (an interrupted rotation is detected and healed at the next startup). When the key comes from `FLATLINE_SECRET_KEY`, set the new key manually on the config page and update the environment variable to match before the next restart.
+
+## Run with Docker (recommended)
+
+```sh
+docker compose up -d --build
+# or
+docker build -t flatline .
+docker run -d --name flatline -p 3131:3131 -v flatline-data:/data --sysctl net.ipv4.ping_group_range="0 2147483647" flatline
+```
+
+Optional environment variables: 
+  - `FLATLINE_PASSWORD` (require a login) 
+  - `FLATLINE_SECRET_KEY` (credential encryption key; otherwise auto-generated in `/data`)
+  - `FLATLINE_ALLOWED_HOSTS` (extra hostnames allowed in the `Host` header, e.g. `flatline.lan`)
+  - `PORT`. 
+
+## Run directly
+
+```sh
+npm install
+npm start          # http://localhost:3131
+```
+
+## AI
+
+This application's development was AI assisted using Claude.ai, contributions are welcome using the templates provided.    

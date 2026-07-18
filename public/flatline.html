@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flatline — Endpoints &amp; Groups</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link rel="icon" type="image/png" href="/assets/Logo.png">
+</head>
+<body>
+  <div class="container">
+    <header class="site">
+      <span class="brand"><img src="/assets/Logo.png" alt="Flatline logo">FLATLINE</span>
+      <nav>
+        <a href="/">Dashboard</a>
+        <a href="/flatline" class="active">Flatline</a>
+        <a href="/actions">Actions</a>
+        <a href="/config">Config</a>
+      </nav>
+      <div class="header-actions">
+        <span class="header-version" id="header-version"></span>
+        <a class="icon-link" href="https://github.com/jagtx459/Flatline" target="_blank" rel="noopener noreferrer"
+          title="View on GitHub" aria-label="View on GitHub">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd"
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.22.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z">
+            </path></svg>
+        </a>
+        <button type="button" class="btn ghost small" id="header-logout" style="display:none">Log out</button>
+      </div>
+    </header>
+
+    <div class="card">
+      <h2>Flatline endpoints</h2>
+      <div id="endpoint-table"></div>
+    </div>
+
+    <div class="card">
+      <h2>Flatline groups</h2>
+      <div id="group-table"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header" id="form-header">
+        <h2 id="form-title">Add Flatline endpoint</h2>
+        <span class="chevron">▸</span>
+      </div>
+      <div class="card-body" id="form-body">
+      <p class="hint-row">Endpoints start ungrouped — add them to a Flatline group in the
+        group form below to tie them to actions.</p>
+      <form id="endpoint-form" method="post">
+        <div class="grid">
+          <label class="field">
+            <span class="cap">Name</span>
+            <input type="text" name="name" required maxlength="100" placeholder="Router / UPS / NAS">
+          </label>
+          <label class="field">
+            <span class="cap">Check type</span>
+            <select name="type" id="f-type">
+              <option value="icmp">Ping (ICMP)</option>
+              <option value="http">HTTP(S)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="cap">Target (IP, hostname, or URL)</span>
+            <input type="text" name="target" required maxlength="500" placeholder="192.168.1.1 or https://host/health">
+          </label>
+          <label class="field">
+            <span class="cap">Check interval (seconds)</span>
+            <input type="number" name="interval_seconds" min="5" max="86400" value="30">
+          </label>
+          <label class="field">
+            <span class="cap">Timeout (ms)</span>
+            <input type="number" name="timeout_ms" min="250" max="60000" value="5000">
+          </label>
+          <label class="field">
+            <span class="cap">Mark DOWN after (consecutive failures)</span>
+            <input type="number" name="down_threshold" min="1" max="100" value="3">
+          </label>
+          <label class="field">
+            <span class="cap">Mark UP after (consecutive successes)</span>
+            <input type="number" name="up_threshold" min="1" max="100" value="2">
+          </label>
+        </div>
+        <div class="grid" style="margin-top:12px" id="http-fields">
+          <label class="field" id="expect-field">
+            <span class="cap">Expected HTTP status (blank = any &lt; 400)</span>
+            <input type="number" name="expect_status" min="100" max="599" placeholder="200">
+          </label>
+          <label class="field" id="expect-json-field" style="grid-column: span 2">
+            <span class="cap">Expected JSON response (optional — response must contain these keys/values)</span>
+            <textarea name="expect_json" rows="2" spellcheck="false" placeholder='{"status":"ok"}'></textarea>
+          </label>
+        </div>
+        <div style="margin-top:12px">
+          <label class="check">
+            <input type="checkbox" name="enabled" checked>
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="form-submit">Add endpoint</button>
+          <button type="button" class="btn ghost" id="form-test">Test</button>
+          <button class="btn ghost" id="form-cancel" style="display:none">Cancel</button>
+          <span class="note" id="form-save-note"></span>
+          <span class="note" id="form-test-result"></span>
+          <span class="error" id="form-error"></span>
+        </div>
+      </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header" id="group-form-header">
+        <h2 id="group-form-title">Add Flatline group</h2>
+        <span class="chevron">▸</span>
+      </div>
+      <div class="card-body" id="group-form-body">
+      <p class="hint-row">A Flatline group is a failure condition: when its endpoints are down
+        (all of them, or any one — your choice), a countdown starts, and after the grace period
+        the group's assigned action groups run. An endpoint can belong to more than one group.
+        Assign action groups to this group from the <a href="/actions">Actions page</a>.</p>
+      <form id="group-form" method="post">
+        <div class="grid">
+          <label class="field">
+            <span class="cap">Name</span>
+            <input type="text" name="name" required maxlength="100" placeholder="Power outage / Rack A">
+          </label>
+          <label class="field" style="grid-column: span 2">
+            <span class="cap">Fails when</span>
+            <select name="mode">
+              <option value="all">ALL endpoints in the group are down</option>
+              <option value="any">ANY endpoint in the group is down</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="cap">Grace period before actions (minutes)</span>
+            <input type="number" name="grace_minutes" min="1" max="1440" value="5">
+          </label>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <span class="cap">Endpoints in this group</span>
+          <div class="check-scroll" id="group-endpoint-checks"></div>
+        </div>
+        <div style="margin-top:12px">
+          <label class="check">
+            <input type="checkbox" name="enabled" checked>
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="group-submit">Add group</button>
+          <button class="btn ghost" id="group-cancel" style="display:none">Cancel</button>
+          <span class="note" id="group-save-note"></span>
+          <span class="error" id="group-error"></span>
+        </div>
+      </form>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="/scripts/flatline.js"></script>
+</body>
+</html>

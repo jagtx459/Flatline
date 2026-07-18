@@ -1,0 +1,128 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/docker-publish.yml
+#
+# Cuts a GitHub Release, then builds the production Docker image and pushes
+# it to the GitHub Container Registry (GHCR).
+#
+# Image will be available at:
+#   ghcr.io/<owner>/<repo>:latest
+#   ghcr.io/<owner>/<repo>:<git-sha>
+#   ghcr.io/<owner>/<repo>:<version>
+#
+# Triggers:
+#   • Manual run via the Actions tab (workflow_dispatch) — creates a GitHub
+#     Release tagged from the current package.json version (bump that first),
+#     then builds/pushes in the same run. (Releases created with the default
+#     GITHUB_TOKEN don't fire a new `release` event/workflow run — GitHub's
+#     anti-recursion rule — so build-and-push can't just wait for that; it
+#     runs right after create-release instead, gated on its success.)
+#   • Every published GitHub Release published some other way (e.g. by hand
+#     from the GitHub UI, which — unlike the Action above — does fire the
+#     `release` event)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build & Publish Docker Image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# contents: write is only needed by create-release (to publish the tag/release);
+# packages: write is only needed by build-and-push (to write to GHCR).
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository resolves to  <owner>/<repo>  automatically
+  IMAGE_NAME: ${{ github.repository }}
+  # Lowercased version derived at runtime (see "Lowercase image name" step)
+  IMAGE_NAME_LOWER: ""
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Same source of truth as the Docker image tag below — bump
+      # package.json before running this workflow.
+      - name: Read package version
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.pkg.outputs.version }}
+          name: v${{ steps.pkg.outputs.version }}
+          generate_release_notes: true
+
+  build-and-push:
+    name: Build & push image
+    needs: [create-release]
+    # Runs for a real `release` event, or right after create-release
+    # succeeds in a workflow_dispatch run (see the note up top on why it
+    # can't just rely on create-release triggering a `release` event).
+    if: always() && (github.event_name == 'release' || needs.create-release.result == 'success')
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # 2. Normalise the image name to lowercase (Docker refs must be lowercase)
+      #    e.g. "MyOrg/My-Repo" → "myorg/my-repo"
+      - name: Lowercase image name
+        run: echo "IMAGE_NAME_LOWER=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      # 3. Set up Docker Buildx (needed for cache support)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # 4. Log in to GHCR using the automatic GITHUB_TOKEN — no secret needed
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 5. Read the version straight from package.json, so the image tag
+      #    always matches what's actually shipped — no separate place to
+      #    remember to bump.
+      - name: Read package version
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # 6. Derive image tags and labels
+      #    Produces:
+      #      - latest             (every release build)
+      #      - <package.json ver> (e.g. 0.1.0)
+      #      - sha-<short-hash>   (always, for traceability back to a commit)
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.pkg.outputs.version }}
+            type=sha,prefix=sha-,format=short
+
+      # 7. Build and push the image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          no-cache: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

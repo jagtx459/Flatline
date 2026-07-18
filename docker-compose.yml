@@ -1,0 +1,20 @@
+services:
+  flatline:
+    build: .
+    container_name: flatline
+    restart: unless-stopped
+    ports:
+      - "3131:3131"
+    volumes:
+      - flatline-data:/data
+    # Lets unprivileged processes open ICMP echo sockets, so ping works for
+    # the non-root container user even without the image's file capability.
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    # environment:
+    #   FLATLINE_PASSWORD: change-me          # require a login for the UI/API
+    #   FLATLINE_SECRET_KEY: <64 hex chars>   # credential encryption key (else auto-generated in /data)
+    #   FLATLINE_ALLOWED_HOSTS: flatline.lan  # extra hostnames allowed in the Host header
+
+volumes:
+  flatline-data:
