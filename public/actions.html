@@ -60,7 +60,7 @@
             <span class="cap">Connection type</span>
             <select name="kind" id="t-kind">
               <option value="ssh">SSH</option>
-              <option value="rdp">RDP (Windows)</option>
+              <option value="winrm">WinRM (Windows)</option>
               <option value="k8s">Kubernetes cluster</option>
               <option value="http">HTTP(S) endpoint</option>
             </select>
@@ -72,6 +72,25 @@
           <p class="hint-row">▶ On trigger: Flatline connects over SSH with these credentials and
             <strong>runs the command below</strong> on the host.
           </p>
+          <details class="setup-help">
+            <summary>Set up a Linux account for this</summary>
+            <div class="help-body">
+              <p>Create a dedicated user that can run the shutdown command without a password
+                prompt (so nothing privileged needs storing here). Run as root / with sudo on the
+                target machine:</p>
+              <pre>sudo useradd -m -s /bin/bash flatline
+sudo passwd flatline               # set a password, or use an SSH key instead
+
+# Let it run shutdown without a sudo password:
+echo 'flatline ALL=(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown' \
+  | sudo tee /etc/sudoers.d/flatline
+sudo chmod 440 /etc/sudoers.d/flatline
+
+# (recommended) add your Flatline SSH public key to
+# /home/flatline/.ssh/authorized_keys  — chmod 700 the .ssh dir, 600 the file</pre>
+              <p>Then set Username <code>flatline</code> and command <code>sudo shutdown -h +0</code>.</p>
+            </div>
+          </details>
           <div class="grid">
             <label class="field"><span class="cap">Host</span><input type="text" name="ssh_host" maxlength="2000"
                 placeholder="192.168.1.50"></label>
@@ -119,29 +138,54 @@
           </label>
         </div>
 
-        <!-- RDP -->
-        <div class="kind-section" data-kind="rdp">
-          <p class="hint-row">▶ On trigger: Flatline signs in to the Windows host with these
-            credentials (via remote PowerShell/WinRM — the RDP details identify the machine and login)
-            and <strong>runs the command below</strong>.</p>
+        <!-- WinRM -->
+        <div class="kind-section" data-kind="winrm">
+          <p class="hint-row">▶ On trigger: Flatline signs in to the Windows host over <strong>WinRM</strong>
+            with these credentials and <strong>runs the command below</strong> via remote PowerShell.
+            Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>); the default port is
+            5985. Works with a local or domain account (NTLM).</p>
+          <details class="setup-help">
+            <summary>Set up a Windows account for this</summary>
+            <div class="help-body">
+              <p>Recommended: create a dedicated local admin account rather than using a Microsoft
+                account (whose identity over WinRM/NTLM is unreliable). Run in an <strong>elevated
+                PowerShell</strong> on the target machine:</p>
+              <pre>net user flatline * /add                     # create the user (prompts for a password)
+net localgroup Administrators flatline /add  # WinRM requires admin rights
+Enable-PSRemoting -Force                     # turn on WinRM / PowerShell remoting
+
+# Workgroup (non-domain) machines only: let local accounts sign in remotely
+# with full rights, otherwise you get "Access is denied":
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+  -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force
+Restart-Service WinRM</pre>
+              <p>Then set Username <code>flatline</code>, leave Domain blank, and keep port 5985.</p>
+            </div>
+          </details>
           <div class="grid">
-            <label class="field"><span class="cap">Host</span><input type="text" name="rdp_host" maxlength="2000"
+            <label class="field"><span class="cap">Host</span><input type="text" name="winrm_host" maxlength="2000"
                 placeholder="192.168.1.60"></label>
-            <label class="field"><span class="cap">Port</span><input type="number" name="rdp_port" min="1" max="65535"
-                value="3389"></label>
+            <label class="field"><span class="cap">WinRM port</span><input type="number" name="winrm_port" min="1" max="65535"
+                value="5985"></label>
+            <label class="field"><span class="cap">Domain (optional)</span><input type="text" name="winrm_domain"
+                maxlength="2000"></label>
           </div>
           <div class="grid">
-            <label class="field"><span class="cap">Domain (optional)</span><input type="text" name="rdp_domain"
-                maxlength="2000"></label>
-            <label class="field"><span class="cap">Username</span><input type="text" name="rdp_username"
+            <label class="field"><span class="cap">Username</span><input type="text" name="winrm_username"
                 maxlength="2000" autocomplete="off"></label>
             <label class="field secret" data-secret="password"><span class="cap">Password <span
                   class="secret-state"></span></span>
-              <input type="password" name="rdp_password" autocomplete="new-password"></label>
+              <input type="password" name="winrm_password" autocomplete="new-password"></label>
           </div>
           <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
-            <input type="text" name="rdp_command" maxlength="10000"
-              value="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
+            <input type="text" name="winrm_command" maxlength="10000"
+              placeholder="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
+          </label>
+          <p class="hint-row" style="margin-top:10px">The command is run as a PowerShell command line.
+            Optional restore command — run from the target's Restore button to undo the command above
+            (e.g. cancel a pending shutdown). Leave blank if there's nothing to undo.</p>
+          <label class="field"><span class="cap">Restore command (optional)</span>
+            <input type="text" name="winrm_restore_command" maxlength="10000" placeholder="shutdown /a">
           </label>
         </div>
 

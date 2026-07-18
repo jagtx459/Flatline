@@ -255,8 +255,15 @@ form .grid {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px;
 }
-label.field { display: block; }
+label.field { display: flex; flex-direction: column; }
 label.field .cap { display: block; color: var(--text-secondary); font-size: 12px; margin-bottom: 3px; }
+/* Rows with a secret field carry a long "· stored ✓ (leave blank to keep)"
+   caption once a value is saved. Widen every column in those rows equally so
+   the caption stays on one line and all inputs keep a consistent width. */
+form .grid:has(> label.field.secret) { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+/* Belt-and-suspenders: if a caption still wraps (very narrow viewport), keep
+   inputs bottom-aligned across the row instead of letting one drop. */
+label.field > input, label.field > select, label.field > textarea { margin-top: auto; }
 input[type="text"], input[type="url"], input[type="number"], input[type="password"], select {
   width: 100%;
   background: var(--page);
@@ -383,6 +390,23 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 }
 .check-scroll label.check { padding: 3px 0; }
 .kind-section { margin-top: 12px; }
+/* Collapsible "how to set up an account on the target" help inside a kind-section */
+.setup-help { margin: 0 0 12px; border: 1px solid var(--gridline); border-radius: 7px; }
+.setup-help > summary {
+  cursor: pointer; list-style: none;
+  padding: 8px 10px;
+  color: var(--text-secondary); font-size: 12.5px; font-weight: 600;
+}
+.setup-help > summary::-webkit-details-marker { display: none; }
+.setup-help > summary::before { content: "▸"; display: inline-block; width: 1.1em; }
+.setup-help[open] > summary::before { content: "▾"; }
+.setup-help .help-body { padding: 0 10px 10px; }
+.setup-help .help-body p { color: var(--text-secondary); font-size: 12.5px; margin: 0 0 8px; }
+.setup-help pre {
+  background: var(--page); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 10px; margin: 0 0 8px; overflow-x: auto;
+  font: 12px/1.6 ui-monospace, Consolas, monospace; color: var(--text-primary);
+}
 textarea {
   width: 100%;
   background: var(--page);

@@ -121,6 +121,44 @@ export const migrations = [
         );
       `);
     }
+  },
+  {
+    version: 2,
+    name: 'rename action target kind rdp -> winrm',
+    up(db) {
+      // The kind was always WinRM under the hood; drop the historical 'rdp'
+      // name. SQLite can't alter a CHECK constraint in place, so the table is
+      // rebuilt: build the replacement under a temp name, drop the original,
+      // then rename the replacement into its place. Dropping the original
+      // (foreign_keys is ON) cascades through action_group_members.target_id
+      // and empties it, so those rows are backed up first and restored after —
+      // target ids are preserved, so the references stay valid. Renaming the
+      // replacement INTO 'action_targets' (rather than renaming the original
+      // out) keeps action_group_members' foreign-key text resolving correctly.
+      db.exec(`
+        CREATE TEMP TABLE action_group_members_backup AS SELECT * FROM action_group_members;
+
+        CREATE TABLE action_targets_new (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          name       TEXT NOT NULL,
+          kind       TEXT NOT NULL CHECK (kind IN ('ssh', 'winrm', 'k8s', 'http')),
+          config     TEXT NOT NULL DEFAULT '{}',
+          secret_enc TEXT,
+          enabled    INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL
+        );
+        INSERT INTO action_targets_new (id, name, kind, config, secret_enc, enabled, created_at)
+          SELECT id, name, CASE WHEN kind = 'rdp' THEN 'winrm' ELSE kind END,
+                 config, secret_enc, enabled, created_at
+          FROM action_targets;
+        DROP TABLE action_targets;
+        ALTER TABLE action_targets_new RENAME TO action_targets;
+
+        DELETE FROM action_group_members;
+        INSERT INTO action_group_members SELECT * FROM action_group_members_backup;
+        DROP TABLE action_group_members_backup;
+      `);
+    }
   }
 ];
 

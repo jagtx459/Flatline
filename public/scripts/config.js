@@ -279,16 +279,15 @@ function eventSummary(cfg) {
  *  most recent test or real send rather than a periodic background check. */
 function channelStatusPill(c) {
   if (!c.enabled) {
-    return el('span', { class: 'pill disabled' }, el('span', { class: 'dot' }), 'DISABLED');
+    return el('span', { class: 'pill disabled' }, 'DISABLED');
   }
   if (!c.last_result) {
-    return el('span', { class: 'pill unknown', title: 'Enabled — no test or delivery attempt yet' },
-      el('span', { class: 'dot' }), 'ENABLED');
+    return el('span', { class: 'pill up', title: 'Enabled — no test or delivery attempt yet' }, 'ENABLED');
   }
   const title = `${fmtDateTime(c.last_result.ts)} (${c.last_result.trigger}) — ${c.last_result.message}`;
   return c.last_result.ok
-    ? el('span', { class: 'pill up', title }, el('span', { class: 'dot' }), 'OK')
-    : el('span', { class: 'pill down', title }, el('span', { class: 'dot' }), 'FAILED');
+    ? el('span', { class: 'pill up', title }, 'OK')
+    : el('span', { class: 'pill down', title }, 'FAILED');
 }
 
 function lastActivityText(c) {

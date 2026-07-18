@@ -13,12 +13,13 @@ let targets = [];
 let igroups = [];
 let flatlineGroups = [];
 
-const KIND_LABELS = { ssh: 'SSH', rdp: 'RDP', k8s: 'Kubernetes', http: 'HTTP(S)' };
+const KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'Kubernetes', http: 'HTTP(S)' };
 const K8S_ACTION_LABELS = { drain: 'cordon + drain all nodes', custom: 'custom command' };
 
 // Shown in the Restore confirm dialog — what "undo" actually means per kind.
 const RESTORE_HINTS = {
   ssh: 'This runs the configured restore command over SSH.',
+  winrm: 'This runs the configured restore command over WinRM.',
   http: 'This sends the configured restore request.',
   k8s: 'For "cordon + drain" this uncordons every node. For a custom command, it runs the configured restore request.'
 };
@@ -26,14 +27,10 @@ const RESTORE_HINTS = {
 // Maps a kind's secret field -> form input name.
 const SECRET_INPUTS = {
   ssh:  { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase', sudo_password: 'ssh_sudo_password' },
-  rdp:  { password: 'rdp_password' },
+  winrm: { password: 'winrm_password' },
   k8s:  { token: 'k8s_token', kubeconfig: 'k8s_kubeconfig' },
   http: { token: 'http_token', password: 'http_password' }
 };
-
-// Kinds that can actually run for real (see server/connectors.js) — RDP/WinRM
-// execution isn't implemented yet, so its Test button would always fail.
-const TESTABLE_KINDS = new Set(['ssh', 'k8s', 'http']);
 
 function targetById(id) {
   return targets.find((t) => t.id === id);
@@ -76,8 +73,6 @@ function syncKindSections() {
   syncSshAuthFields();
   syncK8sAuthFields();
   syncK8sActionFields();
-  $formTest.disabled = !TESTABLE_KINDS.has(kind);
-  $formTest.title = TESTABLE_KINDS.has(kind) ? '' : `${KIND_LABELS[kind] ?? kind} execution isn't implemented yet`;
   $formTestResult.textContent = '';
 }
 
@@ -153,12 +148,13 @@ function collectConfig(kind) {
       command: field('ssh_command').value,
       restore_command: field('ssh_restore_command').value
     };
-    case 'rdp': return {
-      host: field('rdp_host').value,
-      port: Number(field('rdp_port').value) || 3389,
-      domain: field('rdp_domain').value,
-      username: field('rdp_username').value,
-      command: field('rdp_command').value
+    case 'winrm': return {
+      host: field('winrm_host').value,
+      port: Number(field('winrm_port').value) || 5985,
+      domain: field('winrm_domain').value,
+      username: field('winrm_username').value,
+      command: field('winrm_command').value,
+      restore_command: field('winrm_restore_command').value
     };
     case 'k8s': return {
       api_url: field('k8s_api_url').value,
@@ -225,12 +221,13 @@ function fillTargetForm(t) {
       field('ssh_command').value = c.command ?? '';
       field('ssh_restore_command').value = c.restore_command ?? '';
       break;
-    case 'rdp':
-      field('rdp_host').value = c.host ?? '';
-      field('rdp_port').value = String(c.port ?? 3389);
-      field('rdp_domain').value = c.domain ?? '';
-      field('rdp_username').value = c.username ?? '';
-      field('rdp_command').value = c.command ?? '';
+    case 'winrm':
+      field('winrm_host').value = c.host ?? '';
+      field('winrm_port').value = String(c.port ?? 5985);
+      field('winrm_domain').value = c.domain ?? '';
+      field('winrm_username').value = c.username ?? '';
+      field('winrm_command').value = c.command ?? '';
+      field('winrm_restore_command').value = c.restore_command ?? '';
       break;
     case 'k8s':
       field('k8s_api_url').value = c.api_url ?? '';
@@ -327,7 +324,7 @@ function targetConnection(t) {
   const c = t.config;
   switch (t.kind) {
     case 'ssh': return `${c.username}@${c.host}:${c.port}`;
-    case 'rdp': return `${c.domain ? c.domain + '\\' : ''}${c.username}@${c.host}:${c.port}`;
+    case 'winrm': return `${c.domain ? c.domain + '\\' : ''}${c.username}@${c.host}:${c.port}`;
     case 'k8s': return c.api_url;
     case 'http': return c.url;
     default: return '';
@@ -338,7 +335,7 @@ function targetAction(t) {
   const c = t.config;
   switch (t.kind) {
     case 'ssh': return c.command || '—';
-    case 'rdp': return c.command || '—';
+    case 'winrm': return c.command || '—';
     case 'k8s': return c.action === 'custom' && c.command_path
       ? `${c.command_method ?? 'PATCH'} ${c.command_path}`
       : K8S_ACTION_LABELS[c.action] ?? c.action ?? '—';
@@ -349,9 +346,6 @@ function targetAction(t) {
 
 /** Live connectivity dot: rechecked server-side about once a minute (see server/targetHealth.js). */
 function targetStatusPill(t) {
-  if (t.kind === 'rdp') {
-    return el('span', { class: 'pill disabled', title: "RDP/WinRM execution isn't implemented yet" }, el('span', { class: 'dot' }), 'N/A');
-  }
   if (!t.enabled) {
     return el('span', { class: 'pill disabled' }, el('span', { class: 'dot' }), 'DISABLED');
   }
@@ -396,36 +390,30 @@ function renderTargetTable() {
     });
 
     const runBtn = el('button', { class: 'btn danger-soft small' }, 'Run');
-    if (t.kind === 'rdp') {
-      runBtn.disabled = true;
-      runBtn.title = "RDP/WinRM execution isn't implemented yet";
-    } else {
-      runBtn.addEventListener('click', () => {
-        void (async () => {
-          const verb = t.kind === 'http' ? 'Send the real request configured for' : 'Run the command/action configured for';
-          if (!confirm(`${verb} "${t.name}" right now?\n\nThis performs the ACTUAL action — be careful in production environments.`)) return;
-          runBtn.disabled = true;
-          try {
-            const result = await runActionTarget(t.id);
-            alert(`${result.ok ? '✓ succeeded' : '✕ failed'}: ${result.message}`);
-          } catch (err) {
-            alert(`Error: ${err.message}`);
-          } finally {
-            await refreshAll();
-          }
-        })();
-      });
-    }
+    runBtn.addEventListener('click', () => {
+      void (async () => {
+        const verb = t.kind === 'http' ? 'Send the real request configured for' : 'Run the command/action configured for';
+        if (!confirm(`${verb} "${t.name}" right now?\n\nThis performs the ACTUAL action — be careful in production environments.`)) return;
+        runBtn.disabled = true;
+        try {
+          const result = await runActionTarget(t.id);
+          alert(`${result.ok ? '✓ succeeded' : '✕ failed'}: ${result.message}`);
+        } catch (err) {
+          alert(`Error: ${err.message}`);
+        } finally {
+          await refreshAll();
+        }
+      })();
+    });
 
     const restoreBtn = el('button', { class: 'btn ghost small' }, 'Restore');
     const hasRestore = t.kind === 'k8s'
       || (t.kind === 'ssh' && !!t.config.restore_command)
+      || (t.kind === 'winrm' && !!t.config.restore_command)
       || (t.kind === 'http' && !!t.config.restore_url);
     if (!hasRestore) {
       restoreBtn.disabled = true;
-      restoreBtn.title = t.kind === 'rdp'
-        ? "RDP/WinRM execution isn't implemented yet"
-        : 'No restore command configured for this target — add one in the edit form';
+      restoreBtn.title = 'No restore command configured for this target — add one in the edit form';
     } else {
       restoreBtn.addEventListener('click', () => {
         void (async () => {

@@ -5,9 +5,7 @@ import { testTarget } from './connectors.js';
 /**
  * Background connectivity check for action targets — the same safe test the
  * "Test connection" button runs, just on a timer, so the targets table shows
- * a live status dot without the user having to open each one. RDP is skipped
- * entirely (execution isn't implemented, so it would just show permanently
- * red for no useful reason).
+ * a live status dot without the user having to open each one.
  */
 
 const CHECK_INTERVAL_MS = 60_000;
@@ -51,7 +49,7 @@ export async function checkTargetNow(id) {
 }
 
 async function checkAll() {
-  const targets = store.listActionTargets().filter((t) => t.enabled && t.kind !== 'rdp');
+  const targets = store.listActionTargets().filter((t) => t.enabled);
   await Promise.all(targets.map(checkOne));
 
   const liveIds = new Set(store.listActionTargets().map((t) => t.id));
@@ -61,7 +59,6 @@ async function checkAll() {
 }
 
 async function checkOne(target) {
-  if (target.kind === 'rdp') return;
   let config;
   try { config = JSON.parse(target.config); } catch { config = {}; }
   const secrets = decryptSecrets(target.secret_enc);
