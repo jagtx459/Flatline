@@ -2,10 +2,15 @@
     
 #  <img src="public/assets/Logo.png" alt="icon" width="32" height="32"> Flatline
 
-</div>
+
 
 ###
 
+[![License](https://img.shields.io/github/license/jagtx459/flatline?style=flat-square)](LICENSE) [![Last Commit](https://img.shields.io/github/last-commit/jagtx459/flatline?style=flat-square)](https://github.com/jagtx459/flatline/commits/main) [![Issues](https://img.shields.io/github/issues/jagtx459/flatline?style=flat-square)](https://github.com/jagtx459/flatline/issues) [![Stars](https://img.shields.io/github/stars/jagtx459/flatline?style=flat-square)](https://github.com/jagtx459/flatline/stargazers) 
+
+[![Package](https://github.com/jagtx459/flatline/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/jagtx459/flatline/actions/workflows/docker-publish.yml) ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/jagtx459/flatline/total)
+
+</div>
 A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for initiating graceful shutdowns or migrations of infrastructure during a power outage to avoid data corruption and loss.  
 
 <div align="center"><img src="docs/screenshots/dashboard.png" alt="icon" width="480" height="480">
