@@ -46,6 +46,7 @@ const $formTitle = document.getElementById('target-form-title');
 const $formError = document.getElementById('target-error');
 const $formSubmit = document.getElementById('target-submit');
 const $formCancel = document.getElementById('target-cancel');
+const $formReset = document.getElementById('target-reset');
 const $formTest = document.getElementById('target-test');
 const $formTestResult = document.getElementById('target-test-result');
 const $formSaveNote = document.getElementById('target-save-note');
@@ -200,6 +201,7 @@ function resetTargetForm() {
   $formTitle.textContent = 'Add action target';
   $formSubmit.textContent = 'Add target';
   $formCancel.style.display = 'none';
+  $formReset.style.display = '';
   $formError.textContent = '';
   $formSaveNote.textContent = '';
   renderSecretStates('none', []);
@@ -259,6 +261,7 @@ function fillTargetForm(t) {
   $formTitle.textContent = `Edit target: ${t.name}`;
   $formSubmit.textContent = 'Save changes';
   $formCancel.style.display = '';
+  $formReset.style.display = 'none';
   targetFormSection.expand();
   $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -267,6 +270,8 @@ $formCancel.addEventListener('click', (e) => {
   e.preventDefault();
   resetTargetForm();
 });
+
+$formReset.addEventListener('click', () => resetTargetForm());
 
 $form.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -473,6 +478,7 @@ const $igFormTitle = document.getElementById('igroup-form-title');
 const $igError = document.getElementById('igroup-error');
 const $igSubmit = document.getElementById('igroup-submit');
 const $igCancel = document.getElementById('igroup-cancel');
+const $igReset = document.getElementById('igroup-reset');
 const $igSaveNote = document.getElementById('igroup-save-note');
 const $igTable = document.getElementById('igroup-table');
 const $stepList = document.getElementById('step-list');
@@ -596,6 +602,7 @@ function resetIgForm() {
   $igFormTitle.textContent = 'Add action group';
   $igSubmit.textContent = 'Add group';
   $igCancel.style.display = 'none';
+  $igReset.style.display = '';
   $igError.textContent = '';
   $igSaveNote.textContent = '';
   renderSteps();
@@ -614,6 +621,7 @@ function fillIgForm(g) {
   $igFormTitle.textContent = `Edit group: ${g.name}`;
   $igSubmit.textContent = 'Save changes';
   $igCancel.style.display = '';
+  $igReset.style.display = 'none';
   $igError.textContent = '';
   $igSaveNote.textContent = '';
   igroupFormSection.expand();
@@ -624,6 +632,8 @@ $igCancel.addEventListener('click', (e) => {
   e.preventDefault();
   resetIgForm();
 });
+
+$igReset.addEventListener('click', () => resetIgForm());
 
 /** Applies the checked Flatline groups for this action group by updating each
  *  affected Flatline group's own action_group_ids (the assignment is stored

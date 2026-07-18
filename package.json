@@ -1,6 +1,6 @@
 {
   "name": "flatline",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Monitor ICMP/HTTP endpoints, and arms a script for graceful shutdown or migrate infrastructure after a configurable wait period.",
   "type": "module",
   "main": "server/index.js",
@@ -15,5 +15,9 @@
     "nodemailer": "^9.0.3",
     "ssh2": "^1.17.0",
     "yaml": "^2.9.0"
+  },
+  "allowScripts": {
+    "cpu-features@0.0.10": true,
+    "ssh2@1.17.0": true
   }
 }

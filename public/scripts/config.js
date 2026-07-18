@@ -42,6 +42,7 @@ const $formTitle = document.getElementById('channel-form-title');
 const $formError = document.getElementById('channel-error');
 const $formSubmit = document.getElementById('channel-submit');
 const $formCancel = document.getElementById('channel-cancel');
+const $formReset = document.getElementById('channel-reset');
 const $formTest = document.getElementById('channel-test');
 const $formTestResult = document.getElementById('channel-test-result');
 const $formSaveNote = document.getElementById('channel-save-note');
@@ -162,6 +163,7 @@ function resetChannelForm() {
   $formTitle.textContent = 'Add notification channel';
   $formSubmit.textContent = 'Add channel';
   $formCancel.style.display = 'none';
+  $formReset.style.display = '';
   $formError.textContent = '';
   $formSaveNote.textContent = '';
   renderEventChecks(DEFAULT_EVENTS);
@@ -203,6 +205,7 @@ function fillChannelForm(c) {
   $formTitle.textContent = `Edit channel: ${c.name}`;
   $formSubmit.textContent = 'Save changes';
   $formCancel.style.display = '';
+  $formReset.style.display = 'none';
   channelFormSection.expand();
   $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -211,6 +214,8 @@ $formCancel.addEventListener('click', (e) => {
   e.preventDefault();
   resetChannelForm();
 });
+
+$formReset.addEventListener('click', () => resetChannelForm());
 
 $form.addEventListener('submit', (e) => {
   e.preventDefault();

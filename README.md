@@ -6,11 +6,11 @@
 
 ###
 
-A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for graceful shutdown or migrations of infrastructure during a power outage to avoid data corruption and loss.  
+A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for initiating graceful shutdowns or migrations of infrastructure during a power outage to avoid data corruption and loss.  
 
 <div align="center"><img src="docs/screenshots/dashboard.png" alt="icon" width="480" height="480">
 
-****This is for homelab and testing environements only, use at your own risk!*** *
+****This app is still a work in progress and is intended for homelab and testing environements only, use at your own risk!*** *
 </div>
 
 ## How it works
@@ -22,19 +22,19 @@ A small self-hosted system monitor that pings or probes endpoints for availabili
 <div align="center"><img src="docs/screenshots/endpoints.png" alt="icon" width="480" height="480"></div>
 
 4. A failing group will arm a countdown. If it recovers before the group's grace period elapses, it disarms; otherwise the group's assigned **Action Group** will run.
-5. **Action Groups** are created from **Action Targets** and run in the configured order you set. **Action Targets** are pieces of infrastructure that should shut down or otherwise run script against for the environment.
+5. **Action Groups** are created from **Action Targets** and run in the configured order you set. **Action Targets** are targeted infrastructure for running script(s) against to shutdown for example or remove workloads in your environment.
 
 <div align="center"><img src="docs/screenshots/actions.png" alt="icon" width="480" height="480"></div>
 
 ## Notifications
 
-Flatline supports a few, for now, notification platforms for several different events and has basic template support for messages.
+Flatline supports a few, for now, notification platforms for several different event types, and has basic template support for messages.
 
 ## Security
 
-****Again, Flatline is intended for homelab use; do NOT expose to the internet!*** *
+****Again, Flatline is still a work in progress and intended for homelab use; do NOT expose to the internet!*** *
 
-- **Optional login**: set a password on the `/config` page (stored as a scrypt hash) or via `FLATLINE_PASSWORD` (which ovverides when both are set). Without a password, anyone who can reach the port has full control.
+- **Optional login**: set a password on the `/config` page (stored as a scrypt hash) or via `FLATLINE_PASSWORD` (which overides when both are set). Without a password, anyone who can reach the port has full control.
 
 - **Non-root container**: the image runs as the unprivileged `node` user; only the `iputils` ping binary gets `cap_net_raw` (a file capability) so ICMP checks work without root.
 
