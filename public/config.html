@@ -44,7 +44,7 @@
       <div class="card-body" id="channel-form-body">
       <p class="hint-row">A channel delivers Flatline events (endpoint down/up, group armed/triggered,
         action results) to an external service. Webhook URLs and tokens are encrypted at rest and never
-        sent back to the browser — when editing, leave a credential blank to keep the stored value.</p>
+        sent back to the browser. When adding or updating, leave a credential blank to keep the stored value.</p>
       <form id="channel-form" method="post">
         <div class="grid">
           <label class="field">
@@ -196,7 +196,7 @@
       <h2>Encryption key</h2>
       <p class="hint-row">Stored credentials (passwords, SSH keys, tokens, webhook URLs) are encrypted with
         AES-256-GCM. Rotating re-encrypts everything under a fresh key in one step; nothing has to be
-        re-entered. <strong>Back the key up</strong> — without it stored credentials are unrecoverable.</p>
+        re-entered. <strong>Back the key up</strong>, without it stored credentials are unrecoverable.</p>
       <p class="note" id="key-status">Loading key status…</p>
 
       <div id="key-rotate-section">
@@ -244,9 +244,9 @@
       <form id="hosts-form" method="post" style="margin-top:16px">
         <div class="grid">
           <label class="field" style="grid-column: span 3">
-            <span class="cap">Allowed hostnames (comma-separated — IPs and localhost always work)</span>
+            <span class="cap">Allowed hostnames (comma-separated, IPs and localhost will always work)</span>
             <input type="text" name="allowed_hosts" maxlength="2000" autocomplete="off" spellcheck="false"
-              placeholder="flatline.lan, monitor.home.arpa">
+              placeholder="flatline.lan, monitor.home.lan">
           </label>
         </div>
         <div class="form-actions">

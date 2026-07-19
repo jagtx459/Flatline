@@ -45,8 +45,7 @@
         <span class="chevron">▸</span>
       </div>
       <div class="card-body" id="form-body">
-      <p class="hint-row">Endpoints start ungrouped — add them to a Flatline group in the
-        group form below to tie them to actions.</p>
+      <p class="hint-row">Endpoints will always start ungrouped. Add them to a Flatline group in the form below to tie them to actions.</p>
       <form id="endpoint-form" method="post">
         <div class="grid">
           <label class="field">
@@ -87,7 +86,7 @@
             <input type="number" name="expect_status" min="100" max="599" placeholder="200">
           </label>
           <label class="field" id="expect-json-field" style="grid-column: span 2">
-            <span class="cap">Expected JSON response (optional — response must contain these keys/values)</span>
+            <span class="cap">Expected JSON response (optional: response must contain these keys/values)</span>
             <textarea name="expect_json" rows="2" spellcheck="false" placeholder='{"status":"ok"}'></textarea>
           </label>
         </div>
@@ -116,10 +115,7 @@
         <span class="chevron">▸</span>
       </div>
       <div class="card-body" id="group-form-body">
-      <p class="hint-row">A Flatline group is a failure condition: when its endpoints are down
-        (all of them, or any one — your choice), a countdown starts, and after the grace period
-        the group's assigned action groups run. An endpoint can belong to more than one group.
-        Assign action groups to this group from the <a href="/actions">Actions page</a>.</p>
+      <p class="hint-row">A Flatline group is used to establish failure condition for endpoints. An endpoint can also belong to more than one flatline group. You can assign action groups to this group from the <a href="/actions">Actions page</a>.</p>
       <form id="group-form" method="post">
         <div class="grid">
           <label class="field">

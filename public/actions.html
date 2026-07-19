@@ -47,9 +47,7 @@
         <span class="chevron">▸</span>
       </div>
       <div class="card-body" id="target-form-body">
-      <p class="hint-row">Each target defines a machine or service <em>and exactly what runs on it</em>
-        when triggered. Credentials are encrypted at rest and never sent back to the browser —
-        when editing, leave a credential blank to keep the stored value.</p>
+      <p class="hint-row">Each target defines a machine or service and exactly what runs on it when triggered. Credentials are encrypted at rest and never sent back to the browser. When adding or updating, leave the credential blank to keep the stored value.</p>
       <form id="target-form" method="post">
         <div class="grid">
           <label class="field">
@@ -121,18 +119,13 @@ sudo chmod 440 /etc/sudoers.d/flatline
           <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
             <input type="text" name="ssh_command" maxlength="10000" placeholder="sudo shutdown -h +0">
           </label>
-          <p class="hint-row" style="margin-top:10px">If the command needs <code>sudo</code>, the cleanest fix is
-            passwordless sudo for it on the host (<code>NOPASSWD:</code> in sudoers) — nothing to store here.
-            Otherwise set a sudo password below; Flatline writes it to the command's stdin on trigger, so the
-            command must read it there itself (e.g. start it with <code>sudo -S</code>).</p>
+          <p class="hint-row" style="margin-top:10px">If the command needs <code>sudo</code>, the cleanest fix is passwordless sudo for it on the host (<code>NOPASSWD:</code> in sudoers). Otherwise set a sudo password below; Flatline writes it to the command's stdin on trigger, so the command must read it there itself (e.g. start it with <code>sudo -S</code>).</p>
           <div class="grid">
             <label class="field secret" data-secret="sudo_password"><span class="cap">Sudo password (optional) <span
                   class="secret-state"></span></span>
               <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
           </div>
-          <p class="hint-row" style="margin-top:10px">Optional restore command — run from the target's Restore
-            button to undo the command above (e.g. cancel a pending shutdown). Runs over the same connection,
-            with the sudo password above if set. Leave blank if there's nothing to undo.</p>
+          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. cancel a pending shutdown). Runs over the same connection,with the sudo password above if set. Leave blank if there's nothing to undo.</p>
           <label class="field"><span class="cap">Restore command (optional)</span>
             <input type="text" name="ssh_restore_command" maxlength="10000" placeholder="sudo shutdown -c">
           </label>
@@ -177,13 +170,11 @@ Restart-Service WinRM</pre>
                   class="secret-state"></span></span>
               <input type="password" name="winrm_password" autocomplete="new-password"></label>
           </div>
-          <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
+          <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger (Powershell)</span>
             <input type="text" name="winrm_command" maxlength="10000"
               placeholder="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
           </label>
-          <p class="hint-row" style="margin-top:10px">The command is run as a PowerShell command line.
-            Optional restore command — run from the target's Restore button to undo the command above
-            (e.g. cancel a pending shutdown). Leave blank if there's nothing to undo.</p>
+          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. cancel a pending shutdown). Leave blank if there's nothing to undo.</p>
           <label class="field"><span class="cap">Restore command (optional)</span>
             <input type="text" name="winrm_restore_command" maxlength="10000" placeholder="shutdown /a">
           </label>
@@ -241,9 +232,7 @@ Restart-Service WinRM</pre>
               <textarea name="k8s_command_body" rows="3" spellcheck="false"
                 placeholder='{"spec":{"replicas":0}}'></textarea></label>
 
-            <p class="hint-row" style="margin-top:10px">Optional restore request — run from the target's
-              Restore button to undo the command above (e.g. scale back up). Leave blank if there's
-              nothing to undo.</p>
+            <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. scale back up). Leave blank if there's nothing to undo.</p>
             <div class="grid">
               <label class="field"><span class="cap">Restore method</span>
                 <select name="k8s_restore_method">
@@ -264,7 +253,7 @@ Restart-Service WinRM</pre>
         <!-- HTTP -->
         <div class="kind-section" data-kind="http">
           <p class="hint-row">▶ On trigger: Flatline <strong>sends exactly this request</strong>
-            (method, body, and auth below) — use it for webhooks or services with their own shutdown API.</p>
+            (method, body, and auth below), use it for webhooks or services with their own shutdown API.</p>
           <div class="grid">
             <label class="field"><span class="cap">URL</span><input type="text" name="http_url" maxlength="2000"
                 placeholder="https://host/api/shutdown"></label>
@@ -299,9 +288,7 @@ Restart-Service WinRM</pre>
             <textarea name="http_body" rows="3" spellcheck="false" placeholder='{"action":"shutdown"}'></textarea>
           </label>
 
-          <p class="hint-row" style="margin-top:10px">Optional restore request — run from the target's Restore
-            button to undo the request above. Uses the same auth as the trigger request. Leave blank if there's
-            nothing to undo.</p>
+          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the request above. Uses the same auth as the trigger request. Leave blank if there's nothing to undo.</p>
           <div class="grid">
             <label class="field"><span class="cap">Restore method</span>
               <select name="http_restore_method">
@@ -343,7 +330,7 @@ Restart-Service WinRM</pre>
       <div class="card-body" id="igroup-form-body">
       <p class="hint-row">An action group is an ordered sequence of steps. On trigger the steps run
         top to bottom, each with its own timeout. Pick which Flatline groups run this action group
-        below — Flatline groups themselves are managed on the <a href="/flatline">Flatline page</a>.</p>
+        below. Flatline groups are managed on the <a href="/flatline">Flatline page</a>.</p>
       <form id="igroup-form" method="post">
         <div class="grid">
           <label class="field">
@@ -354,7 +341,7 @@ Restart-Service WinRM</pre>
             <span class="cap">If a step fails</span>
             <select name="on_failure">
               <option value="continue">Continue with the remaining steps</option>
-              <option value="stop">Stop — don't run the remaining steps</option>
+              <option value="stop">Stop! Cancel all remaining steps</option>
             </select>
           </label>
         </div>

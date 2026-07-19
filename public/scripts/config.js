@@ -419,7 +419,7 @@ $keyForm.addEventListener('submit', (e) => {
     const key = $keyForm.elements.namedItem('key').value.trim();
     if (!key) { $keyError.textContent = 'enter or generate a key first'; return; }
     if (!confirm('Re-encrypt all stored credentials with this key?\n\n' +
-      'Make sure you have it saved — without it stored credentials are unrecoverable.')) return;
+      'Make sure you have it saved, without it stored credentials are unrecoverable.')) return;
     $keyError.textContent = '';
     $keyNote.textContent = '';
     try {

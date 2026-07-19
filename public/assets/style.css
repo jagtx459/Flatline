@@ -201,10 +201,12 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
   gap: 2px;
   margin-top: 10px;
   align-items: center;
+  /* align with the latency chart's plot area (padL / padR in dashboard.js) */
+  padding-left: 44px;
+  padding-right: 10px;
 }
 .beat {
   flex: 1 1 0;
-  max-width: 8px;
   height: 18px;
   border-radius: 2px;
   background: var(--baseline);
@@ -213,6 +215,14 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
 .beat.fail { background: var(--status-critical); }
 .beat:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
 .beats-label { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
+/* caption sits under the strip, aligned with the chart's plot area */
+.beats-caption {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-top: 4px;
+  padding-left: 44px;
+  padding-right: 10px;
+}
 
 /* ---- events ---- */
 .event-row {
