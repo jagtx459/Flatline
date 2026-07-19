@@ -8,7 +8,7 @@
 
 [![License](https://img.shields.io/github/license/jagtx459/flatline?style=flat-square)](LICENSE) [![Last Commit](https://img.shields.io/github/last-commit/jagtx459/flatline?style=flat-square)](https://github.com/jagtx459/flatline/commits/main) [![Issues](https://img.shields.io/github/issues/jagtx459/flatline?style=flat-square)](https://github.com/jagtx459/flatline/issues) [![Stars](https://img.shields.io/github/stars/jagtx459/flatline?style=flat-square)](https://github.com/jagtx459/flatline/stargazers) 
 
-[![Validation & Scan](https://github.com/jagtx459/flatline/actions/workflows/ci.yml/badge.svg)](https://github.com/jagtx459/flatline/actions/workflows/ci.yml) [![Package](https://github.com/jagtx459/flatline/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/jagtx459/flatline/actions/workflows/docker-publish.yml) ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/jagtx459/flatline/total)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/jagtx459/flatline/ci.yml?style=flat-square) ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/jagtx459/flatline/docker-publish.yml?style=flat-square) ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/jagtx459/flatline/total?style=flat-square)
 
 </div>
 A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for initiating graceful shutdowns or migrations of infrastructure during a power outage to avoid data corruption and loss.  
