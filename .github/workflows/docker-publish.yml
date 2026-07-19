@@ -21,7 +21,7 @@
 #     `release` event)
 # ─────────────────────────────────────────────────────────────────────────────
 
-name: Build & Publish Docker Image
+name: Build & Publish Image
 
 on:
   release:

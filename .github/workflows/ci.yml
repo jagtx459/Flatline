@@ -7,7 +7,7 @@
 # tooling plus Trivy.
 # ─────────────────────────────────────────────────────────────────────────────
 
-name: CI
+name: Validation & Scan
 
 on:
   push:
