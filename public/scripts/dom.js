@@ -33,7 +33,7 @@ export function clear(node) {
 /** Plain enabled/disabled label for things with no live health/state to show
  *  (Flatline groups, action groups) — just the on/off switch, no dot. */
 export function enabledPill(enabled) {
-    return el('span', { class: `pill ${enabled ? 'unknown' : 'disabled'}` }, enabled ? 'ENABLED' : 'DISABLED');
+    return el('span', { class: `pill ${enabled ? 'up' : 'disabled'}` }, enabled ? 'ENABLED' : 'DISABLED');
 }
 
 /** Wires up a click-to-toggle card section (header + body), collapsed by

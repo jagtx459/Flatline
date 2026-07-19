@@ -10,7 +10,7 @@ import { recordTargetActivity } from './targetHealth.js';
  * group's grace period, its assigned action groups trigger.
  *
  * The actual action execution is deliberately a stub for now — see
- * triggerActions() — the connectors (SSH/RDP/K8s/HTTP) come in a later phase.
+ * triggerActions() — the connectors (SSH/WinRM/K8s/HTTP) come in a later phase.
  */
 
 const EVAL_INTERVAL_MS = 5000;

@@ -7,12 +7,13 @@
   <title>Flatline — Actions</title>
   <link rel="stylesheet" href="/assets/style.css">
   <link rel="icon" type="image/png" href="/assets/Logo.png">
+  <script>try{var t=localStorage.getItem('flatline.theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t;}catch(e){}</script>
 </head>
 
 <body>
   <div class="container">
     <header class="site">
-      <span class="brand"><img src="/assets/Logo.png" alt="Flatline logo">FLATLINE</span>
+      <span class="brand"><img class="logo-light" src="/assets/Logo.png" alt="Flatline logo"><img class="logo-dark" src="/assets/LogoDark.png" alt="Flatline logo">FLATLINE</span>
       <nav>
         <a href="/">Dashboard</a>
         <a href="/flatline">Flatline</a>
@@ -27,6 +28,7 @@
               d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.22.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z">
             </path></svg>
         </a>
+        <button type="button" class="icon-link" id="header-theme" title="Toggle light / dark mode" aria-label="Toggle light / dark mode"></button>
         <button type="button" class="btn ghost small" id="header-logout" style="display:none">Log out</button>
       </div>
     </header>
@@ -47,9 +49,7 @@
         <span class="chevron">▸</span>
       </div>
       <div class="card-body" id="target-form-body">
-      <p class="hint-row">Each target defines a machine or service <em>and exactly what runs on it</em>
-        when triggered. Credentials are encrypted at rest and never sent back to the browser —
-        when editing, leave a credential blank to keep the stored value.</p>
+      <p class="hint-row">Each target defines a machine or service and exactly what runs on it when triggered. Credentials are encrypted at rest and never sent back to the browser. When adding or updating, leave the credential blank to keep the stored value.</p>
       <form id="target-form" method="post">
         <div class="grid">
           <label class="field">
@@ -60,7 +60,7 @@
             <span class="cap">Connection type</span>
             <select name="kind" id="t-kind">
               <option value="ssh">SSH</option>
-              <option value="rdp">RDP (Windows)</option>
+              <option value="winrm">WinRM (Windows)</option>
               <option value="k8s">Kubernetes cluster</option>
               <option value="http">HTTP(S) endpoint</option>
             </select>
@@ -72,6 +72,25 @@
           <p class="hint-row">▶ On trigger: Flatline connects over SSH with these credentials and
             <strong>runs the command below</strong> on the host.
           </p>
+          <details class="setup-help">
+            <summary>Set up a Linux account for this</summary>
+            <div class="help-body">
+              <p>Create a dedicated user that can run the shutdown command without a password
+                prompt (so nothing privileged needs storing here). Run as root / with sudo on the
+                target machine:</p>
+              <pre>sudo useradd -m -s /bin/bash flatline
+sudo passwd flatline               # set a password, or use an SSH key instead
+
+# Let it run shutdown without a sudo password:
+echo 'flatline ALL=(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown' \
+  | sudo tee /etc/sudoers.d/flatline
+sudo chmod 440 /etc/sudoers.d/flatline
+
+# (recommended) add your Flatline SSH public key to
+# /home/flatline/.ssh/authorized_keys  — chmod 700 the .ssh dir, 600 the file</pre>
+              <p>Then set Username <code>flatline</code> and command <code>sudo shutdown -h +0</code>.</p>
+            </div>
+          </details>
           <div class="grid">
             <label class="field"><span class="cap">Host</span><input type="text" name="ssh_host" maxlength="2000"
                 placeholder="192.168.1.50"></label>
@@ -102,46 +121,64 @@
           <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
             <input type="text" name="ssh_command" maxlength="10000" placeholder="sudo shutdown -h +0">
           </label>
-          <p class="hint-row" style="margin-top:10px">If the command needs <code>sudo</code>, the cleanest fix is
-            passwordless sudo for it on the host (<code>NOPASSWD:</code> in sudoers) — nothing to store here.
-            Otherwise set a sudo password below; Flatline writes it to the command's stdin on trigger, so the
-            command must read it there itself (e.g. start it with <code>sudo -S</code>).</p>
+          <p class="hint-row" style="margin-top:10px">If the command needs <code>sudo</code>, the cleanest fix is passwordless sudo for it on the host (<code>NOPASSWD:</code> in sudoers). Otherwise set a sudo password below; Flatline writes it to the command's stdin on trigger, so the command must read it there itself (e.g. start it with <code>sudo -S</code>).</p>
           <div class="grid">
             <label class="field secret" data-secret="sudo_password"><span class="cap">Sudo password (optional) <span
                   class="secret-state"></span></span>
               <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
           </div>
-          <p class="hint-row" style="margin-top:10px">Optional restore command — run from the target's Restore
-            button to undo the command above (e.g. cancel a pending shutdown). Runs over the same connection,
-            with the sudo password above if set. Leave blank if there's nothing to undo.</p>
+          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. cancel a pending shutdown). Runs over the same connection,with the sudo password above if set. Leave blank if there's nothing to undo.</p>
           <label class="field"><span class="cap">Restore command (optional)</span>
             <input type="text" name="ssh_restore_command" maxlength="10000" placeholder="sudo shutdown -c">
           </label>
         </div>
 
-        <!-- RDP -->
-        <div class="kind-section" data-kind="rdp">
-          <p class="hint-row">▶ On trigger: Flatline signs in to the Windows host with these
-            credentials (via remote PowerShell/WinRM — the RDP details identify the machine and login)
-            and <strong>runs the command below</strong>.</p>
+        <!-- WinRM -->
+        <div class="kind-section" data-kind="winrm">
+          <p class="hint-row">▶ On trigger: Flatline signs in to the Windows host over <strong>WinRM</strong>
+            with these credentials and <strong>runs the command below</strong> via remote PowerShell.
+            Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>); the default port is
+            5985. Works with a local or domain account (NTLM).</p>
+          <details class="setup-help">
+            <summary>Set up a Windows account for this</summary>
+            <div class="help-body">
+              <p>Recommended: create a dedicated local admin account rather than using a Microsoft
+                account (whose identity over WinRM/NTLM is unreliable). Run in an <strong>elevated
+                PowerShell</strong> on the target machine:</p>
+              <pre>net user flatline * /add                     # create the user (prompts for a password)
+net localgroup Administrators flatline /add  # WinRM requires admin rights
+Enable-PSRemoting -Force                     # turn on WinRM / PowerShell remoting
+
+# Workgroup (non-domain) machines only: let local accounts sign in remotely
+# with full rights, otherwise you get "Access is denied":
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+  -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force
+Restart-Service WinRM</pre>
+              <p>Then set Username <code>flatline</code>, leave Domain blank, and keep port 5985.</p>
+            </div>
+          </details>
           <div class="grid">
-            <label class="field"><span class="cap">Host</span><input type="text" name="rdp_host" maxlength="2000"
+            <label class="field"><span class="cap">Host</span><input type="text" name="winrm_host" maxlength="2000"
                 placeholder="192.168.1.60"></label>
-            <label class="field"><span class="cap">Port</span><input type="number" name="rdp_port" min="1" max="65535"
-                value="3389"></label>
+            <label class="field"><span class="cap">WinRM port</span><input type="number" name="winrm_port" min="1" max="65535"
+                value="5985"></label>
+            <label class="field"><span class="cap">Domain (optional)</span><input type="text" name="winrm_domain"
+                maxlength="2000"></label>
           </div>
           <div class="grid">
-            <label class="field"><span class="cap">Domain (optional)</span><input type="text" name="rdp_domain"
-                maxlength="2000"></label>
-            <label class="field"><span class="cap">Username</span><input type="text" name="rdp_username"
+            <label class="field"><span class="cap">Username</span><input type="text" name="winrm_username"
                 maxlength="2000" autocomplete="off"></label>
             <label class="field secret" data-secret="password"><span class="cap">Password <span
                   class="secret-state"></span></span>
-              <input type="password" name="rdp_password" autocomplete="new-password"></label>
+              <input type="password" name="winrm_password" autocomplete="new-password"></label>
           </div>
-          <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
-            <input type="text" name="rdp_command" maxlength="10000"
-              value="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
+          <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger (Powershell)</span>
+            <input type="text" name="winrm_command" maxlength="10000"
+              placeholder="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
+          </label>
+          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. cancel a pending shutdown). Leave blank if there's nothing to undo.</p>
+          <label class="field"><span class="cap">Restore command (optional)</span>
+            <input type="text" name="winrm_restore_command" maxlength="10000" placeholder="shutdown /a">
           </label>
         </div>
 
@@ -197,9 +234,7 @@
               <textarea name="k8s_command_body" rows="3" spellcheck="false"
                 placeholder='{"spec":{"replicas":0}}'></textarea></label>
 
-            <p class="hint-row" style="margin-top:10px">Optional restore request — run from the target's
-              Restore button to undo the command above (e.g. scale back up). Leave blank if there's
-              nothing to undo.</p>
+            <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. scale back up). Leave blank if there's nothing to undo.</p>
             <div class="grid">
               <label class="field"><span class="cap">Restore method</span>
                 <select name="k8s_restore_method">
@@ -220,7 +255,7 @@
         <!-- HTTP -->
         <div class="kind-section" data-kind="http">
           <p class="hint-row">▶ On trigger: Flatline <strong>sends exactly this request</strong>
-            (method, body, and auth below) — use it for webhooks or services with their own shutdown API.</p>
+            (method, body, and auth below), use it for webhooks or services with their own shutdown API.</p>
           <div class="grid">
             <label class="field"><span class="cap">URL</span><input type="text" name="http_url" maxlength="2000"
                 placeholder="https://host/api/shutdown"></label>
@@ -255,9 +290,7 @@
             <textarea name="http_body" rows="3" spellcheck="false" placeholder='{"action":"shutdown"}'></textarea>
           </label>
 
-          <p class="hint-row" style="margin-top:10px">Optional restore request — run from the target's Restore
-            button to undo the request above. Uses the same auth as the trigger request. Leave blank if there's
-            nothing to undo.</p>
+          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the request above. Uses the same auth as the trigger request. Leave blank if there's nothing to undo.</p>
           <div class="grid">
             <label class="field"><span class="cap">Restore method</span>
               <select name="http_restore_method">
@@ -282,6 +315,7 @@
           <button type="submit" class="btn" id="target-submit">Add target</button>
           <button type="button" class="btn ghost" id="target-test">Test connection</button>
           <button class="btn ghost" id="target-cancel" style="display:none">Cancel</button>
+          <button type="button" class="btn ghost" id="target-reset">Reset</button>
           <span class="note" id="target-save-note"></span>
           <span class="note" id="target-test-result"></span>
           <span class="error" id="target-error"></span>
@@ -298,7 +332,7 @@
       <div class="card-body" id="igroup-form-body">
       <p class="hint-row">An action group is an ordered sequence of steps. On trigger the steps run
         top to bottom, each with its own timeout. Pick which Flatline groups run this action group
-        below — Flatline groups themselves are managed on the <a href="/flatline">Flatline page</a>.</p>
+        below. Flatline groups are managed on the <a href="/flatline">Flatline page</a>.</p>
       <form id="igroup-form" method="post">
         <div class="grid">
           <label class="field">
@@ -309,7 +343,7 @@
             <span class="cap">If a step fails</span>
             <select name="on_failure">
               <option value="continue">Continue with the remaining steps</option>
-              <option value="stop">Stop — don't run the remaining steps</option>
+              <option value="stop">Stop! Cancel all remaining steps</option>
             </select>
           </label>
         </div>
@@ -334,6 +368,7 @@
         <div class="form-actions">
           <button type="submit" class="btn" id="igroup-submit">Add group</button>
           <button class="btn ghost" id="igroup-cancel" style="display:none">Cancel</button>
+          <button type="button" class="btn ghost" id="igroup-reset">Reset</button>
           <span class="note" id="igroup-save-note"></span>
           <span class="error" id="igroup-error"></span>
         </div>

@@ -185,7 +185,7 @@ function parseFlatlineGroupInput(body) {
 // is dropped, so secret material can never sneak into the plaintext column.
 const KIND_CONFIG_FIELDS = {
   ssh:  ['host', 'port', 'username', 'auth_method', 'command', 'restore_command'],
-  rdp:  ['host', 'port', 'domain', 'username', 'command'],
+  winrm: ['host', 'port', 'domain', 'username', 'command', 'restore_command'],
   k8s:  ['api_url', 'auth_method', 'action', 'command_method', 'command_path', 'command_body',
          'restore_method', 'restore_path', 'restore_body'],
   http: ['url', 'method', 'auth_scheme', 'header_name', 'username', 'body',
@@ -200,7 +200,7 @@ const K8S_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 // `sudo -S` and the host isn't set up with passwordless sudo (preferred).
 const KIND_SECRET_FIELDS = {
   ssh:  ['password', 'private_key', 'passphrase', 'sudo_password'],
-  rdp:  ['password'],
+  winrm: ['password'],
   k8s:  ['token', 'kubeconfig'],
   http: ['token', 'password']
 };
@@ -225,11 +225,10 @@ function parseInfraConfig(kind, raw) {
       cfg.auth_method ??= 'password';
       break;
     }
-    case 'rdp': {
+    case 'winrm': {
       if (!cfg.host) return 'host is required';
       if (!cfg.username) return 'username is required';
-      cfg.port = intInRange(src.port, 1, 65_535, 3389);
-      if (!cfg.command) return 'command is required — the command to run on the Windows host';
+      cfg.port = intInRange(src.port, 1, 65_535, 5985);
       break;
     }
     case 'k8s': {
@@ -573,7 +572,7 @@ async function handleApi(req, res, url) {
   if (parts[1] === 'actions' && parts[2] === 'targets' && parts[3] === 'test' && method === 'POST' && parts.length === 4) {
     const body = await readJsonBody(req);
     const kind = body?.kind;
-    if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'rdp', 'k8s', or 'http'"); return; }
+    if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'winrm', 'k8s', or 'http'"); return; }
     const cfg = parseInfraConfig(kind, body.config);
     if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
 
@@ -653,7 +652,7 @@ async function handleApi(req, res, url) {
       const name = cleanString(body?.name, 100);
       if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
       const kind = body?.kind;
-      if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'rdp', 'k8s', or 'http'"); return; }
+      if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'winrm', 'k8s', or 'http'"); return; }
       const cfg = parseInfraConfig(kind, body.config);
       if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
       const secretEnc = mergeSecrets(KIND_SECRET_FIELDS[kind], null, body.secrets);
@@ -676,7 +675,7 @@ async function handleApi(req, res, url) {
         const name = cleanString(body?.name, 100);
         if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
         const kind = body?.kind;
-        if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'rdp', 'k8s', or 'http'"); return; }
+        if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'winrm', 'k8s', or 'http'"); return; }
         const cfg = parseInfraConfig(kind, body.config);
         if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
         // Changing kind invalidates old secrets (different field set).

@@ -19,6 +19,7 @@ const $groupFormTitle = document.getElementById('group-form-title');
 const $groupError = document.getElementById('group-error');
 const $groupSubmit = document.getElementById('group-submit');
 const $groupCancel = document.getElementById('group-cancel');
+const $groupReset = document.getElementById('group-reset');
 const $groupSaveNote = document.getElementById('group-save-note');
 const $groupEndpointChecks = document.getElementById('group-endpoint-checks');
 const $groupTable = document.getElementById('group-table');
@@ -64,6 +65,7 @@ function resetGroupForm() {
   $groupFormTitle.textContent = 'Add Flatline group';
   $groupSubmit.textContent = 'Add group';
   $groupCancel.style.display = 'none';
+  $groupReset.style.display = '';
   $groupError.textContent = '';
   $groupSaveNote.textContent = '';
   renderGroupEndpointChecks();
@@ -80,6 +82,7 @@ function fillGroupForm(g) {
   $groupFormTitle.textContent = `Edit group: ${g.name}`;
   $groupSubmit.textContent = 'Save changes';
   $groupCancel.style.display = '';
+  $groupReset.style.display = 'none';
   $groupError.textContent = '';
   $groupSaveNote.textContent = '';
   groupFormSection.expand();
@@ -90,6 +93,8 @@ $groupCancel.addEventListener('click', (e) => {
   e.preventDefault();
   resetGroupForm();
 });
+
+$groupReset.addEventListener('click', () => resetGroupForm());
 
 $groupForm.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -176,6 +181,7 @@ const $formTitle = document.getElementById('form-title');
 const $formError = document.getElementById('form-error');
 const $formSubmit = document.getElementById('form-submit');
 const $formCancel = document.getElementById('form-cancel');
+const $formReset = document.getElementById('form-reset');
 const $formTest = document.getElementById('form-test');
 const $formTestResult = document.getElementById('form-test-result');
 const $formSaveNote = document.getElementById('form-save-note');
@@ -217,6 +223,7 @@ function resetForm() {
   $formTitle.textContent = 'Add Flatline endpoint';
   $formSubmit.textContent = 'Add endpoint';
   $formCancel.style.display = 'none';
+  $formReset.style.display = '';
   $formError.textContent = '';
   $formTestResult.textContent = '';
   $formSaveNote.textContent = '';
@@ -238,6 +245,7 @@ function fillForm(ep) {
   $formTitle.textContent = `Edit: ${ep.name}`;
   $formSubmit.textContent = 'Save changes';
   $formCancel.style.display = '';
+  $formReset.style.display = 'none';
   $formError.textContent = '';
   $formTestResult.textContent = '';
   $formSaveNote.textContent = '';
@@ -250,6 +258,8 @@ $formCancel.addEventListener('click', (e) => {
   e.preventDefault();
   resetForm();
 });
+
+$formReset.addEventListener('click', () => resetForm());
 
 $form.addEventListener('submit', (e) => {
   e.preventDefault();

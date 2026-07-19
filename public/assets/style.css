@@ -15,8 +15,11 @@
   --status-critical: #d03b3b;
   --accent: #2a78d6;
 }
+/* Dark palette. Applied when the OS prefers dark (unless the header toggle has
+   forced light), or when the toggle has explicitly selected dark. The two
+   selectors share one declaration list so the tokens stay in sync. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --page: #0d0d0d;
     --surface: #1a1a19;
@@ -29,6 +32,19 @@
     --series-1: #3987e5;
     --accent: #3987e5;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --series-1: #3987e5;
+  --accent: #3987e5;
 }
 
 * { box-sizing: border-box; }
@@ -61,6 +77,15 @@ header.site .brand {
   color: var(--text-primary);
 }
 header.site .brand img { height: 24px; width: auto; }
+/* Swap the wordmark to the dark-background variant, mirroring the palette logic
+   above (OS-dark unless forced light, or explicit dark). */
+header.site .brand .logo-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand .logo-light { display: none; }
+  :root:not([data-theme="light"]) .brand .logo-dark { display: inline; }
+}
+:root[data-theme="dark"] .brand .logo-light { display: none; }
+:root[data-theme="dark"] .brand .logo-dark { display: inline; }
 header.site nav { display: flex; gap: 16px; }
 header.site nav a { color: var(--text-secondary); font-weight: 500; }
 header.site nav a.active { color: var(--text-primary); border-bottom: 2px solid var(--accent); padding-bottom: 2px; }
@@ -69,6 +94,7 @@ header.site .header-actions { margin-left: auto; align-self: center; display: fl
 header.site .icon-link { display: inline-flex; color: var(--text-secondary); }
 header.site .icon-link:hover { color: var(--text-primary); }
 header.site .icon-link svg { width: 20px; height: 20px; display: block; }
+header.site button.icon-link { background: none; border: 0; padding: 0; cursor: pointer; }
 header.site .header-version { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* ---- cards ---- */
@@ -201,10 +227,12 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
   gap: 2px;
   margin-top: 10px;
   align-items: center;
+  /* align with the latency chart's plot area (padL / padR in dashboard.js) */
+  padding-left: 44px;
+  padding-right: 10px;
 }
 .beat {
   flex: 1 1 0;
-  max-width: 8px;
   height: 18px;
   border-radius: 2px;
   background: var(--baseline);
@@ -213,6 +241,14 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
 .beat.fail { background: var(--status-critical); }
 .beat:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
 .beats-label { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
+/* caption sits under the strip, aligned with the chart's plot area */
+.beats-caption {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-top: 4px;
+  padding-left: 44px;
+  padding-right: 10px;
+}
 
 /* ---- events ---- */
 .event-row {
@@ -255,8 +291,15 @@ form .grid {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px;
 }
-label.field { display: block; }
+label.field { display: flex; flex-direction: column; }
 label.field .cap { display: block; color: var(--text-secondary); font-size: 12px; margin-bottom: 3px; }
+/* Rows with a secret field carry a long "· stored ✓ (leave blank to keep)"
+   caption once a value is saved. Widen every column in those rows equally so
+   the caption stays on one line and all inputs keep a consistent width. */
+form .grid:has(> label.field.secret) { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+/* Belt-and-suspenders: if a caption still wraps (very narrow viewport), keep
+   inputs bottom-aligned across the row instead of letting one drop. */
+label.field > input, label.field > select, label.field > textarea { margin-top: auto; }
 input[type="text"], input[type="url"], input[type="number"], input[type="password"], select {
   width: 100%;
   background: var(--page);
@@ -383,6 +426,23 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 }
 .check-scroll label.check { padding: 3px 0; }
 .kind-section { margin-top: 12px; }
+/* Collapsible "how to set up an account on the target" help inside a kind-section */
+.setup-help { margin: 0 0 12px; border: 1px solid var(--gridline); border-radius: 7px; }
+.setup-help > summary {
+  cursor: pointer; list-style: none;
+  padding: 8px 10px;
+  color: var(--text-secondary); font-size: 12.5px; font-weight: 600;
+}
+.setup-help > summary::-webkit-details-marker { display: none; }
+.setup-help > summary::before { content: "▸"; display: inline-block; width: 1.1em; }
+.setup-help[open] > summary::before { content: "▾"; }
+.setup-help .help-body { padding: 0 10px 10px; }
+.setup-help .help-body p { color: var(--text-secondary); font-size: 12.5px; margin: 0 0 8px; }
+.setup-help pre {
+  background: var(--page); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 10px; margin: 0 0 8px; overflow-x: auto;
+  font: 12px/1.6 ui-monospace, Consolas, monospace; color: var(--text-primary);
+}
 textarea {
   width: 100%;
   background: var(--page);

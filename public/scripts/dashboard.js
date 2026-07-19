@@ -205,7 +205,7 @@ function endpointCard(ep) {
     ...ep.group_names.map((name) => el('span', { class: 'badge' }, `⛓ ${name}`)),
     el('span', { class: 'uptime' },
       el('div', { class: 'value' }, fmtUptime(ep.uptime_pct)),
-      el('div', { class: 'label' }, `uptime · ${ep.check_count.toLocaleString()} checks`)
+      el('div', { class: 'label' }, `latency`)
     )
   );
   card.append(head);
@@ -229,6 +229,7 @@ function endpointCard(ep) {
 // ---- heartbeat strip (one cell per recent check) ----
 
 function beatsStrip(ep) {
+  const wrap = el('div', { class: 'beats-wrap' });
   const strip = el('div', { class: 'beats', role: 'img',
     'aria-label': `Last ${ep.recent.length} checks for ${ep.name}` });
 
@@ -253,7 +254,11 @@ function beatsStrip(ep) {
   });
   strip.addEventListener('pointerleave', hideTooltip);
 
-  return strip;
+  wrap.append(strip);
+  // The range selector drives the chart only; the strip is always the last
+  // N checks. Label it so that distinction is clear.
+  wrap.append(el('div', { class: 'beats-caption' }, `last ${ep.recent.length} checks`));
+  return wrap;
 }
 
 // ---- latency history chart ----

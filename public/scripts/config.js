@@ -13,7 +13,7 @@ initHeaderAuth();
 let channels = [];
 
 const KIND_LABELS = {
-  webhook: 'Webhook', discord: 'Discord', ntfy: 'ntfy', email: 'Email'
+  webhook: 'Webhook', discord: 'Discord', ntfy: 'ntfy', email: 'Email', apprise: 'Apprise'
 };
 
 // Maps a kind's secret field -> form input name (same pattern as actions.js).
@@ -21,7 +21,8 @@ const SECRET_INPUTS = {
   webhook: { url: 'webhook_url_field', token: 'webhook_token' },
   discord: { webhook_url: 'discord_webhook_url' },
   ntfy:    { token: 'ntfy_token', password: 'ntfy_password' },
-  email:   { password: 'email_password' }
+  email:   { password: 'email_password' },
+  apprise: { urls: 'apprise_urls' }
 };
 
 const EVENTS = [
@@ -42,6 +43,7 @@ const $formTitle = document.getElementById('channel-form-title');
 const $formError = document.getElementById('channel-error');
 const $formSubmit = document.getElementById('channel-submit');
 const $formCancel = document.getElementById('channel-cancel');
+const $formReset = document.getElementById('channel-reset');
 const $formTest = document.getElementById('channel-test');
 const $formTestResult = document.getElementById('channel-test-result');
 const $formSaveNote = document.getElementById('channel-save-note');
@@ -142,6 +144,11 @@ function collectConfig(kind) {
       cfg.to = field('email_to').value;
       cfg.username = field('email_username').value;
       break;
+    case 'apprise':
+      cfg.server_url = field('apprise_server_url').value;
+      cfg.config_key = field('apprise_config_key').value;
+      cfg.tags = field('apprise_tags').value;
+      break;
   }
   return cfg;
 }
@@ -162,6 +169,7 @@ function resetChannelForm() {
   $formTitle.textContent = 'Add notification channel';
   $formSubmit.textContent = 'Add channel';
   $formCancel.style.display = 'none';
+  $formReset.style.display = '';
   $formError.textContent = '';
   $formSaveNote.textContent = '';
   renderEventChecks(DEFAULT_EVENTS);
@@ -196,6 +204,11 @@ function fillChannelForm(c) {
       field('email_to').value = cfg.to ?? '';
       field('email_username').value = cfg.username ?? '';
       break;
+    case 'apprise':
+      field('apprise_server_url').value = cfg.server_url ?? '';
+      field('apprise_config_key').value = cfg.config_key ?? '';
+      field('apprise_tags').value = cfg.tags ?? '';
+      break;
   }
 
   renderSecretStates(c.kind, c.secret_fields);
@@ -203,6 +216,7 @@ function fillChannelForm(c) {
   $formTitle.textContent = `Edit channel: ${c.name}`;
   $formSubmit.textContent = 'Save changes';
   $formCancel.style.display = '';
+  $formReset.style.display = 'none';
   channelFormSection.expand();
   $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -211,6 +225,8 @@ $formCancel.addEventListener('click', (e) => {
   e.preventDefault();
   resetChannelForm();
 });
+
+$formReset.addEventListener('click', () => resetChannelForm());
 
 $form.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -274,16 +290,15 @@ function eventSummary(cfg) {
  *  most recent test or real send rather than a periodic background check. */
 function channelStatusPill(c) {
   if (!c.enabled) {
-    return el('span', { class: 'pill disabled' }, el('span', { class: 'dot' }), 'DISABLED');
+    return el('span', { class: 'pill disabled' }, 'DISABLED');
   }
   if (!c.last_result) {
-    return el('span', { class: 'pill unknown', title: 'Enabled — no test or delivery attempt yet' },
-      el('span', { class: 'dot' }), 'ENABLED');
+    return el('span', { class: 'pill up', title: 'Enabled — no test or delivery attempt yet' }, 'ENABLED');
   }
   const title = `${fmtDateTime(c.last_result.ts)} (${c.last_result.trigger}) — ${c.last_result.message}`;
   return c.last_result.ok
-    ? el('span', { class: 'pill up', title }, el('span', { class: 'dot' }), 'OK')
-    : el('span', { class: 'pill down', title }, el('span', { class: 'dot' }), 'FAILED');
+    ? el('span', { class: 'pill up', title }, 'OK')
+    : el('span', { class: 'pill down', title }, 'FAILED');
 }
 
 function lastActivityText(c) {
@@ -297,7 +312,7 @@ function renderChannelTable() {
   if (channels.length === 0) {
     $channelTable.append(el('div', { class: 'empty' },
       el('div', { class: 'big' }, 'No notification channels yet'),
-      el('div', {}, 'Add a webhook, Discord, ntfy, or email channel using the form below.')));
+      el('div', {}, 'Add a webhook, Discord, ntfy, email, or Apprise channel using the form below.')));
     return;
   }
 
@@ -415,7 +430,7 @@ $keyForm.addEventListener('submit', (e) => {
     const key = $keyForm.elements.namedItem('key').value.trim();
     if (!key) { $keyError.textContent = 'enter or generate a key first'; return; }
     if (!confirm('Re-encrypt all stored credentials with this key?\n\n' +
-      'Make sure you have it saved — without it stored credentials are unrecoverable.')) return;
+      'Make sure you have it saved, without it stored credentials are unrecoverable.')) return;
     $keyError.textContent = '';
     $keyNote.textContent = '';
     try {

@@ -1,6 +1,7 @@
 import https from 'node:https';
 import { Client as SshClient } from 'ssh2';
 import { parse as parseYaml } from 'yaml';
+import { winrmExec } from './winrm.js';
 
 /**
  * Executes (or connectivity-tests) action targets. Three entry points:
@@ -14,9 +15,9 @@ import { parse as parseYaml } from 'yaml';
  *     'drain' undo is just "uncordon everything" and 'custom' undo is
  *     whatever restore command the target owner configured.
  *
- * RDP/WinRM execution is intentionally not implemented yet (no dependency-
- * -free WinRM path); both entry points return a clear "not implemented"
- * result for 'rdp' so on_failure (continue/stop) still behaves predictably.
+ * The 'winrm' kind runs commands on a Windows host over WinRM (NTLMv2, see
+ * winrm.js): the config identifies the machine and login, and the command
+ * runs via remote PowerShell.
  */
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -27,7 +28,7 @@ export async function testTarget(kind, config, secrets) {
     case 'ssh': return testSsh(config, secrets);
     case 'k8s': return testK8s(config, secrets);
     case 'http': return runHttp(config, secrets, TEST_TIMEOUT_MS);
-    case 'rdp': return { ok: false, message: 'RDP/WinRM connectivity testing is not implemented yet.' };
+    case 'winrm': return testWinrm(config, secrets);
     default: return { ok: false, message: `unknown kind '${kind}'` };
   }
 }
@@ -37,7 +38,7 @@ export async function runStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT
     case 'ssh': return runSsh(config, secrets, timeoutMs);
     case 'http': return runHttp(config, secrets, timeoutMs);
     case 'k8s': return runK8s(config, secrets, timeoutMs);
-    case 'rdp': return { ok: false, message: 'RDP/WinRM execution is not implemented yet.' };
+    case 'winrm': return runWinrm(config, secrets, timeoutMs);
     default: return { ok: false, message: `unknown kind '${kind}'` };
   }
 }
@@ -50,6 +51,7 @@ export async function restoreStep(kind, config, secrets, timeoutMs = DEFAULT_TIM
     case 'ssh': return restoreSsh(config, secrets, timeoutMs);
     case 'http': return restoreHttp(config, secrets, timeoutMs);
     case 'k8s': return restoreK8s(config, secrets, timeoutMs);
+    case 'winrm': return restoreWinrm(config, secrets, timeoutMs);
     default: return { ok: false, message: `restore is not supported for '${kind}' targets` };
   }
 }
@@ -157,6 +159,53 @@ async function restoreSsh(config, secrets, timeoutMs) {
     return { ok: false, message: err.message };
   } finally {
     conn?.end();
+  }
+}
+
+// ---------------- WinRM ----------------
+// See winrm.js — commands run on the Windows host via remote PowerShell over
+// WinRM (NTLMv2 auth, message sealing). The stored password is the only secret.
+
+function formatRun(code, output, noun) {
+  const out = output.trim();
+  return {
+    ok: code === 0,
+    message: code === 0
+      ? (out || `${noun} completed`)
+      : `${noun} exited ${code}${out ? `: ${out.slice(0, 500)}` : ''}`
+  };
+}
+
+async function testWinrm(config, secrets) {
+  try {
+    const { code } = await winrmExec(config, secrets, 'Write-Output flatline-ok', TEST_TIMEOUT_MS);
+    return code === 0
+      ? { ok: true, message: `connected to ${config.username}@${config.host}:${config.port ?? 5985} (WinRM)` }
+      : { ok: false, message: `WinRM reachable but the test command exited ${code}` };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+}
+
+async function runWinrm(config, secrets, timeoutMs) {
+  if (!config.command) return { ok: false, message: 'no command configured' };
+  try {
+    const { code, stdout, stderr } = await winrmExec(config, secrets, config.command, timeoutMs);
+    return formatRun(code, stdout || stderr, 'command');
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+}
+
+/** Undoes a prior runWinrm() by running the target's optional restore command
+ *  over WinRM with the same credentials. */
+async function restoreWinrm(config, secrets, timeoutMs) {
+  if (!config.restore_command) return { ok: false, message: 'no restore command configured for this target' };
+  try {
+    const { code, stdout, stderr } = await winrmExec(config, secrets, config.restore_command, timeoutMs);
+    return formatRun(code, stdout || stderr, 'restore command');
+  } catch (err) {
+    return { ok: false, message: err.message };
   }
 }
 

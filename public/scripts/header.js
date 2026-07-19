@@ -1,4 +1,5 @@
 import { getAuthStatus, logout, getVersion } from './api.js';
+import { initThemeToggle } from './theme.js';
 
 /** Re-checks whether a login is required and shows/hides the header's Log out button accordingly. */
 export async function refreshHeaderAuth() {
@@ -27,6 +28,7 @@ async function initHeaderVersion() {
 /** Wires the header's Log out button once and does the initial visibility check. */
 export function initHeaderAuth() {
   void initHeaderVersion();
+  initThemeToggle();
 
   const btn = document.getElementById('header-logout');
   if (!btn) return;
