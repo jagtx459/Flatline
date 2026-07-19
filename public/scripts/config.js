@@ -13,7 +13,7 @@ initHeaderAuth();
 let channels = [];
 
 const KIND_LABELS = {
-  webhook: 'Webhook', discord: 'Discord', ntfy: 'ntfy', email: 'Email'
+  webhook: 'Webhook', discord: 'Discord', ntfy: 'ntfy', email: 'Email', apprise: 'Apprise'
 };
 
 // Maps a kind's secret field -> form input name (same pattern as actions.js).
@@ -21,7 +21,8 @@ const SECRET_INPUTS = {
   webhook: { url: 'webhook_url_field', token: 'webhook_token' },
   discord: { webhook_url: 'discord_webhook_url' },
   ntfy:    { token: 'ntfy_token', password: 'ntfy_password' },
-  email:   { password: 'email_password' }
+  email:   { password: 'email_password' },
+  apprise: { urls: 'apprise_urls' }
 };
 
 const EVENTS = [
@@ -143,6 +144,11 @@ function collectConfig(kind) {
       cfg.to = field('email_to').value;
       cfg.username = field('email_username').value;
       break;
+    case 'apprise':
+      cfg.server_url = field('apprise_server_url').value;
+      cfg.config_key = field('apprise_config_key').value;
+      cfg.tags = field('apprise_tags').value;
+      break;
   }
   return cfg;
 }
@@ -197,6 +203,11 @@ function fillChannelForm(c) {
       field('email_from').value = cfg.from ?? '';
       field('email_to').value = cfg.to ?? '';
       field('email_username').value = cfg.username ?? '';
+      break;
+    case 'apprise':
+      field('apprise_server_url').value = cfg.server_url ?? '';
+      field('apprise_config_key').value = cfg.config_key ?? '';
+      field('apprise_tags').value = cfg.tags ?? '';
       break;
   }
 
@@ -301,7 +312,7 @@ function renderChannelTable() {
   if (channels.length === 0) {
     $channelTable.append(el('div', { class: 'empty' },
       el('div', { class: 'big' }, 'No notification channels yet'),
-      el('div', {}, 'Add a webhook, Discord, ntfy, or email channel using the form below.')));
+      el('div', {}, 'Add a webhook, Discord, ntfy, email, or Apprise channel using the form below.')));
     return;
   }
 

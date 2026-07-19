@@ -42,7 +42,8 @@ export const NOTIFY_CONFIG_FIELDS = {
   webhook: [],
   discord: [],
   ntfy:    ['server_url', 'topic', 'priority', 'auth_scheme', 'username'],
-  email:   ['host', 'port', 'from', 'to', 'username']
+  email:   ['host', 'port', 'from', 'to', 'username'],
+  apprise: ['server_url', 'config_key', 'tags']
 };
 
 // Secret fields per kind — stored only in the encrypted blob. Discord
@@ -52,7 +53,9 @@ export const NOTIFY_SECRET_FIELDS = {
   webhook: ['url', 'token'],
   discord: ['webhook_url'],
   ntfy:    ['token', 'password'],
-  email:   ['password']
+  email:   ['password'],
+  // Inline Apprise URLs embed tokens/passwords, so the whole set is a secret.
+  apprise: ['urls']
 };
 
 export const NOTIFY_EVENTS = [
@@ -124,6 +127,17 @@ export function parseChannelConfig(kind, raw, rawEvents, rawTemplates) {
       if (addrErr) return addrErr;
       break;
     }
+    case 'apprise': {
+      if (!cfg.server_url) return 'Apprise API server URL is required';
+      const err = checkHttpUrl(cfg.server_url, 'server_url');
+      if (err) return err;
+      // config_key names a stored config on the Apprise server (POST /notify/{key});
+      // when absent, inline URLs are sent instead. It rides in the request path.
+      if (cfg.config_key !== undefined && !/^[A-Za-z0-9_.-]{1,64}$/.test(cfg.config_key)) {
+        return 'config key may only contain letters, digits, . - and _';
+      }
+      break;
+    }
   }
 
   const events = [];
@@ -184,6 +198,9 @@ export function checkChannelSecrets(kind, cfg, secrets) {
   if (kind === 'ntfy') {
     if (cfg?.auth_scheme === 'token' && !secrets.token) return 'access token is required for token auth';
     if (cfg?.auth_scheme === 'basic' && !secrets.password) return 'password is required for username/password auth';
+  }
+  if (kind === 'apprise') {
+    if (!cfg?.config_key && !secrets.urls) return 'either a config key or one or more Apprise URLs are required';
   }
   return null;
 }
@@ -285,6 +302,7 @@ async function sendToChannel(kind, cfg, secrets, ctx) {
       case 'discord': return await postJson(secrets.webhook_url, { username: 'Flatline', content: `**${title}**\n${body}`.slice(0, 1900) });
       case 'ntfy': return await sendNtfy(cfg, secrets, title, body);
       case 'email': return await sendEmail(cfg, secrets, title, body);
+      case 'apprise': return await sendApprise(cfg, secrets, title, body);
       default: return { ok: false, message: `unknown channel kind '${kind}'` };
     }
   } catch (err) {
@@ -369,4 +387,22 @@ async function sendNtfy(cfg, secrets, title, body) {
   return res.ok
     ? { ok: true, message: `delivered (${res.status})` }
     : { ok: false, message: `${res.status}${text ? `: ${text.slice(0, 200)}` : ''}` };
+}
+
+// Apprise API (github.com/caronc/apprise-api). A config_key posts to a stored
+// config (/notify/{key}); otherwise the inline URLs are posted statelessly
+// (/notify). Both take the same JSON body; Apprise fans out to every service.
+async function sendApprise(cfg, secrets, title, body) {
+  const base = (cfg.server_url ?? '').replace(/\/+$/, '');
+  const payload = { title, body, format: 'text' };
+  if (cfg.tags) payload.tag = cfg.tags;
+  let url;
+  if (cfg.config_key) {
+    url = `${base}/notify/${encodeURIComponent(cfg.config_key)}`;
+  } else {
+    url = `${base}/notify`;
+    // The textarea stores one URL per line; Apprise wants them comma-separated.
+    payload.urls = (secrets.urls ?? '').split(/[\s,]+/).filter(Boolean).join(',');
+  }
+  return postJson(url, payload);
 }

@@ -15,8 +15,11 @@
   --status-critical: #d03b3b;
   --accent: #2a78d6;
 }
+/* Dark palette. Applied when the OS prefers dark (unless the header toggle has
+   forced light), or when the toggle has explicitly selected dark. The two
+   selectors share one declaration list so the tokens stay in sync. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --page: #0d0d0d;
     --surface: #1a1a19;
@@ -29,6 +32,19 @@
     --series-1: #3987e5;
     --accent: #3987e5;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --series-1: #3987e5;
+  --accent: #3987e5;
 }
 
 * { box-sizing: border-box; }
@@ -61,6 +77,15 @@ header.site .brand {
   color: var(--text-primary);
 }
 header.site .brand img { height: 24px; width: auto; }
+/* Swap the wordmark to the dark-background variant, mirroring the palette logic
+   above (OS-dark unless forced light, or explicit dark). */
+header.site .brand .logo-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand .logo-light { display: none; }
+  :root:not([data-theme="light"]) .brand .logo-dark { display: inline; }
+}
+:root[data-theme="dark"] .brand .logo-light { display: none; }
+:root[data-theme="dark"] .brand .logo-dark { display: inline; }
 header.site nav { display: flex; gap: 16px; }
 header.site nav a { color: var(--text-secondary); font-weight: 500; }
 header.site nav a.active { color: var(--text-primary); border-bottom: 2px solid var(--accent); padding-bottom: 2px; }
@@ -69,6 +94,7 @@ header.site .header-actions { margin-left: auto; align-self: center; display: fl
 header.site .icon-link { display: inline-flex; color: var(--text-secondary); }
 header.site .icon-link:hover { color: var(--text-primary); }
 header.site .icon-link svg { width: 20px; height: 20px; display: block; }
+header.site button.icon-link { background: none; border: 0; padding: 0; cursor: pointer; }
 header.site .header-version { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* ---- cards ---- */

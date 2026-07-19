@@ -64,6 +64,9 @@ function applyResult(ep, rt, result) {
   } else {
     rt.consecFail += 1;
     rt.consecOk = 0;
+    // Surface every failed check in the container logs (state transitions are
+    // logged separately below); repeats while down make the outage visible.
+    console.warn(`[poller] ${ep.name} check failed (${rt.consecFail}x): ${result.error ?? 'no response'}`);
   }
 
   let next = null;
