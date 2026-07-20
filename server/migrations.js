@@ -159,6 +159,63 @@ export const migrations = [
         DROP TABLE action_group_members_backup;
       `);
     }
+  },
+  {
+    version: 3,
+    name: 'group action-group steps into stages',
+    up(db) {
+      // An action group is now an ordered list of stages; the steps in a stage
+      // run simultaneously. A stage decides on its own whether it counts as
+      // failed (pass_rule: 'any' = fail if any step fails, 'all' = fail only if
+      // every step fails) and what that means for the rest of the sequence
+      // (on_failure; NULL inherits the action group's on_failure).
+      db.exec(`
+        CREATE TABLE action_group_stages (
+          action_group_id INTEGER NOT NULL REFERENCES action_groups(id) ON DELETE CASCADE,
+          stage           INTEGER NOT NULL,
+          pass_rule       TEXT NOT NULL DEFAULT 'any' CHECK (pass_rule IN ('any', 'all')),
+          on_failure      TEXT CHECK (on_failure IN ('stop', 'continue')),
+          PRIMARY KEY (action_group_id, stage)
+        );
+
+        ALTER TABLE action_group_members ADD COLUMN stage INTEGER NOT NULL DEFAULT 0;
+
+        -- Preserve today's behaviour: each existing step becomes its own
+        -- single-step stage, so groups keep running strictly top to bottom.
+        -- position already numbers a group's steps 0..n-1, so reuse it.
+        UPDATE action_group_members SET stage = position;
+        INSERT INTO action_group_stages (action_group_id, stage, pass_rule, on_failure)
+          SELECT action_group_id, position, 'any', NULL FROM action_group_members;
+      `);
+    }
+  },
+  {
+    version: 4,
+    name: 'allow a target to be reused across stages',
+    up(db) {
+      // Widen the members primary key from (group, target) to (group, target,
+      // stage) so the same target can appear in more than one stage — still at
+      // most once per stage. SQLite can't alter a PK in place, so the table is
+      // rebuilt. Nothing has a foreign key to action_group_members, so dropping
+      // it cascades nowhere; the reinserted rows still reference live groups and
+      // targets, so those foreign keys stay valid.
+      db.exec(`
+        CREATE TABLE action_group_members_new (
+          action_group_id INTEGER NOT NULL REFERENCES action_groups(id) ON DELETE CASCADE,
+          target_id       INTEGER NOT NULL REFERENCES action_targets(id) ON DELETE CASCADE,
+          position        INTEGER NOT NULL DEFAULT 0,
+          timeout_seconds INTEGER NOT NULL DEFAULT 60,
+          stage           INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (action_group_id, target_id, stage)
+        );
+        INSERT INTO action_group_members_new
+            (action_group_id, target_id, position, timeout_seconds, stage)
+          SELECT action_group_id, target_id, position, timeout_seconds, stage
+          FROM action_group_members;
+        DROP TABLE action_group_members;
+        ALTER TABLE action_group_members_new RENAME TO action_group_members;
+      `);
+    }
   }
 ];
 

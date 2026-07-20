@@ -471,11 +471,35 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .step-row .step-num { color: var(--text-muted); font-variant-numeric: tabular-nums; width: 20px; }
 .step-row .step-name { flex: 1; font-weight: 600; }
 .step-row .step-name .hint { font-weight: 400; color: var(--text-muted); }
+.step-row .step-name .step-reuse { font-weight: 400; font-size: 12px; color: var(--accent); }
 .step-row .step-timeout { width: 70px; padding: 4px 6px; }
 .step-row .step-timeout-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 12px; }
 .step-row .step-btns { display: inline-flex; gap: 4px; }
 .step-add { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
 .step-add select { width: auto; min-width: 220px; }
+
+/* stage builder (action groups): ordered stages, each of parallel steps */
+.stage-list { margin-top: 6px; }
+.stage-card {
+  border: 1px solid var(--gridline);
+  border-radius: 9px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--surface);
+}
+.stage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.stage-head .stage-title { font-weight: 600; }
+.stage-head .stage-btns { display: inline-flex; gap: 4px; }
+.stage-failure {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--gridline);
+}
+.stage-failure .stage-policy { display: inline-flex; align-items: center; gap: 6px; }
+.stage-failure .stage-select { width: auto; min-width: 150px; padding: 4px 6px; }
 .link-btn {
   background: none;
   border: none;
