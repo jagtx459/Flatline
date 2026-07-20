@@ -1,13 +1,21 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # .github/workflows/docker-publish.yml
 #
-# Cuts a GitHub Release, then builds the production Docker image and pushes
-# it to the GitHub Container Registry (GHCR).
+# Cuts a GitHub Release, then builds the production Docker image, scans it for
+# vulnerabilities, and pushes it to both the GitHub Container Registry (GHCR)
+# and Docker Hub.
 #
 # Image will be available at:
-#   ghcr.io/<owner>/<repo>:latest
-#   ghcr.io/<owner>/<repo>:<git-sha>
-#   ghcr.io/<owner>/<repo>:<version>
+#   ghcr.io/<owner>/<repo>:{latest,<version>,sha-<hash>}
+#   docker.io/<dockerhub-user>/<repo>:{latest,<version>,sha-<hash>}
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   • DOCKERHUB_USERNAME — your Docker Hub account name
+#   • DOCKERHUB_TOKEN    — a Docker Hub access token with Read/Write scope
+#                          (Docker Hub → Account Settings → Security → New Access Token)
+# GHCR uses the automatic GITHUB_TOKEN — no secret needed. The Docker Hub repo
+# is auto-created (public) on first push; create it manually first if you want
+# it private.
 #
 # Triggers:
 #   • Manual run via the Actions tab (workflow_dispatch) — creates a GitHub
@@ -38,8 +46,10 @@ env:
   REGISTRY: ghcr.io
   # github.repository resolves to  <owner>/<repo>  automatically
   IMAGE_NAME: ${{ github.repository }}
-  # Lowercased version derived at runtime (see "Lowercase image name" step)
-  IMAGE_NAME_LOWER: ""
+  # Full lowercase image refs derived at runtime (see "Compute image names" step).
+  # Declared empty here so static workflow linters see them as valid contexts.
+  GHCR_IMAGE: ""
+  DOCKERHUB_IMAGE: ""
 
 jobs:
   create-release:
@@ -77,10 +87,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      # 2. Normalise the image name to lowercase (Docker refs must be lowercase)
-      #    e.g. "MyOrg/My-Repo" → "myorg/my-repo"
-      - name: Lowercase image name
-        run: echo "IMAGE_NAME_LOWER=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      # 2. Compute lowercase image refs for both registries (Docker refs must be
+      #    lowercase). GHCR uses <owner>/<repo>; Docker Hub uses your account
+      #    name + the bare repo name.
+      - name: Compute image names
+        run: |
+          echo "GHCR_IMAGE=${{ env.REGISTRY }}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_IMAGE=docker.io/${{ secrets.DOCKERHUB_USERNAME }}/$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
       # 3. Set up Docker Buildx (needed for cache support)
       - name: Set up Docker Buildx
@@ -94,6 +107,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 4b. Log in to Docker Hub using the account token stored in secrets
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # 5. Read the version straight from package.json, so the image tag
       #    always matches what's actually shipped — no separate place to
       #    remember to bump.
@@ -101,8 +121,8 @@ jobs:
         id: pkg
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      # 6. Derive image tags and labels
-      #    Produces:
+      # 6. Derive image tags and labels for BOTH registries.
+      #    Produces, for each registry:
       #      - latest             (every release build)
       #      - <package.json ver> (e.g. 0.1.0)
       #      - sha-<short-hash>   (always, for traceability back to a commit)
@@ -110,19 +130,40 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=raw,value=latest
             type=raw,value=${{ steps.pkg.outputs.version }}
             type=sha,prefix=sha-,format=short
 
-      # 7. Build and push the image
-      - name: Build and push Docker image
+      # 7. Build the image and load it into the local Docker daemon (no push
+      #    yet) so it can be scanned before it ships anywhere.
+      - name: Build and load image
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          load: true
+          push: false
           no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # 8. Scan the built image (base OS packages + app layers) and fail on any
+      #    fixable HIGH/CRITICAL finding — a vulnerable image never gets pushed.
+      #    All tags point at the same image, so scanning one ref covers all.
+      #    Same scan definition the weekly re-scan uses (composite action).
+      - name: Scan image with Trivy
+        uses: ./.github/actions/scan-image
+        with:
+          image-ref: ${{ env.GHCR_IMAGE }}:${{ steps.pkg.outputs.version }}
+
+      # 9. Scan passed — push every tag (both registries) from the already-built
+      #    local image, so there's no second build.
+      - name: Push image
+        run: |
+          echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
+            [ -n "$tag" ] && docker push "$tag"
+          done
