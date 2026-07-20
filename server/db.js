@@ -278,13 +278,23 @@ export function listActionGroups() {
     FROM action_groups g ORDER BY g.id
   `).all();
   const members = db.prepare(`
-    SELECT action_group_id, target_id, timeout_seconds
-    FROM action_group_members ORDER BY position
+    SELECT action_group_id, target_id, stage, timeout_seconds
+    FROM action_group_members ORDER BY stage, position
+  `).all();
+  const stages = db.prepare(`
+    SELECT action_group_id, stage, pass_rule, on_failure
+    FROM action_group_stages ORDER BY stage
   `).all();
   for (const g of groups) {
-    g.steps = members
-      .filter((m) => m.action_group_id === g.id)
-      .map((m) => ({ target_id: m.target_id, timeout_seconds: m.timeout_seconds }));
+    g.stages = stages
+      .filter((s) => s.action_group_id === g.id)
+      .map((s) => ({
+        pass_rule: s.pass_rule,
+        on_failure: s.on_failure, // null = inherit the group's on_failure
+        steps: members
+          .filter((m) => m.action_group_id === g.id && m.stage === s.stage)
+          .map((m) => ({ target_id: m.target_id, timeout_seconds: m.timeout_seconds }))
+      }));
   }
   return groups;
 }
@@ -297,14 +307,14 @@ export function createActionGroup(g) {
   const r = db.prepare('INSERT INTO action_groups (name, on_failure, enabled, created_at) VALUES (?, ?, ?, ?)')
     .run(g.name, g.on_failure, g.enabled, Date.now());
   const id = Number(r.lastInsertRowid);
-  setActionGroupSteps(id, g.steps);
+  setActionGroupStages(id, g.stages);
   return getActionGroup(id);
 }
 
 export function updateActionGroup(id, g) {
   db.prepare('UPDATE action_groups SET name = ?, on_failure = ?, enabled = ? WHERE id = ?')
     .run(g.name, g.on_failure, g.enabled, id);
-  setActionGroupSteps(id, g.steps);
+  setActionGroupStages(id, g.stages);
   return getActionGroup(id);
 }
 
@@ -312,14 +322,25 @@ export function deleteActionGroup(id) {
   db.prepare('DELETE FROM action_groups WHERE id = ?').run(id);
 }
 
-/** Steps run in array order; position records the sequence. */
-function setActionGroupSteps(groupId, steps) {
+/**
+ * Stages run in array order; the steps within a stage run simultaneously.
+ * `stage` records the sequence across stages, `position` the order within one.
+ */
+function setActionGroupStages(groupId, stages) {
+  db.prepare('DELETE FROM action_group_stages WHERE action_group_id = ?').run(groupId);
   db.prepare('DELETE FROM action_group_members WHERE action_group_id = ?').run(groupId);
-  const ins = db.prepare(`
-    INSERT INTO action_group_members (action_group_id, target_id, position, timeout_seconds)
+  const insStage = db.prepare(`
+    INSERT INTO action_group_stages (action_group_id, stage, pass_rule, on_failure)
     VALUES (?, ?, ?, ?)
   `);
-  (steps ?? []).forEach((s, i) => ins.run(groupId, s.target_id, i, s.timeout_seconds));
+  const insMember = db.prepare(`
+    INSERT INTO action_group_members (action_group_id, target_id, stage, position, timeout_seconds)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  (stages ?? []).forEach((st, si) => {
+    insStage.run(groupId, si, st.pass_rule, st.on_failure ?? null);
+    (st.steps ?? []).forEach((s, pi) => insMember.run(groupId, s.target_id, si, pi, s.timeout_seconds));
+  });
 }
 
 // ---- notification channels ----

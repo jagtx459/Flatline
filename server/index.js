@@ -929,21 +929,40 @@ function parseActionGroupInput(body) {
     return "on_failure must be 'continue' (run remaining steps) or 'stop' (abort the sequence)";
   }
 
-  const steps = [];
-  if (body.steps !== undefined) {
-    if (!Array.isArray(body.steps)) return 'steps must be an array';
+  const stages = [];
+  if (body.stages !== undefined) {
+    if (!Array.isArray(body.stages)) return 'stages must be an array';
     const known = new Set(store.listActionTargets().map((t) => t.id));
-    const seen = new Set();
-    for (const raw of body.steps) {
-      const n = Number(raw?.target_id);
-      if (!Number.isInteger(n) || !known.has(n)) return 'steps contains an unknown target';
-      if (seen.has(n)) return 'steps contains the same target twice';
-      seen.add(n);
-      steps.push({ target_id: n, timeout_seconds: intInRange(raw?.timeout_seconds, 5, 3600, 60) });
+    for (const rawStage of body.stages) {
+      if (typeof rawStage !== 'object' || rawStage === null) return 'each stage must be an object';
+
+      const pass_rule = rawStage.pass_rule ?? 'any';
+      if (pass_rule !== 'any' && pass_rule !== 'all') {
+        return "stage pass_rule must be 'any' (fail if any step fails) or 'all' (fail only if all fail)";
+      }
+
+      const stageFailure = rawStage.on_failure ?? null;
+      if (stageFailure !== null && stageFailure !== 'continue' && stageFailure !== 'stop') {
+        return "stage on_failure must be 'continue', 'stop', or null to inherit the group setting";
+      }
+
+      if (!Array.isArray(rawStage.steps) || rawStage.steps.length === 0) {
+        return 'each stage must have at least one step';
+      }
+      const steps = [];
+      const seen = new Set(); // a target may appear at most once per stage, but may be reused in other stages
+      for (const raw of rawStage.steps) {
+        const n = Number(raw?.target_id);
+        if (!Number.isInteger(n) || !known.has(n)) return 'a stage contains an unknown target';
+        if (seen.has(n)) return 'a stage lists the same target twice';
+        seen.add(n);
+        steps.push({ target_id: n, timeout_seconds: intInRange(raw?.timeout_seconds, 5, 3600, 60) });
+      }
+      stages.push({ pass_rule, on_failure: stageFailure, steps });
     }
   }
 
-  return { name, on_failure, steps, enabled: body.enabled === undefined || body.enabled ? 1 : 0 };
+  return { name, on_failure, stages, enabled: body.enabled === undefined || body.enabled ? 1 : 0 };
 }
 
 /** Rotates or sets the encryption key, re-encrypting every stored blob. */

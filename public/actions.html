@@ -7,7 +7,7 @@
   <title>Flatline — Actions</title>
   <link rel="stylesheet" href="/assets/style.css">
   <link rel="icon" type="image/png" href="/assets/Logo.png">
-  <script>try{var t=localStorage.getItem('flatline.theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <script src="/scripts/theme-init.js"></script>
 </head>
 
 <body>
@@ -330,9 +330,9 @@ Restart-Service WinRM</pre>
         <span class="chevron">▸</span>
       </div>
       <div class="card-body" id="igroup-form-body">
-      <p class="hint-row">An action group is an ordered sequence of steps. On trigger the steps run
-        top to bottom, each with its own timeout. Pick which Flatline groups run this action group
-        below. Flatline groups are managed on the <a href="/flatline">Flatline page</a>.</p>
+      <p class="hint-row">An action group is an ordered list of stages. On trigger the stages run
+        top to bottom; the targets within a stage run simultaneously. Pick which Flatline groups run
+        this action group below. Flatline groups are managed on the <a href="/flatline">Flatline page</a>.</p>
       <form id="igroup-form" method="post">
         <div class="grid">
           <label class="field">
@@ -340,20 +340,17 @@ Restart-Service WinRM</pre>
             <input type="text" name="name" required maxlength="100" placeholder="Rack A / Lab VMs">
           </label>
           <label class="field" style="grid-column: span 2">
-            <span class="cap">If a step fails</span>
+            <span class="cap">If a stage fails (default)</span>
             <select name="on_failure">
-              <option value="continue">Continue with the remaining steps</option>
-              <option value="stop">Stop! Cancel all remaining steps</option>
+              <option value="continue">Continue with the remaining stages</option>
+              <option value="stop">Stop! Cancel all remaining stages</option>
             </select>
           </label>
         </div>
         <div class="field" style="margin-top:12px">
-          <span class="cap">Steps (run in order)</span>
-          <div id="step-list" class="step-list"></div>
-          <div class="step-add">
-            <select id="step-target-select"></select>
-            <button type="button" class="btn ghost small" id="step-add-btn">+ Add step</button>
-          </div>
+          <span class="cap">Stages (run top to bottom; targets in a stage run simultaneously)</span>
+          <div id="stage-list" class="stage-list"></div>
+          <button type="button" class="btn ghost small" id="stage-add-btn">+ Add stage</button>
         </div>
         <div class="field" style="margin-top:12px">
           <span class="cap">Flatline groups that run this action group</span>

@@ -1,7 +1,7 @@
 {
   "name": "flatline",
-  "version": "0.2.0",
-  "description": "Monitor ICMP/HTTP endpoints, and arms a script for graceful shutdown or migrate infrastructure after a configurable wait period.",
+  "version": "0.3.0",
+  "description": "Monitor ICMP/HTTP endpoints, to arm scripts for graceful shutdown or migrate infrastructure.",
   "type": "module",
   "main": "server/index.js",
   "scripts": {

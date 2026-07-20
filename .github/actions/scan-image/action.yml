@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/actions/scan-image/action.yml
+#
+# Shared Trivy image scan. Fails on any fixable HIGH/CRITICAL vulnerability in
+# the given image (base OS packages + app layers). Used both at publish time
+# (against the freshly-built local image, before push) and by the weekly
+# scheduled re-scan (against the published :latest). Keeps one source of truth
+# for what "a vulnerable image" means.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Scan image with Trivy
+description: Fail on fixable HIGH/CRITICAL vulnerabilities in a Docker image.
+
+inputs:
+  image-ref:
+    description: Image reference to scan (a local daemon tag or a registry ref).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Trivy image scan
+      uses: aquasecurity/trivy-action@v0.36.0
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image-ref }}
+        scanners: vuln
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        exit-code: '1'

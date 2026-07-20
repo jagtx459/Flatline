@@ -47,6 +47,25 @@ Flatline supports a few, but more in the future releases, notification platforms
 
 ## Run with Docker (recommended)
 
+### Pull the published image
+
+Each release is built, scanned for vulnerabilities, and published to both the GitHub Container Registry and Docker Hub. Pick either:
+
+```sh
+# GitHub Container Registry
+docker pull ghcr.io/jagtx459/flatline:latest
+# or Docker Hub
+docker pull jagtx459/flatline:latest
+
+docker run -d --name flatline -p 3131:3131 -v flatline-data:/data \
+  --sysctl net.ipv4.ping_group_range="0 2147483647" \
+  ghcr.io/jagtx459/flatline:latest
+```
+
+Tags available on both registries: `latest`, the release version (e.g. `0.3.0`), and `sha-<commit>`.
+
+### Build from source
+
 ```sh
 docker compose up -d --build
 # or

@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/image-scan.yml
+#
+# Re-scans the already-published :latest image on a schedule, reusing the same
+# scan definition as the publish workflow (.github/actions/scan-image). New
+# HIGH/CRITICAL advisories land in the base OS packages between releases even
+# when the code never changes, so publish-time scanning alone goes stale. A
+# failed run shows up in the Actions tab and emails the workflow's last editor.
+#
+# Scans the GHCR copy (same image is mirrored to Docker Hub). GHCR login uses
+# the automatic GITHUB_TOKEN so it works whether the package is public or
+# private.
+#
+# Triggers:
+#   • Weekly cron (Mondays 06:00 UTC)
+#   • Manual run via the Actions tab (workflow_dispatch)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Scheduled Image Scan
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Full lowercase image ref derived at runtime (see "Compute image name" step).
+  # Declared empty here so static workflow linters see it as a valid context.
+  GHCR_IMAGE: ""
+
+jobs:
+  scan:
+    name: Scan published image
+    runs-on: ubuntu-latest
+    steps:
+      # Needed so the local composite action (./.github/actions/scan-image)
+      # resolves.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Compute image name
+        run: echo "GHCR_IMAGE=${{ env.REGISTRY }}/$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan latest image with Trivy
+        uses: ./.github/actions/scan-image
+        with:
+          image-ref: ${{ env.GHCR_IMAGE }}:latest
