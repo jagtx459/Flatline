@@ -349,9 +349,54 @@ label.check .hint { color: var(--text-muted); font-size: 12px; }
   cursor: not-allowed;
 }
 .btn.small { padding: 4px 10px; font-size: 12px; }
-.form-actions { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
+.form-actions { display: flex; gap: 8px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
 .form-actions .note { color: var(--status-good); font-size: 12px; }
 .form-actions .error { color: var(--status-critical); font-size: 12px; }
+
+/* "Unsaved changes" hint to the right of a form's buttons. Hidden while empty;
+   the amber dot only draws the eye once there's something to save. */
+.dirty-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.dirty-note:empty { display: none; }
+.dirty-note::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-warning);
+}
+
+/* ---- styled confirm/alert dialogs ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.45);
+}
+.modal {
+  background: var(--surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  padding: 20px;
+  width: 100%;
+  max-width: 420px;
+}
+.modal-title { margin: 0 0 10px; font-size: 16px; font-weight: 650; }
+.modal-body { margin: 0 0 8px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.modal-body:last-of-type { margin-bottom: 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
 /* ---- endpoints table ---- */
 table.endpoints { width: 100%; border-collapse: collapse; }
