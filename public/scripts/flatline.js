@@ -3,7 +3,7 @@ import {
   listGroups, createGroup, updateGroup, deleteGroup,
   listActionGroups
 } from './api.js';
-import { el, clear, enabledPill, initCollapsible } from './dom.js';
+import { el, clear, enabledPill, initCollapsible, initDirtyNote, confirmDialog } from './dom.js';
 import { initHeaderAuth } from './header.js';
 
 initHeaderAuth();
@@ -25,6 +25,7 @@ const $groupEndpointChecks = document.getElementById('group-endpoint-checks');
 const $groupTable = document.getElementById('group-table');
 const groupFormSection = initCollapsible('flatline:group-form',
   document.getElementById('group-form-header'), document.getElementById('group-form-body'));
+const groupDirty = initDirtyNote($groupForm, document.getElementById('group-dirty'), $groupSaveNote);
 
 let editingGroupId = null;
 /** action_group_ids of the group being edited — preserved as-is since that
@@ -68,6 +69,7 @@ function resetGroupForm() {
   $groupReset.style.display = '';
   $groupError.textContent = '';
   $groupSaveNote.textContent = '';
+  groupDirty.markClean();
   renderGroupEndpointChecks();
 }
 
@@ -85,6 +87,7 @@ function fillGroupForm(g) {
   $groupReset.style.display = 'none';
   $groupError.textContent = '';
   $groupSaveNote.textContent = '';
+  groupDirty.markClean();
   groupFormSection.expand();
   $groupForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -139,7 +142,13 @@ function renderGroupTable() {
     const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
     delBtn.addEventListener('click', () => {
       void (async () => {
-        if (!confirm(`Delete group "${g.name}"? Its endpoints stay, but become ungrouped.`)) return;
+        const ok = await confirmDialog({
+          title: 'Delete Flatline group?',
+          body: `"${g.name}" will be deleted. Its endpoints keep running — they just stop belonging to this group and can no longer trigger its actions.`,
+          confirmText: 'Delete group',
+          danger: true
+        });
+        if (!ok) return;
         await deleteGroup(g.id);
         if (editingGroupId === g.id) resetGroupForm();
         await refreshAll();
@@ -190,6 +199,7 @@ const $typeSelect = document.getElementById('f-type');
 const $httpFields = document.getElementById('http-fields');
 const endpointFormSection = initCollapsible('flatline:endpoint-form',
   document.getElementById('form-header'), document.getElementById('form-body'));
+const formDirty = initDirtyNote($form, document.getElementById('form-dirty'), $formSaveNote);
 
 let editingId = null;
 
@@ -227,6 +237,7 @@ function resetForm() {
   $formError.textContent = '';
   $formTestResult.textContent = '';
   $formSaveNote.textContent = '';
+  formDirty.markClean();
   syncTypeFields();
 }
 
@@ -249,6 +260,7 @@ function fillForm(ep) {
   $formError.textContent = '';
   $formTestResult.textContent = '';
   $formSaveNote.textContent = '';
+  formDirty.markClean();
   syncTypeFields();
   endpointFormSection.expand();
   $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -329,7 +341,13 @@ function renderEndpointTable() {
     const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
     delBtn.addEventListener('click', () => {
       void (async () => {
-        if (!confirm(`Delete "${ep.name}" and all of its history?`)) return;
+        const ok = await confirmDialog({
+          title: 'Delete endpoint?',
+          body: `"${ep.name}" and all of its check history will be permanently deleted. This CANNOT be undone.`,
+          confirmText: 'Delete endpoint',
+          danger: true
+        });
+        if (!ok) return;
         await deleteEndpoint(ep.id);
         if (editingId === ep.id) resetForm();
         await refreshAll();

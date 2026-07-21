@@ -191,6 +191,7 @@
           <button type="button" class="btn ghost" id="channel-test">Send test</button>
           <button class="btn ghost" id="channel-cancel" style="display:none">Cancel</button>
           <button type="button" class="btn ghost" id="channel-reset">Reset</button>
+          <span class="dirty-note" id="channel-dirty"></span>
           <span class="note" id="channel-save-note"></span>
           <span class="note" id="channel-test-result"></span>
           <span class="error" id="channel-error"></span>
@@ -210,6 +211,7 @@
         </div>
         <div class="form-actions">
           <button type="submit" class="btn">Save settings</button>
+          <span class="dirty-note" id="settings-dirty"></span>
           <span class="note" id="settings-note"></span>
         </div>
       </form>
@@ -239,6 +241,7 @@
         <div class="form-actions">
           <button type="submit" class="btn danger-soft" id="key-set">Re-encrypt with this key</button>
           <button type="button" class="btn ghost" id="key-generate">Generate</button>
+          <span class="dirty-note" id="key-dirty"></span>
           <span class="note" id="key-note"></span>
           <span class="error" id="key-error"></span>
         </div>
@@ -259,6 +262,7 @@
         <div class="form-actions">
           <button type="submit" class="btn" id="password-set">Set password</button>
           <button type="button" class="btn danger-ghost" id="password-remove" style="display:none">Remove password</button>
+          <span class="dirty-note" id="password-dirty"></span>
           <span class="note" id="password-note"></span>
           <span class="error" id="password-error"></span>
         </div>
@@ -274,6 +278,7 @@
         </div>
         <div class="form-actions">
           <button type="submit" class="btn" id="hosts-save">Save allowed hosts</button>
+          <span class="dirty-note" id="hosts-dirty"></span>
           <span class="note" id="hosts-note"></span>
           <span class="error" id="hosts-error"></span>
         </div>
