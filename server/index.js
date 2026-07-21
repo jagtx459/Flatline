@@ -1,7 +1,8 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { readFileSync, createWriteStream } from 'node:fs';
+import { readFileSync, createWriteStream, readdirSync, statSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './db.js';
@@ -49,9 +50,39 @@ const MIME = {
 
 // ---------- helpers ----------
 
+// Best encoding the client accepts, in our order of preference (brotli beats
+// gzip on text and matters most over a slow VPN link). Returns null for none.
+function pickEncoding(acceptEncoding) {
+  const ae = String(acceptEncoding ?? '');
+  if (/\bbr\b/.test(ae)) return 'br';
+  if (/\bgzip\b/.test(ae)) return 'gzip';
+  return null;
+}
+
+// Compressing responses below ~1 KB costs more in headers/CPU than it saves.
+const COMPRESS_MIN_BYTES = 1024;
+
 function sendJson(res, status, body) {
+  const json = JSON.stringify(body);
+  const enc = Buffer.byteLength(json) >= COMPRESS_MIN_BYTES
+    ? pickEncoding(res.req?.headers['accept-encoding'])
+    : null;
+  if (enc) {
+    // Bounded brotli quality: full-quality br on every dynamic response would
+    // burn CPU for little extra ratio; 5 is a good latency/size trade.
+    const data = enc === 'br'
+      ? zlib.brotliCompressSync(json, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
+      : zlib.gzipSync(json);
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-encoding': enc,
+      vary: 'Accept-Encoding'
+    });
+    res.end(data);
+    return;
+  }
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
+  res.end(json);
 }
 
 function sendError(res, status, message) {
@@ -1120,6 +1151,46 @@ const PAGE_ROUTES = {
   '/login': '/login.html'
 };
 
+// Text assets are worth precompressing; PNG/ico are already compressed.
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
+
+// The public/ tree is small and never changes at runtime, so we read it once
+// into memory at startup with a content-hash ETag and precomputed brotli+gzip
+// variants. Requests then get cheap 304s (no re-download on every page nav) and
+// the smallest encoding the client accepts — the latter matters over a VPN.
+// Trade-off: editing a file needs a server restart to take effect.
+const STATIC_CACHE = buildStaticCache();
+
+function buildStaticCache() {
+  const cache = new Map();
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const abs = path.join(dir, name);
+      if (statSync(abs).isDirectory()) { walk(abs); continue; }
+      const data = readFileSync(abs);
+      const key = '/' + path.relative(PUBLIC_DIR, abs).split(path.sep).join('/');
+      const ext = path.extname(abs).toLowerCase();
+      const entry = {
+        data,
+        mime: MIME[ext] ?? 'application/octet-stream',
+        etag: `"${createHash('sha1').update(data).digest('base64url')}"`,
+        variants: {}
+      };
+      if (COMPRESSIBLE.has(ext)) {
+        entry.variants.gzip = zlib.gzipSync(data, { level: 9 });
+        entry.variants.br = zlib.brotliCompressSync(data, {
+          params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 }
+        });
+      }
+      cache.set(key, entry);
+    }
+  };
+  walk(PUBLIC_DIR);
+  return cache;
+}
+
+// async only so the dispatcher's uniform `handler.catch(...)` still applies —
+// the body itself is synchronous (everything is served from memory).
 async function handleStatic(req, res, pathname) {
   // When auth is enabled, pages redirect to/away from the login screen.
   // Assets (css/js/logo) stay open so the login page itself can render —
@@ -1139,20 +1210,30 @@ async function handleStatic(req, res, pathname) {
   }
 
   const rel = PAGE_ROUTES[pathname] ?? pathname;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!filePath.startsWith(PUBLIC_DIR + path.sep) && filePath !== PUBLIC_DIR) {
-    sendError(res, 403, 'forbidden');
+  const entry = STATIC_CACHE.get(rel);
+  if (!entry) {
+    sendError(res, 404, 'not found');
     return;
   }
 
-  try {
-    const data = await readFile(filePath);
-    const mime = MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
-    res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-cache' });
-    res.end(data);
-  } catch {
-    sendError(res, 404, 'not found');
+  // Revalidate cheaply: unchanged assets come back as an empty 304.
+  if (req.headers['if-none-match'] === entry.etag) {
+    res.writeHead(304, { etag: entry.etag, 'cache-control': 'no-cache' });
+    res.end();
+    return;
   }
+
+  const enc = pickEncoding(req.headers['accept-encoding']);
+  const body = (enc && entry.variants[enc]) ? entry.variants[enc] : entry.data;
+  const headers = {
+    'content-type': entry.mime,
+    'cache-control': 'no-cache',
+    etag: entry.etag,
+    vary: 'Accept-Encoding'
+  };
+  if (enc && entry.variants[enc]) headers['content-encoding'] = enc;
+  res.writeHead(200, headers);
+  res.end(body);
 }
 
 // ---------- server ----------
