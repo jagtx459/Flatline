@@ -35,7 +35,7 @@ A small self-hosted system monitor that pings or probes endpoints for availabili
 
 Flatline supports a few, but more in the future releases, notification platforms for event triggers with basic template support for messages.
 
-## Security ***Please Read! *
+## Security **Please Read!* *
 
 ****Again, Flatline is still a work in progress and intended for homelab use; do NOT expose to the internet!*** *
 
