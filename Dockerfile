@@ -19,7 +19,11 @@ RUN apk add --no-cache iputils-ping \
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts
+# npm is only needed to install deps here; the app runs via `node`, not npm.
+# Remove npm afterwards so the image doesn't carry npm's bundled dependencies
+# (e.g. undici) and the CVEs that ride along with them.
+RUN npm ci --omit=dev --ignore-scripts \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY server ./server
 COPY public ./public
 

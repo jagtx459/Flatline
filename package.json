@@ -15,7 +15,6 @@
   "dependencies": {
     "nodemailer": "^9.0.3",
     "ssh2": "^1.17.0",
-    "undici": "^8.8.0",
     "yaml": "^2.9.0"
   },
   "allowScripts": {
