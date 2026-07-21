@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './db.js';
@@ -32,6 +33,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const PORT = Number(process.env.PORT ?? 3131);
 const PKG_VERSION = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+// Config imports can carry many large encrypted secrets (kubeconfigs, keys), so
+// this route gets a roomier body cap than the default 1 MB — still bounded.
+const IMPORT_MAX_BYTES = 25 * 1024 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -430,8 +434,10 @@ async function handleApi(req, res, url) {
   }
 
   // Mutating requests must be JSON — an HTML form can't produce that, which
-  // (with the SameSite session cookie and Host check) shuts down CSRF.
-  if (mutating) {
+  // (with the SameSite session cookie and Host check) shuts down CSRF. The DB
+  // restore upload is the one exception (it streams a binary file); same-origin
+  // is still enforced above, so CSRF is still covered.
+  if (mutating && url.pathname !== '/api/config/restore') {
     const ctype = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
     if (ctype !== 'application/json') {
       sendError(res, 415, 'content-type must be application/json');
@@ -762,6 +768,81 @@ async function handleApi(req, res, url) {
     const key = parseKeyInput(body.key);
     if (!key) { sendError(res, 400, 'key must be 32 bytes, encoded as 64 hex chars or base64'); return; }
     return handleKeyChange(res, key);
+  }
+
+  // ---- backup / restore & config transfer ----
+
+  // GET /api/config/export — the portable config as JSON (secrets stay encrypted).
+  if (method === 'GET' && url.pathname === '/api/config/export') {
+    sendJson(res, 200, { flatline_config: 1, exported_at: Date.now(), ...store.exportConfig() });
+    return;
+  }
+
+  // POST /api/config/import — replace ALL config from an exported JSON file.
+  if (method === 'POST' && url.pathname === '/api/config/import') {
+    const body = await readJsonBody(req, IMPORT_MAX_BYTES);
+    let counts;
+    try {
+      counts = store.replaceConfig(body);
+    } catch (err) {
+      sendError(res, 400, `could not import config: ${err.message}`);
+      return;
+    }
+    reschedule();                 // pick up the new endpoint set
+    invalidateSecurityCache();    // allowed_hosts may have changed
+    store.recordEvent({ ts: Date.now(), kind: 'config_imported', message: 'Configuration imported from file — endpoints, groups, actions, and channels replaced' });
+    sendJson(res, 200, { ok: true, counts });
+    return;
+  }
+
+  // POST /api/config/reset — factory reset: wipe all config, history, and
+  // settings (incl. the site password) back to a fresh-install state.
+  if (method === 'POST' && url.pathname === '/api/config/reset') {
+    store.resetAll();
+    reschedule();                 // no endpoints left to poll
+    invalidateSecurityCache();    // password + allowed hosts are gone — auth is now off
+    store.recordEvent({ ts: Date.now(), kind: 'config_reset', message: 'Application reset to a clean state from the config page — all config, history, and site password cleared' });
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // GET /api/config/backup — download the full SQLite database file.
+  if (method === 'GET' && url.pathname === '/api/config/backup') {
+    store.checkpoint(); // fold the WAL in so the file is a complete snapshot
+    const data = readFileSync(store.dbFile);
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-disposition': 'attachment; filename="flatline-backup.db"',
+      'content-length': data.length
+    });
+    res.end(data);
+    return;
+  }
+
+  // POST /api/config/restore — overwrite the DB with an uploaded backup and
+  // reopen the connection in place (no restart). The body streams to disk (see
+  // restoreTmpFile) rather than buffering in memory.
+  if (method === 'POST' && url.pathname === '/api/config/restore') {
+    const ctype = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (ctype !== 'application/octet-stream') { sendError(res, 415, 'restore body must be application/octet-stream'); return; }
+    try {
+      await pipeline(req, createWriteStream(store.restoreTmpFile));
+    } catch (err) {
+      store.discardRestore();
+      sendError(res, 400, `upload failed: ${err.message}`);
+      return;
+    }
+    try {
+      store.applyRestore();
+    } catch (err) {
+      sendError(res, 400, `invalid database backup: ${err.message}`);
+      return;
+    }
+    reschedule();                 // poll the restored endpoint set
+    invalidateSecurityCache();    // password/allowed hosts came from the backup
+    store.recordEvent({ ts: Date.now(), kind: 'db_restored', message: 'Database restored from an uploaded backup' });
+    sendJson(res, 200, { ok: true, note: 'Database restored.' });
+    return;
   }
 
   // ---- notification channels ----

@@ -41,13 +41,16 @@ export class HttpError extends Error {
 
 const MAX_BODY_BYTES = 1_000_000;
 
-export async function readJsonBody(req) {
+// maxBytes bounds a single request's in-memory body (a JSON body must be fully
+// buffered to be parsed, so this is the DoS guard). The default is tight; only
+// the config-import route opts into a larger cap for big encrypted configs.
+export async function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
   const ctype = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
   if (ctype !== 'application/json') {
     throw new HttpError(415, 'content-type must be application/json');
   }
   const declared = Number(req.headers['content-length']);
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+  if (Number.isFinite(declared) && declared > maxBytes) {
     throw new HttpError(413, 'body too large');
   }
 
@@ -55,7 +58,7 @@ export async function readJsonBody(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new HttpError(413, 'body too large');
+    if (size > maxBytes) throw new HttpError(413, 'body too large');
     chunks.push(chunk);
   }
   const raw = Buffer.concat(chunks).toString('utf-8');

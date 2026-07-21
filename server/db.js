@@ -1,18 +1,30 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { migrate } from './migrations.js';
+import { migrate, migrations } from './migrations.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const dataDir = process.env.FLATLINE_DATA_DIR ?? path.join(__dirname, '..', 'data');
 mkdirSync(dataDir, { recursive: true });
 
-export const db = new DatabaseSync(path.join(dataDir, 'flatline.db'));
+export const dbFile = path.join(dataDir, 'flatline.db');
+const LATEST_VERSION = Math.max(...migrations.map((m) => m.version));
 
 // Per-connection pragmas (not schema — these don't belong in migrations).
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
+function openDb() {
+  const conn = new DatabaseSync(dbFile);
+  conn.exec('PRAGMA journal_mode = WAL');
+  conn.exec('PRAGMA foreign_keys = ON');
+  return conn;
+}
+
+// `db` is a mutable binding because restoring a backup swaps the underlying
+// file and reopens the connection (see applyRestore). Every function here
+// references this module-scoped variable, and other modules reach the database
+// only through the store.* functions — nothing imports `db` directly — so the
+// reopen is transparent to the rest of the app.
+export let db = openDb();
 
 migrate(db);
 
@@ -424,4 +436,171 @@ export function setSetting(key, value) {
     INSERT INTO settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, String(value));
+}
+
+// ---- config export / import ----
+// The portable configuration: everything a fresh instance needs to reproduce
+// this one's monitoring and actions, minus history (checks/events) and site
+// security (the password hash never leaves). Encrypted blobs (secret_enc) are
+// copied verbatim, so they only decrypt on an instance holding the same key.
+//
+// Columns are listed per table (never SELECT *) so runtime-only fields —
+// endpoints.last_state/last_change_ts — are left at their defaults on import.
+// Import preserves ids, which keeps the join tables valid without remapping.
+const CONFIG_TABLES = {
+  endpoints: ['id', 'name', 'type', 'target', 'interval_seconds', 'timeout_ms',
+              'down_threshold', 'up_threshold', 'expect_status', 'expect_json', 'enabled', 'created_at'],
+  action_targets: ['id', 'name', 'kind', 'config', 'secret_enc', 'enabled', 'created_at'],
+  action_groups: ['id', 'name', 'on_failure', 'enabled', 'created_at'],
+  action_group_stages: ['action_group_id', 'stage', 'pass_rule', 'on_failure'],
+  action_group_members: ['action_group_id', 'target_id', 'position', 'timeout_seconds', 'stage'],
+  flatline_groups: ['id', 'name', 'grace_minutes', 'mode', 'enabled', 'created_at'],
+  flatline_group_endpoints: ['flatline_group_id', 'endpoint_id'],
+  flatline_group_actions: ['flatline_group_id', 'action_group_id'],
+  notification_channels: ['id', 'name', 'kind', 'config', 'secret_enc', 'enabled', 'created_at']
+};
+
+// Parents before children, so foreign keys resolve as rows go in.
+const INSERT_ORDER = [
+  'endpoints', 'action_targets', 'action_groups', 'action_group_stages', 'action_group_members',
+  'flatline_groups', 'flatline_group_endpoints', 'flatline_group_actions', 'notification_channels'
+];
+
+// Only these settings are portable; auth_password_hash is deliberately excluded.
+const PORTABLE_SETTINGS = ['retention_days', 'allowed_hosts'];
+
+export function exportConfig() {
+  const out = {};
+  for (const [table, cols] of Object.entries(CONFIG_TABLES)) {
+    out[table] = db.prepare(`SELECT ${cols.join(', ')} FROM ${table} ORDER BY rowid`).all();
+  }
+  const s = getSettings();
+  out.settings = Object.fromEntries(PORTABLE_SETTINGS.filter((k) => k in s).map((k) => [k, s[k]]));
+  return out;
+}
+
+/**
+ * Replaces ALL configuration with the given payload (from exportConfig), in one
+ * transaction. Validates shape before touching anything so a bad file can't
+ * leave a half-wiped config; DB constraints (CHECK/FK/NOT NULL) catch the rest
+ * and roll the whole thing back. Returns per-table insert counts.
+ */
+export function replaceConfig(data) {
+  if (typeof data !== 'object' || data === null) throw new Error('not a config object');
+  if (data.flatline_config !== 1) throw new Error('unrecognized config file (missing flatline_config marker)');
+
+  const rows = {};
+  for (const [table, cols] of Object.entries(CONFIG_TABLES)) {
+    const arr = data[table] ?? [];
+    if (!Array.isArray(arr)) throw new Error(`${table} must be an array`);
+    for (const r of arr) {
+      if (typeof r !== 'object' || r === null || Array.isArray(r)) throw new Error(`${table} has a non-object row`);
+    }
+    rows[table] = arr;
+  }
+
+  const inserts = Object.fromEntries(INSERT_ORDER.map((t) => {
+    const cols = CONFIG_TABLES[t];
+    return [t, db.prepare(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)];
+  }));
+
+  const counts = {};
+  db.exec('BEGIN');
+  try {
+    // Children before parents; deleting endpoints cascades their checks/events.
+    for (const t of [...INSERT_ORDER].reverse()) db.exec(`DELETE FROM ${t}`);
+    for (const t of INSERT_ORDER) {
+      const cols = CONFIG_TABLES[t];
+      let n = 0;
+      for (const r of rows[t]) {
+        inserts[t].run(...cols.map((c) => r[c] ?? null));
+        n += 1;
+      }
+      counts[t] = n;
+    }
+    const s = data.settings;
+    if (s && typeof s === 'object') {
+      for (const k of PORTABLE_SETTINGS) {
+        if (s[k] != null) setSetting(k, s[k]);
+      }
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return counts;
+}
+
+/**
+ * Factory reset: wipes ALL configuration, history, and settings — including the
+ * site password hash and allowed hosts — back to a fresh-install state, in one
+ * transaction. The encryption key (a file, not a DB row) is deliberately left
+ * in place. The caller must reschedule the poller and invalidate the security
+ * cache afterwards, since auth is now off.
+ */
+export function resetAll() {
+  db.exec('BEGIN');
+  try {
+    for (const t of [...INSERT_ORDER].reverse()) db.exec(`DELETE FROM ${t}`);
+    db.exec('DELETE FROM checks');  // deleting endpoints cascades most of these,
+    db.exec('DELETE FROM events');  // but clear both outright (incl. system events)
+    db.exec('DELETE FROM settings');
+    const ins = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
+    for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+// ---- full-database backup / restore ----
+
+/** Folds the WAL into the main db file so a raw read of dbFile is a complete snapshot. */
+export function checkpoint() {
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+}
+
+// The uploaded backup is streamed here (not buffered in memory), so restore is
+// bounded by free space on the data volume — the same volume the live DB grows
+// on — rather than an arbitrary size limit.
+export const restoreTmpFile = dbFile + '.restore';
+
+export function discardRestore() {
+  rmSync(restoreTmpFile, { force: true });
+}
+
+/**
+ * Swaps a streamed-in backup (already written to restoreTmpFile) into place and
+ * reopens the connection — no process restart required. The file is validated
+ * (real SQLite, Flatline schema, not from a newer build) BEFORE the live DB is
+ * touched, so a bad upload leaves everything running. The swap then closes the
+ * live handle (so the file can be replaced — required on Windows, harmless on
+ * Linux), renames the backup over dbFile, drops the stale WAL/SHM, reopens, and
+ * migrates in case the backup is from an older build. It's all synchronous, so
+ * no queued timer can touch the DB mid-swap.
+ */
+export function applyRestore() {
+  let probe = null;
+  try {
+    probe = new DatabaseSync(restoreTmpFile, { readOnly: true });
+    const hasEndpoints = probe.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='endpoints'").get();
+    if (!hasEndpoints) throw new Error('not a Flatline database (missing tables)');
+    const { user_version: v } = probe.prepare('PRAGMA user_version').get();
+    if (v > LATEST_VERSION) throw new Error(`backup is from a newer Flatline version (schema v${v} > v${LATEST_VERSION})`);
+    probe.close();
+    probe = null;
+  } catch (err) {
+    try { probe?.close(); } catch { /* already closed */ }
+    rmSync(restoreTmpFile, { force: true });
+    throw new Error(/not a Flatline|newer Flatline/.test(err.message) ? err.message : 'not a valid SQLite database');
+  }
+
+  db.close();
+  renameSync(restoreTmpFile, dbFile);
+  rmSync(dbFile + '-wal', { force: true });
+  rmSync(dbFile + '-shm', { force: true });
+  db = openDb();
+  migrate(db); // upgrade an older backup to the current schema if needed
 }
