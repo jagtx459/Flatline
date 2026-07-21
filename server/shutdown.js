@@ -128,41 +128,58 @@ async function triggerActions(group, now) {
   }
 }
 
-/** Runs an action group's steps in order, honoring its on_failure policy. */
+/**
+ * Runs an action group's stages in order. The steps within a stage run
+ * simultaneously; the stage then decides whether it counts as failed (its
+ * pass_rule) and, if so, whether to stop the rest of the sequence (its own
+ * on_failure, falling back to the group's on_failure).
+ */
 async function runActionGroup(actionGroup) {
-  for (const step of actionGroup.steps) {
-    const target = store.getActionTarget(step.target_id);
-    if (!target) {
-      store.recordEvent({
-        ts: Date.now(), kind: 'action_step_failed',
-        message: `"${actionGroup.name}": step target ${step.target_id} no longer exists`
-      });
-      if (actionGroup.on_failure === 'stop') return;
-      continue;
-    }
+  const stages = actionGroup.stages ?? [];
+  for (let i = 0; i < stages.length; i++) {
+    const stage = stages[i];
+    const results = await Promise.all(stage.steps.map((step) => runActionStep(actionGroup, step)));
 
-    let config;
-    try { config = JSON.parse(target.config); } catch { config = {}; }
-    const secrets = decryptSecrets(target.secret_enc);
+    const failed = results.filter((r) => !r.ok).length;
+    const stageFailed = stage.pass_rule === 'all'
+      ? results.length > 0 && failed === results.length // every step in the stage failed
+      : failed > 0;                                     // any step in the stage failed
 
-    let result;
-    try {
-      result = await runStep(target.kind, config, secrets, step.timeout_seconds * 1000);
-    } catch (err) {
-      result = { ok: false, message: err.message };
-    }
-
-    recordTargetActivity(target.id, result, 'run');
-    store.recordEvent({
-      ts: Date.now(),
-      kind: result.ok ? 'action_step_ok' : 'action_step_failed',
-      message: `"${actionGroup.name}" -> ${target.name} (${target.kind}): ${result.message}`
-    });
-    console.log(`[watcher] "${actionGroup.name}" -> ${target.name}: ${result.ok ? 'OK' : 'FAILED'} — ${result.message}`);
-
-    if (!result.ok && actionGroup.on_failure === 'stop') {
-      console.log(`[watcher] "${actionGroup.name}" stopping — step failed and on_failure is 'stop'`);
+    if (stageFailed && (stage.on_failure ?? actionGroup.on_failure) === 'stop') {
+      console.log(`[watcher] "${actionGroup.name}" stopping after stage ${i + 1} — ${failed}/${results.length} failed and on_failure is 'stop'`);
       return;
     }
   }
+}
+
+/** Runs one step against its target and records the result. Returns { ok }. */
+async function runActionStep(actionGroup, step) {
+  const target = store.getActionTarget(step.target_id);
+  if (!target) {
+    store.recordEvent({
+      ts: Date.now(), kind: 'action_step_failed',
+      message: `"${actionGroup.name}": step target ${step.target_id} no longer exists`
+    });
+    return { ok: false };
+  }
+
+  let config;
+  try { config = JSON.parse(target.config); } catch { config = {}; }
+  const secrets = decryptSecrets(target.secret_enc);
+
+  let result;
+  try {
+    result = await runStep(target.kind, config, secrets, step.timeout_seconds * 1000);
+  } catch (err) {
+    result = { ok: false, message: err.message };
+  }
+
+  recordTargetActivity(target.id, result, 'run');
+  store.recordEvent({
+    ts: Date.now(),
+    kind: result.ok ? 'action_step_ok' : 'action_step_failed',
+    message: `"${actionGroup.name}" -> ${target.name} (${target.kind}): ${result.message}`
+  });
+  console.log(`[watcher] "${actionGroup.name}" -> ${target.name}: ${result.ok ? 'OK' : 'FAILED'} — ${result.message}`);
+  return { ok: result.ok };
 }

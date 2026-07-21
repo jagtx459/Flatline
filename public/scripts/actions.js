@@ -481,7 +481,7 @@ function renderTargetTable() {
   $targetTable.append(table);
 }
 
-// ---------- action groups (ordered steps) ----------
+// ---------- action groups (ordered stages of parallel steps) ----------
 
 const $igForm = document.getElementById('igroup-form');
 const $igFormTitle = document.getElementById('igroup-form-title');
@@ -491,92 +491,158 @@ const $igCancel = document.getElementById('igroup-cancel');
 const $igReset = document.getElementById('igroup-reset');
 const $igSaveNote = document.getElementById('igroup-save-note');
 const $igTable = document.getElementById('igroup-table');
-const $stepList = document.getElementById('step-list');
-const $stepSelect = document.getElementById('step-target-select');
-const $stepAddBtn = document.getElementById('step-add-btn');
+const $stageList = document.getElementById('stage-list');
+const $stageAddBtn = document.getElementById('stage-add-btn');
 const $igFlatlineGroupChecks = document.getElementById('ig-flatline-group-checks');
 const igroupFormSection = initCollapsible('actions:igroup-form',
   document.getElementById('igroup-form-header'), document.getElementById('igroup-form-body'));
 const igDirty = initDirtyNote($igForm, document.getElementById('igroup-dirty'), $igSaveNote);
 
 let editingIgId = null;
-/** Ordered steps being edited: [{ target_id, timeout_seconds }] */
-let steps = [];
+/** Ordered stages being edited: [{ pass_rule, on_failure, steps: [{ target_id, timeout_seconds }] }] */
+let stages = [];
 
-function renderStepSelect() {
-  clear($stepSelect);
-  const used = new Set(steps.map((s) => s.target_id));
-  const available = targets.filter((t) => !used.has(t.id));
-  if (available.length === 0) {
-    $stepSelect.append(el('option', { value: '' },
-      targets.length === 0 ? 'no targets defined yet' : 'all targets already in the sequence'));
-    $stepSelect.disabled = true;
-    $stepAddBtn.disabled = true;
-    return;
-  }
-  $stepSelect.disabled = false;
-  $stepAddBtn.disabled = false;
-  for (const t of available) {
-    $stepSelect.append(el('option', { value: String(t.id) }, `${t.name} (${KIND_LABELS[t.kind] ?? t.kind})`));
-  }
-}
-
-function renderStepList() {
-  clear($stepList);
-  if (steps.length === 0) {
-    $stepList.append(el('div', { class: 'hint-row', style: 'margin:6px 0' },
-      'No steps yet — pick a target below and add it. Steps run top to bottom.'));
-  }
-
-  steps.forEach((step, i) => {
-    const t = targetById(step.target_id);
-
-    const timeout = el('input', {
-      type: 'number', min: '5', max: '3600', value: String(step.timeout_seconds),
-      class: 'step-timeout', title: 'Step timeout (seconds)'
-    });
-    timeout.addEventListener('change', () => {
-      step.timeout_seconds = Math.min(3600, Math.max(5, Number(timeout.value) || 60));
-      timeout.value = String(step.timeout_seconds);
-    });
-
-    const up = el('button', { type: 'button', class: 'btn ghost small', title: 'Move up' }, '↑');
-    up.disabled = i === 0;
-    up.addEventListener('click', () => {
-      [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]];
-      igDirty.markDirty();
-      renderSteps();
-    });
-
-    const down = el('button', { type: 'button', class: 'btn ghost small', title: 'Move down' }, '↓');
-    down.disabled = i === steps.length - 1;
-    down.addEventListener('click', () => {
-      [steps[i], steps[i + 1]] = [steps[i + 1], steps[i]];
-      igDirty.markDirty();
-      renderSteps();
-    });
-
-    const remove = el('button', { type: 'button', class: 'btn danger-ghost small', title: 'Remove step' }, '✕');
-    remove.addEventListener('click', () => {
-      steps.splice(i, 1);
-      igDirty.markDirty();
-      renderSteps();
-    });
-
-    $stepList.append(el('div', { class: 'step-row' },
-      el('span', { class: 'step-num' }, `${i + 1}.`),
-      el('span', { class: 'step-name' },
-        t ? t.name : `(deleted target ${step.target_id})`,
-        t ? el('span', { class: 'hint' }, ` (${KIND_LABELS[t.kind] ?? t.kind})`) : null),
-      el('span', { class: 'step-timeout-wrap' }, timeout, el('span', { class: 'hint' }, 's timeout')),
-      el('span', { class: 'step-btns' }, up, down, remove)
-    ));
+/** target_id -> [1-based stage numbers it appears in]. A target may be reused
+ *  across stages, so this drives the "Appears in Stage …" indicator. */
+function targetStageMap() {
+  const map = new Map();
+  stages.forEach((st, si) => {
+    for (const s of st.steps) {
+      const arr = map.get(s.target_id) ?? [];
+      arr.push(si + 1);
+      map.set(s.target_id, arr);
+    }
   });
+  return map;
 }
 
-function renderSteps() {
-  renderStepList();
-  renderStepSelect();
+function renderStages() {
+  clear($stageList);
+  if (stages.length === 0) {
+    $stageList.append(el('div', { class: 'hint-row', style: 'margin:6px 0' },
+      'No stages yet — add one, then add targets to it. Stages run top to bottom.'));
+  }
+  const stageMap = targetStageMap();
+  stages.forEach((stage, si) => $stageList.append(renderStage(stage, si, stageMap)));
+  $stageAddBtn.disabled = targets.length === 0;
+}
+
+function renderStage(stage, si, stageMap) {
+  const up = el('button', { type: 'button', class: 'btn ghost small', title: 'Move stage up' }, '↑');
+  up.disabled = si === 0;
+  up.addEventListener('click', () => {
+    [stages[si - 1], stages[si]] = [stages[si], stages[si - 1]];
+    renderStages();
+  });
+  const down = el('button', { type: 'button', class: 'btn ghost small', title: 'Move stage down' }, '↓');
+  down.disabled = si === stages.length - 1;
+  down.addEventListener('click', () => {
+    [stages[si], stages[si + 1]] = [stages[si + 1], stages[si]];
+    renderStages();
+  });
+  const removeStage = el('button', { type: 'button', class: 'btn danger-ghost small', title: 'Remove stage' }, '✕');
+  removeStage.addEventListener('click', () => {
+    stages.splice(si, 1);
+    renderStages();
+  });
+
+  const parallelNote = el('span', { class: 'hint' },
+    stage.steps.length > 1 ? ` · ${stage.steps.length} targets run at once` : ' · single target');
+
+  const stepList = el('div', { class: 'step-list' });
+  if (stage.steps.length === 0) {
+    stepList.append(el('div', { class: 'hint-row', style: 'margin:4px 0' }, 'No targets yet — add one below.'));
+  }
+  stage.steps.forEach((step, pi) => stepList.append(renderStageStep(stage, step, pi, stageMap)));
+
+  // Add-target row: any target not already in THIS stage (reuse across stages is allowed).
+  const inThisStage = new Set(stage.steps.map((s) => s.target_id));
+  const available = targets.filter((t) => !inThisStage.has(t.id));
+  const select = el('select', {});
+  if (available.length === 0) {
+    select.append(el('option', { value: '' },
+      targets.length === 0 ? 'no targets defined yet' : 'all targets already in this stage'));
+    select.disabled = true;
+  } else {
+    for (const t of available) {
+      select.append(el('option', { value: String(t.id) }, `${t.name} (${KIND_LABELS[t.kind] ?? t.kind})`));
+    }
+  }
+  const addBtn = el('button', { type: 'button', class: 'btn ghost small' }, '+ Add target');
+  addBtn.disabled = available.length === 0;
+  addBtn.addEventListener('click', () => {
+    const id = Number(select.value);
+    if (!id) return;
+    stage.steps.push({ target_id: id, timeout_seconds: 60 });
+    renderStages();
+  });
+
+  return el('div', { class: 'stage-card' },
+    el('div', { class: 'stage-head' },
+      el('span', { class: 'stage-title' }, `Stage ${si + 1}`, parallelNote),
+      el('span', { class: 'stage-btns' }, up, down, removeStage)),
+    stepList,
+    el('div', { class: 'step-add' }, select, addBtn),
+    renderStageFailure(stage)
+  );
+}
+
+function renderStageStep(stage, step, pi, stageMap) {
+  const t = targetById(step.target_id);
+  const appearsIn = stageMap.get(step.target_id) ?? [];
+
+  const timeout = el('input', {
+    type: 'number', min: '5', max: '3600', value: String(step.timeout_seconds),
+    class: 'step-timeout', title: 'Step timeout (seconds)'
+  });
+  timeout.addEventListener('change', () => {
+    step.timeout_seconds = Math.min(3600, Math.max(5, Number(timeout.value) || 60));
+    timeout.value = String(step.timeout_seconds);
+  });
+
+  const remove = el('button', { type: 'button', class: 'btn danger-ghost small', title: 'Remove target' }, '✕');
+  remove.addEventListener('click', () => {
+    stage.steps.splice(pi, 1);
+    renderStages();
+  });
+
+  return el('div', { class: 'step-row' },
+    el('span', { class: 'step-name' },
+      t ? t.name : `(deleted target ${step.target_id})`,
+      t ? el('span', { class: 'hint' }, ` (${KIND_LABELS[t.kind] ?? t.kind})`) : null,
+      appearsIn.length > 1
+        ? el('span', { class: 'step-reuse', title: 'This target runs in more than one stage' },
+            ` (Appears in Stage ${appearsIn.join(', ')})`)
+        : null),
+    el('span', { class: 'step-timeout-wrap' }, timeout, el('span', { class: 'hint' }, 's timeout')),
+    el('span', { class: 'step-btns' }, remove)
+  );
+}
+
+/** The stage's independent failure decision: pass rule (multi-target only) + on_failure override. */
+function renderStageFailure(stage) {
+  const wrap = el('div', { class: 'stage-failure' });
+
+  if (stage.steps.length > 1) {
+    const passSel = el('select', { class: 'stage-select' });
+    passSel.append(
+      el('option', { value: 'any' }, 'any target fails'),
+      el('option', { value: 'all' }, 'all targets fail'));
+    passSel.value = stage.pass_rule;
+    passSel.addEventListener('change', () => { stage.pass_rule = passSel.value; });
+    wrap.append(el('span', { class: 'stage-policy' }, el('span', { class: 'hint' }, 'Counts as failed when '), passSel));
+  }
+
+  const failSel = el('select', { class: 'stage-select' });
+  failSel.append(
+    el('option', { value: '' }, 'use group default'),
+    el('option', { value: 'continue' }, 'continue'),
+    el('option', { value: 'stop' }, 'stop remaining stages'));
+  failSel.value = stage.on_failure ?? '';
+  failSel.addEventListener('change', () => { stage.on_failure = failSel.value || null; });
+  wrap.append(el('span', { class: 'stage-policy' }, el('span', { class: 'hint' }, 'If failed '), failSel));
+
+  return wrap;
 }
 
 function renderIgFlatlineGroupChecks(selectedIds = []) {
@@ -602,17 +668,14 @@ function selectedIgFlatlineGroupIds() {
     .map((cb) => Number(cb.value));
 }
 
-$stepAddBtn.addEventListener('click', () => {
-  const id = Number($stepSelect.value);
-  if (!id) return;
-  steps.push({ target_id: id, timeout_seconds: 60 });
-  igDirty.markDirty();
-  renderSteps();
+$stageAddBtn.addEventListener('click', () => {
+  stages.push({ pass_rule: 'any', on_failure: null, steps: [] });
+  renderStages();
 });
 
 function resetIgForm() {
   editingIgId = null;
-  steps = [];
+  stages = [];
   $igForm.reset();
   $igFormTitle.textContent = 'Add action group';
   $igSubmit.textContent = 'Add group';
@@ -620,18 +683,21 @@ function resetIgForm() {
   $igReset.style.display = '';
   $igError.textContent = '';
   $igSaveNote.textContent = '';
-  igDirty.markClean();
-  renderSteps();
+  renderStages();
   renderIgFlatlineGroupChecks();
 }
 
 function fillIgForm(g) {
   editingIgId = g.id;
-  steps = g.steps.map((s) => ({ ...s }));
+  stages = g.stages.map((st) => ({
+    pass_rule: st.pass_rule,
+    on_failure: st.on_failure ?? null,
+    steps: st.steps.map((s) => ({ ...s }))
+  }));
   $igForm.elements.namedItem('name').value = g.name;
   $igForm.elements.namedItem('on_failure').value = g.on_failure;
   $igForm.elements.namedItem('enabled').checked = !!g.enabled;
-  renderSteps();
+  renderStages();
   const assignedIds = flatlineGroups.filter((fg) => fg.action_group_ids.includes(g.id)).map((fg) => fg.id);
   renderIgFlatlineGroupChecks(assignedIds);
   $igFormTitle.textContent = `Edit group: ${g.name}`;
@@ -678,7 +744,7 @@ $igForm.addEventListener('submit', (e) => {
       name: $igForm.elements.namedItem('name').value,
       on_failure: $igForm.elements.namedItem('on_failure').value,
       enabled: $igForm.elements.namedItem('enabled').checked,
-      steps
+      stages: stages.filter((st) => st.steps.length > 0)
     };
     const wasEditing = editingIgId != null;
     try {
@@ -727,15 +793,20 @@ function renderIgTable() {
       })();
     });
 
-    const stepText = g.steps.length
-      ? g.steps.map((s, i) => `${i + 1}. ${targetById(s.target_id)?.name ?? '?'}`).join('  →  ')
+    // "+" joins targets that run at once within a stage; "→" separates stages.
+    const stageText = g.stages.length
+      ? g.stages.map((st, i) =>
+          `${i + 1}. ${st.steps.map((s) => targetById(s.target_id)?.name ?? '?').join(' + ')}`).join('  →  ')
       : '—';
+    const hasOverride = g.stages.some((st) => st.on_failure);
 
     tbody.append(el('tr', {},
       el('td', {}, enabledPill(g.enabled)),
       el('td', {}, el('strong', {}, g.name)),
-      el('td', { class: 'target-cell', title: stepText }, stepText),
-      el('td', {}, g.on_failure === 'stop' ? 'stop sequence' : 'continue'),
+      el('td', { class: 'target-cell', title: stageText }, stageText),
+      el('td', {},
+        g.on_failure === 'stop' ? 'stop sequence' : 'continue',
+        hasOverride ? el('span', { class: 'hint', title: 'Some stages override this' }, ' · overrides') : null),
       el('td', { class: 'mono' }, `${g.assigned_count} Flatline group(s)`),
       el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, editBtn, delBtn))
     ));
@@ -744,7 +815,7 @@ function renderIgTable() {
   const table = el('table', { class: 'endpoints' });
   table.append(
     el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Group'), el('th', {}, 'Steps (in order)'), el('th', {}, 'On step failure'),
+      el('th', {}, 'Status'), el('th', {}, 'Group'), el('th', {}, 'Stages (in order)'), el('th', {}, 'On stage failure'),
       el('th', {}, 'Assigned to'), el('th', {}, ''))),
     tbody
   );
@@ -757,7 +828,7 @@ async function refreshAll() {
   [targets, igroups, flatlineGroups] = await Promise.all([listActionTargets(), listActionGroups(), listGroups()]);
   renderTargetTable();
   renderIgTable();
-  renderSteps();
+  renderStages();
   // Keep the checklist valid without clobbering an in-progress edit.
   if (editingIgId == null) {
     renderIgFlatlineGroupChecks(selectedIgFlatlineGroupIds());
