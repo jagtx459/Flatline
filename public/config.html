@@ -286,6 +286,37 @@
         </div>
       </form>
     </div>
+
+    <div class="card">
+      <h2>Backup &amp; restore</h2>
+
+      <h3 style="margin-top:4px">Configuration (JSON)</h3>
+      <p class="hint-row">Export endpoints, Flatline groups, action targets, action groups, and notification
+        channels to a JSON file. Credentials are included but stay <strong>encrypted</strong>. Importing to another instance works only if it uses the <strong>same encryption key</strong>. Importing
+        <strong>replaces</strong> all existing configuration.</p>
+      <div class="form-actions">
+        <button type="button" class="btn" id="config-export">Export config</button>
+        <button type="button" class="btn danger-soft" id="config-import-btn">Import config</button>
+        <input type="file" id="config-import" accept="application/json,.json" hidden>
+        <span class="note" id="config-transfer-note"></span>
+        <span class="error" id="config-transfer-error"></span>
+      </div>
+
+      <h3 style="margin-top:20px">Database</h3>
+      <p class="hint-row">Download a full snapshot of the SQLite database (configuration <em>and</em> history),
+        or restore one. Restoring <strong>replaces the entire database</strong>; stored credentials work only
+        if this instance uses the same encryption key as the backup. It is <strong>STRONGLY</strong> recommended to have access to your current encryption key or generate a new one prior to performing a backup->restore procedure.</p>
+      <div class="form-actions">
+        <button type="button" class="btn" id="db-backup">Backup database</button>
+        <button type="button" class="btn danger-soft" id="db-restore-btn">Restore database</button>
+        <input type="file" id="db-restore" accept=".db,application/octet-stream,application/x-sqlite3" hidden>
+        <button type="button" class="btn danger-soft" id="app-reset">Reset database</button>
+        <span class="note" id="db-transfer-note"></span>
+        <span class="error" id="db-transfer-error"></span>
+      </div>
+      <p class="hint-row">This will reset <strong>all</strong> endpoints, groups, actions,
+        channels, history, removes the site password, and clears settings. Only the encryption key is kept.</p>
+    </div>
   </div>
 
   <script type="module" src="/scripts/config.js"></script>
