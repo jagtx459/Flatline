@@ -5,7 +5,7 @@ import {
   getSettings, putSettings,
   getSecurityConfig, setSitePassword, removeSitePassword
 } from './api.js';
-import { el, clear, fmtDateTime, initCollapsible } from './dom.js';
+import { el, clear, fmtDateTime, initCollapsible, initDirtyNote, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
 
 initHeaderAuth();
@@ -53,6 +53,7 @@ const $channelTable = document.getElementById('channel-table');
 const $eventChecks = document.getElementById('channel-event-checks');
 const channelFormSection = initCollapsible('config:channel-form',
   document.getElementById('channel-form-header'), document.getElementById('channel-form-body'));
+const channelDirty = initDirtyNote($form, document.getElementById('channel-dirty'), $formSaveNote);
 
 let editingChannelId = null;
 let clearedSecrets = new Set();
@@ -116,6 +117,7 @@ function renderSecretStates(kind, storedFields) {
         clearBtn.textContent = 'undo';
         hint.textContent = '· will be removed on save ';
       }
+      channelDirty.markDirty();
     });
     const hint = el('span', {}, '· stored ✓ (leave blank to keep) ');
     state.append(hint, clearBtn);
@@ -172,6 +174,7 @@ function resetChannelForm() {
   $formReset.style.display = '';
   $formError.textContent = '';
   $formSaveNote.textContent = '';
+  channelDirty.markClean();
   renderEventChecks(DEFAULT_EVENTS);
   renderSecretStates('none', []);
   syncKindSections();
@@ -323,7 +326,13 @@ function renderChannelTable() {
     const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
     delBtn.addEventListener('click', () => {
       void (async () => {
-        if (!confirm(`Delete channel "${c.name}"?`)) return;
+        const ok = await confirmDialog({
+          title: 'Delete notification channel?',
+          body: `"${c.name}" will be deleted and will stop receiving alerts. This can't be undone.`,
+          confirmText: 'Delete channel',
+          danger: true
+        });
+        if (!ok) return;
         await deleteNotificationChannel(c.id);
         if (editingChannelId === c.id) resetChannelForm();
         await refreshChannels();
@@ -335,9 +344,9 @@ function renderChannelTable() {
         testBtn.disabled = true;
         try {
           const result = await testNotificationChannel({ id: c.id, kind: c.kind, config: c.config, secrets: {} });
-          alert(`${result.ok ? '✓ delivered' : '✕ failed'}: ${result.message}`);
+          await alertDialog({ title: result.ok ? 'Test delivered' : 'Test failed', body: result.message });
         } catch (err) {
-          alert(`Error: ${err.message}`);
+          await alertDialog({ title: 'Test failed', body: err.message });
         } finally {
           testBtn.disabled = false;
           await refreshChannels();
@@ -382,6 +391,9 @@ const $keyForm = document.getElementById('key-form');
 const $keyGenerate = document.getElementById('key-generate');
 const $keyNote = document.getElementById('key-note');
 const $keyError = document.getElementById('key-error');
+// No savedEl: $keyNote also carries the "Generated locally…" hint, which a
+// dirty-clear would wipe. The key form clears its own dirty note on submit.
+const keyDirty = initDirtyNote($keyForm, document.getElementById('key-dirty'));
 
 async function refreshKeyStatus() {
   const s = await getKeyStatus();
@@ -398,8 +410,16 @@ async function refreshKeyStatus() {
 
 $keyRotate.addEventListener('click', () => {
   void (async () => {
-    if (!confirm('Generate a fresh encryption key and re-encrypt all stored credentials?\n\n' +
-      'The new key replaces the key file in the data directory — back it up afterwards.')) return;
+    const ok = await confirmDialog({
+      title: 'Rotate encryption key?',
+      body: [
+        'A fresh key will be generated and every stored credential re-encrypted under it.',
+        'The new key replaces the key file in the data directory. Back it up afterwards; without it, stored credentials CANNOT be recovered.'
+      ],
+      confirmText: 'Rotate key',
+      danger: true
+    });
+    if (!ok) return;
     $keyRotate.disabled = true;
     $keyError.textContent = '';
     $keyNote.textContent = '';
@@ -422,6 +442,7 @@ $keyGenerate.addEventListener('click', () => {
     [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
   $keyNote.textContent = 'Generated locally in your browser — copy it somewhere safe before saving.';
   $keyError.textContent = '';
+  keyDirty.markDirty();
 });
 
 $keyForm.addEventListener('submit', (e) => {
@@ -429,14 +450,23 @@ $keyForm.addEventListener('submit', (e) => {
   void (async () => {
     const key = $keyForm.elements.namedItem('key').value.trim();
     if (!key) { $keyError.textContent = 'enter or generate a key first'; return; }
-    if (!confirm('Re-encrypt all stored credentials with this key?\n\n' +
-      'Make sure you have it saved, without it stored credentials are unrecoverable.')) return;
+    const ok = await confirmDialog({
+      title: 'Re-encrypt with this key?',
+      body: [
+        'Every stored credential will be re-encrypted with the key you entered.',
+        'Make sure you store it somewhere safe; without it, credentials CANNOT be recovered.'
+      ],
+      confirmText: 'Re-encrypt',
+      danger: true
+    });
+    if (!ok) return;
     $keyError.textContent = '';
     $keyNote.textContent = '';
     try {
       const result = await setKey(key);
       $keyNote.textContent = `✓ ${result.note}`;
       $keyForm.reset();
+      keyDirty.markClean();
       await refreshKeyStatus();
     } catch (err) {
       $keyError.textContent = err.message;
@@ -448,10 +478,12 @@ $keyForm.addEventListener('submit', (e) => {
 
 const $settingsForm = document.getElementById('settings-form');
 const $settingsNote = document.getElementById('settings-note');
+const settingsDirty = initDirtyNote($settingsForm, document.getElementById('settings-dirty'), $settingsNote);
 
 async function loadSettings() {
   const s = await getSettings();
   $settingsForm.elements.namedItem('retention_days').value = s.retention_days ?? '14';
+  settingsDirty.markClean();
 }
 
 $settingsForm.addEventListener('submit', (e) => {
@@ -463,6 +495,7 @@ $settingsForm.addEventListener('submit', (e) => {
       await putSettings({
         retention_days: Number($settingsForm.elements.namedItem('retention_days').value)
       });
+      settingsDirty.markClean();
       $settingsNote.textContent = 'Saved ✓';
       setTimeout(() => { $settingsNote.textContent = ''; }, 2500);
     } catch (err) {
@@ -485,6 +518,8 @@ const $hostsForm = document.getElementById('hosts-form');
 const $hostsSave = document.getElementById('hosts-save');
 const $hostsNote = document.getElementById('hosts-note');
 const $hostsError = document.getElementById('hosts-error');
+const passwordDirty = initDirtyNote($passwordForm, document.getElementById('password-dirty'), $passwordNote);
+const hostsDirty = initDirtyNote($hostsForm, document.getElementById('hosts-dirty'), $hostsNote);
 
 async function refreshSecurity() {
   const s = await getSecurityConfig();
@@ -525,10 +560,19 @@ $passwordForm.addEventListener('submit', (e) => {
     const pw = $passwordForm.elements.namedItem('password').value;
     const pw2 = $passwordForm.elements.namedItem('password2').value;
     if (pw !== pw2) { $passwordError.textContent = 'passwords do not match'; return; }
-    if (!confirm('Require this password to access Flatline?\n\nOther active sessions will be logged out.')) return;
+    const ok = await confirmDialog({
+      title: 'Save site password?',
+      body: [
+        'This password will be required to reach Flatline\'s UI and API.',
+        'Any other active sessions will be signed out.'
+      ],
+      confirmText: 'Save password'
+    });
+    if (!ok) return;
     try {
       const result = await setSitePassword(pw);
       $passwordForm.reset();
+      passwordDirty.markClean();
       $passwordNote.textContent = `✓ ${result.note}`;
       await refreshSecurity();
     } catch (err) {
@@ -539,7 +583,13 @@ $passwordForm.addEventListener('submit', (e) => {
 
 $passwordRemove.addEventListener('click', () => {
   void (async () => {
-    if (!confirm('Remove the site password?\n\nThe UI and API will be open to anyone who can reach this port.')) return;
+    const ok = await confirmDialog({
+      title: 'Remove the site password?',
+      body: '!WARNING! Flatline\'s UI and API will be open to anyone who can reach this URL or IP:Port.',
+      confirmText: 'Remove password',
+      danger: true
+    });
+    if (!ok) return;
     $passwordError.textContent = '';
     try {
       const result = await removeSitePassword();
@@ -558,6 +608,7 @@ $hostsForm.addEventListener('submit', (e) => {
     $hostsNote.textContent = '';
     try {
       await putSettings({ allowed_hosts: $hostsForm.elements.namedItem('allowed_hosts').value });
+      hostsDirty.markClean();
       $hostsNote.textContent = 'Saved ✓';
       setTimeout(() => { $hostsNote.textContent = ''; }, 2500);
     } catch (err) {

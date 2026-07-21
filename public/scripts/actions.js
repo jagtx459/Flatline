@@ -4,7 +4,7 @@ import {
   listActionGroups, createActionGroup, updateActionGroup, deleteActionGroup,
   listGroups, updateGroup
 } from './api.js';
-import { el, clear, fmtDateTime, enabledPill, initCollapsible } from './dom.js';
+import { el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth } from './header.js';
 
 initHeaderAuth();
@@ -55,6 +55,7 @@ const $k8sAuthMethod = $form.elements.namedItem('k8s_auth_method');
 const $k8sAction = $form.elements.namedItem('k8s_action');
 const targetFormSection = initCollapsible('actions:target-form',
   document.getElementById('target-form-header'), document.getElementById('target-form-body'));
+const targetDirty = initDirtyNote($form, document.getElementById('target-dirty'), $formSaveNote);
 
 let editingTargetId = null;
 /** Secret fields the user asked to clear on this edit. */
@@ -132,6 +133,7 @@ function renderSecretStates(kind, storedFields) {
         clearBtn.textContent = 'undo';
         hint.textContent = '· will be removed on save ';
       }
+      targetDirty.markDirty();
     });
     const hint = el('span', {}, '· stored ✓ (leave blank to keep) ');
     state.append(hint, clearBtn);
@@ -200,6 +202,7 @@ function resetTargetForm() {
   $formReset.style.display = '';
   $formError.textContent = '';
   $formSaveNote.textContent = '';
+  targetDirty.markClean();
   renderSecretStates('none', []);
   syncKindSections();
 }
@@ -382,7 +385,13 @@ function renderTargetTable() {
     const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
     delBtn.addEventListener('click', () => {
       void (async () => {
-        if (!confirm(`Delete target "${t.name}" and its stored credentials?`)) return;
+        const ok = await confirmDialog({
+          title: 'Delete action target?',
+          body: `"${t.name}" and its stored credentials will be permanently deleted. Any action group step that runs it will stop working.`,
+          confirmText: 'Delete target',
+          danger: true
+        });
+        if (!ok) return;
         await deleteActionTarget(t.id);
         if (editingTargetId === t.id) resetTargetForm();
         await refreshAll();
@@ -392,14 +401,22 @@ function renderTargetTable() {
     const runBtn = el('button', { class: 'btn danger-soft small' }, 'Run');
     runBtn.addEventListener('click', () => {
       void (async () => {
-        const verb = t.kind === 'http' ? 'Send the real request configured for' : 'Run the command/action configured for';
-        if (!confirm(`${verb} "${t.name}" right now?\n\nThis performs the ACTUAL action — be careful in production environments.`)) return;
+        const whatRuns = t.kind === 'http'
+          ? `This sends the real request configured for "${t.name}" immediately.`
+          : `This runs the real command configured for "${t.name}" immediately.`;
+        const ok = await confirmDialog({
+          title: 'Run this action now?',
+          body: [whatRuns, 'This runs the action selected and CANNOT be undone!'],
+          confirmText: 'Run now',
+          danger: true
+        });
+        if (!ok) return;
         runBtn.disabled = true;
         try {
           const result = await runActionTarget(t.id);
-          alert(`${result.ok ? '✓ succeeded' : '✕ failed'}: ${result.message}`);
+          await alertDialog({ title: result.ok ? 'Action completed' : 'Action failed', body: result.message });
         } catch (err) {
-          alert(`Error: ${err.message}`);
+          await alertDialog({ title: 'Action failed', body: err.message });
         } finally {
           await refreshAll();
         }
@@ -417,13 +434,18 @@ function renderTargetTable() {
     } else {
       restoreBtn.addEventListener('click', () => {
         void (async () => {
-          if (!confirm(`Undo/restore "${t.name}" right now?\n\n${RESTORE_HINTS[t.kind] ?? ''}`)) return;
+          const ok = await confirmDialog({
+            title: 'Run restore now?',
+            body: [`This runs the restore/undo action for "${t.name}".`, RESTORE_HINTS[t.kind] ?? ''],
+            confirmText: 'Restore now'
+          });
+          if (!ok) return;
           restoreBtn.disabled = true;
           try {
             const result = await restoreActionTarget(t.id);
-            alert(`${result.ok ? '✓ succeeded' : '✕ failed'}: ${result.message}`);
+            await alertDialog({ title: result.ok ? 'Restore completed' : 'Restore failed', body: result.message });
           } catch (err) {
-            alert(`Error: ${err.message}`);
+            await alertDialog({ title: 'Restore failed', body: err.message });
           } finally {
             await refreshAll();
           }
@@ -474,6 +496,7 @@ const $stageAddBtn = document.getElementById('stage-add-btn');
 const $igFlatlineGroupChecks = document.getElementById('ig-flatline-group-checks');
 const igroupFormSection = initCollapsible('actions:igroup-form',
   document.getElementById('igroup-form-header'), document.getElementById('igroup-form-body'));
+const igDirty = initDirtyNote($igForm, document.getElementById('igroup-dirty'), $igSaveNote);
 
 let editingIgId = null;
 /** Ordered stages being edited: [{ pass_rule, on_failure, steps: [{ target_id, timeout_seconds }] }] */
@@ -683,6 +706,7 @@ function fillIgForm(g) {
   $igReset.style.display = 'none';
   $igError.textContent = '';
   $igSaveNote.textContent = '';
+  igDirty.markClean();
   igroupFormSection.expand();
   $igForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -756,7 +780,13 @@ function renderIgTable() {
     const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
     delBtn.addEventListener('click', () => {
       void (async () => {
-        if (!confirm(`Delete action group "${g.name}"? Its targets are kept.`)) return;
+        const ok = await confirmDialog({
+          title: 'Delete action group?',
+          body: `"${g.name}" will be deleted. The action targets it uses are still available, only this sequence of steps is removed.`,
+          confirmText: 'Delete group',
+          danger: true
+        });
+        if (!ok) return;
         await deleteActionGroup(g.id);
         if (editingIgId === g.id) resetIgForm();
         await refreshAll();

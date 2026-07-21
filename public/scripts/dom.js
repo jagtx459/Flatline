@@ -93,6 +93,72 @@ export function hideTooltip() {
     if (tooltipEl)
         tooltipEl.style.display = 'none';
 }
+// ---- styled dialogs (replace native confirm()/alert()) ----
+/** Shared dialog. `body` is a string or array of paragraphs. Resolves true when
+ *  confirmed, false when cancelled/dismissed. With no cancelText it's an alert
+ *  (single button, resolves true). Enter confirms, Escape/backdrop cancels. */
+export function showDialog({ title = '', body = [], confirmText = 'OK', cancelText = null, danger = false } = {}) {
+    const lines = (Array.isArray(body) ? body : [body]).filter(Boolean);
+    return new Promise((resolve) => {
+        let done = false;
+        const overlay = el('div', { class: 'modal-overlay' });
+        const confirmBtn = el('button', { type: 'button', class: `btn${danger ? ' danger-ghost' : ''}` }, confirmText);
+        const cancelBtn = cancelText != null
+            ? el('button', { type: 'button', class: 'btn ghost' }, cancelText)
+            : null;
+
+        overlay.append(el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, title ? el('h2', { class: 'modal-title' }, title) : null, ...lines.map((t) => el('p', { class: 'modal-body' }, t)), el('div', { class: 'modal-actions' }, cancelBtn, confirmBtn)));
+
+        function close(result) {
+            if (done)
+                return;
+            done = true;
+            document.removeEventListener('keydown', onKey);
+            overlay.remove();
+            resolve(result);
+        }
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                close(false);
+            }
+            else if (e.key === 'Enter') {
+                e.preventDefault();
+                close(true);
+            }
+        }
+        confirmBtn.addEventListener('click', () => close(true));
+        if (cancelBtn)
+            cancelBtn.addEventListener('click', () => close(false));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+        document.addEventListener('keydown', onKey);
+
+        document.body.append(overlay);
+        confirmBtn.focus();
+    });
+}
+/** window.confirm() replacement: OK/Cancel, styled to match the app. */
+export function confirmDialog(opts) {
+    return showDialog({ confirmText: 'Confirm', cancelText: 'Cancel', ...opts });
+}
+/** window.alert() replacement: a single dismiss button. */
+export function alertDialog(opts) {
+    return showDialog({ confirmText: 'OK', ...opts });
+}
+/** Shows "Unsaved changes" in noteEl whenever the form gets user input, and
+ *  clears an optional "Saved ✓" note at the same time. Programmatic changes
+ *  (form.reset(), setting .value) fire no input event, so loading/filling a
+ *  form stays clean. Call markClean() after save/reset/fill. */
+export function initDirtyNote(form, noteEl, savedEl = null) {
+    const markDirty = () => {
+        noteEl.textContent = 'Unsaved changes';
+        if (savedEl)
+            savedEl.textContent = '';
+    };
+    form.addEventListener('input', markDirty);
+    form.addEventListener('change', markDirty);
+    return { markDirty, markClean: () => { noteEl.textContent = ''; } };
+}
 // ---- formatting helpers ----
 // Fixed mm/dd/yy + 24-hour clock, independent of browser locale, so every
 // timestamp in the app reads the same way (no AM/PM).
