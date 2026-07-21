@@ -413,8 +413,8 @@ $keyRotate.addEventListener('click', () => {
     const ok = await confirmDialog({
       title: 'Rotate encryption key?',
       body: [
-        'A fresh key will be generated and every stored credential re-encrypted under it — nothing has to be re-entered.',
-        'The new key replaces the key file in the data directory. Back it up afterwards; without it, stored credentials can\'t be recovered.'
+        'A fresh key will be generated and every stored credential re-encrypted under it.',
+        'The new key replaces the key file in the data directory. Back it up afterwards; without it, stored credentials CANNOT be recovered.'
       ],
       confirmText: 'Rotate key',
       danger: true
@@ -454,7 +454,7 @@ $keyForm.addEventListener('submit', (e) => {
       title: 'Re-encrypt with this key?',
       body: [
         'Every stored credential will be re-encrypted with the key you entered.',
-        'Make sure you\'ve saved it somewhere safe; without it, stored credentials can\'t be recovered.'
+        'Make sure you store it somewhere safe; without it, credentials CANNOT be recovered.'
       ],
       confirmText: 'Re-encrypt',
       danger: true
@@ -585,7 +585,7 @@ $passwordRemove.addEventListener('click', () => {
   void (async () => {
     const ok = await confirmDialog({
       title: 'Remove the site password?',
-      body: 'Flatline\'s UI and API will be open to anyone who can reach this port — no login required.',
+      body: '!WARNING! Flatline\'s UI and API will be open to anyone who can reach this URL or IP:Port.',
       confirmText: 'Remove password',
       danger: true
     });

@@ -406,7 +406,7 @@ function renderTargetTable() {
           : `This runs the real command configured for "${t.name}" immediately.`;
         const ok = await confirmDialog({
           title: 'Run this action now?',
-          body: [whatRuns, 'It performs the actual action, not a test — be careful on production systems.'],
+          body: [whatRuns, 'This runs the action selected and CANNOT be undone!'],
           confirmText: 'Run now',
           danger: true
         });
@@ -436,7 +436,7 @@ function renderTargetTable() {
         void (async () => {
           const ok = await confirmDialog({
             title: 'Run restore now?',
-            body: [`This runs the restore/undo action for "${t.name}" immediately.`, RESTORE_HINTS[t.kind] ?? ''],
+            body: [`This runs the restore/undo action for "${t.name}".`, RESTORE_HINTS[t.kind] ?? ''],
             confirmText: 'Restore now'
           });
           if (!ok) return;
@@ -716,7 +716,7 @@ function renderIgTable() {
       void (async () => {
         const ok = await confirmDialog({
           title: 'Delete action group?',
-          body: `"${g.name}" will be deleted. The action targets it uses are kept — only this sequence of steps is removed.`,
+          body: `"${g.name}" will be deleted. The action targets it uses are still available, only this sequence of steps is removed.`,
           confirmText: 'Delete group',
           danger: true
         });

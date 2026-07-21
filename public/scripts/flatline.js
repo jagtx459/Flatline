@@ -343,7 +343,7 @@ function renderEndpointTable() {
       void (async () => {
         const ok = await confirmDialog({
           title: 'Delete endpoint?',
-          body: `"${ep.name}" and all of its check history will be permanently deleted. This can't be undone.`,
+          body: `"${ep.name}" and all of its check history will be permanently deleted. This CANNOT be undone.`,
           confirmText: 'Delete endpoint',
           danger: true
         });
