@@ -103,7 +103,11 @@ sudo chmod 440 /etc/sudoers.d/flatline
               </select>
             </label>
           </div>
-          <div class="grid" style="margin-top:10px">
+          <!-- Two capped columns: password and passphrase are mutually exclusive by auth
+               method, so only two of these three fields ever show. Capping each at 380px
+               keeps the "· stored ✓ (leave blank to keep)" caption on one line without
+               stretching the inputs full width. -->
+          <div class="grid" style="margin-top:10px; grid-template-columns: repeat(2, minmax(0, 380px))">
             <label class="field"><span class="cap">Username</span><input type="text" name="ssh_username"
                 maxlength="2000" autocomplete="off"></label>
             <label class="field secret" data-secret="password" data-ssh-auth="password"><span class="cap">Password <span
@@ -117,12 +121,15 @@ sudo chmod 440 /etc/sudoers.d/flatline
             <span class="cap">Private key (PEM) <span class="secret-state"></span></span>
             <textarea name="ssh_private_key" rows="4" spellcheck="false"
               placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+            <button type="button" class="btn ghost small" id="ssh-key-upload-btn"
+              style="align-self:flex-start; margin-top:8px">Upload from file</button>
+            <input type="file" id="ssh-key-upload" hidden>
           </label>
           <label class="field" style="margin-top:10px"><span class="cap">Command to run on trigger</span>
             <input type="text" name="ssh_command" maxlength="10000" placeholder="sudo shutdown -h +0">
           </label>
           <p class="hint-row" style="margin-top:10px">If the command needs <code>sudo</code>, the cleanest fix is passwordless sudo for it on the host (<code>NOPASSWD:</code> in sudoers). Otherwise set a sudo password below; Flatline writes it to the command's stdin on trigger, so the command must read it there itself (e.g. start it with <code>sudo -S</code>).</p>
-          <div class="grid">
+          <div class="grid" style="grid-template-columns: minmax(0, 380px)">
             <label class="field secret" data-secret="sudo_password"><span class="cap">Sudo password (optional) <span
                   class="secret-state"></span></span>
               <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
@@ -204,6 +211,9 @@ Restart-Service WinRM</pre>
             <span class="cap">Kubeconfig (YAML) <span class="secret-state"></span></span>
             <textarea name="k8s_kubeconfig" rows="4" spellcheck="false"
               placeholder="apiVersion: v1&#10;kind: Config&#10;..."></textarea>
+            <button type="button" class="btn ghost small" id="k8s-kubeconfig-upload-btn"
+              style="align-self:flex-start; margin-top:8px">Upload from file</button>
+            <input type="file" id="k8s-kubeconfig-upload" hidden>
           </label>
           <div class="grid">
             <label class="field"><span class="cap">Action on trigger</span>

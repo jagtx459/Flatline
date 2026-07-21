@@ -5,7 +5,7 @@ import {
   getSettings, putSettings,
   getSecurityConfig, setSitePassword, removeSitePassword
 } from './api.js';
-import { el, clear, fmtDateTime, initCollapsible, initDirtyNote, confirmDialog, alertDialog } from './dom.js';
+import { el, clear, fmtDateTime, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
 
 initHeaderAuth();
@@ -389,6 +389,8 @@ const $keyRotateSection = document.getElementById('key-rotate-section');
 const $keyRotate = document.getElementById('key-rotate');
 const $keyForm = document.getElementById('key-form');
 const $keyGenerate = document.getElementById('key-generate');
+const $keyUploadBtn = document.getElementById('key-upload-btn');
+const $keyUpload = document.getElementById('key-upload');
 const $keyNote = document.getElementById('key-note');
 const $keyError = document.getElementById('key-error');
 // No savedEl: $keyNote also carries the "Generated locally…" hint, which a
@@ -443,6 +445,13 @@ $keyGenerate.addEventListener('click', () => {
   $keyNote.textContent = 'Generated locally in your browser — copy it somewhere safe before saving.';
   $keyError.textContent = '';
   keyDirty.markDirty();
+});
+
+wireFileUpload($keyUploadBtn, $keyUpload, $keyForm.elements.namedItem('key'), () => {
+  const field = $keyForm.elements.namedItem('key');
+  field.value = field.value.trim();
+  $keyNote.textContent = 'Loaded from file — verify it, then re-encrypt.';
+  $keyError.textContent = '';
 });
 
 $keyForm.addEventListener('submit', (e) => {
