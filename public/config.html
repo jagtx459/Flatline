@@ -236,11 +236,13 @@
             <span class="cap">Set key manually (64 hex chars or base64 for 32 bytes)</span>
             <input type="text" name="key" maxlength="64" autocomplete="off" spellcheck="false"
               placeholder="paste or generate a key">
+            <input type="file" id="key-upload" hidden>
           </label>
         </div>
         <div class="form-actions">
           <button type="submit" class="btn danger-soft" id="key-set">Re-encrypt with this key</button>
           <button type="button" class="btn ghost" id="key-generate">Generate</button>
+          <button type="button" class="btn ghost" id="key-upload-btn">Upload from file</button>
           <span class="dirty-note" id="key-dirty"></span>
           <span class="note" id="key-note"></span>
           <span class="error" id="key-error"></span>

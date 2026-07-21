@@ -159,6 +159,27 @@ export function initDirtyNote(form, noteEl, savedEl = null) {
     form.addEventListener('change', markDirty);
     return { markDirty, markClean: () => { noteEl.textContent = ''; } };
 }
+/**
+ * Wire a "load from file" button + hidden file input so picking a file reads its
+ * text into target.value. The file is never uploaded or written anywhere — only
+ * its contents are pulled into the field, then saved by the normal form submit.
+ */
+export function wireFileUpload(btn, fileInput, target, onLoad) {
+    btn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+        const file = fileInput.files[0];
+        if (!file)
+            return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            target.value = reader.result;
+            fileInput.value = ''; // reset so re-picking the same file fires change again
+            if (onLoad)
+                onLoad();
+        };
+        reader.readAsText(file);
+    });
+}
 // ---- formatting helpers ----
 // Fixed mm/dd/yy + 24-hour clock, independent of browser locale, so every
 // timestamp in the app reads the same way (no AM/PM).
