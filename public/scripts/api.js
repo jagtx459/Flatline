@@ -135,6 +135,49 @@ export function setKey(key) {
   return request('/api/config/key', { method: 'PUT', body: JSON.stringify({ key }) });
 }
 
+// backup / restore & config transfer
+export function exportConfig() {
+  return request('/api/config/export');
+}
+export function importConfig(data) {
+  return request('/api/config/import', { method: 'POST', body: JSON.stringify(data) });
+}
+export function resetApp() {
+  return request('/api/config/reset', { method: 'POST' });
+}
+
+/** Shared 401->login + error handling for the non-JSON (binary) backup routes. */
+async function binaryRequest(path, init) {
+  const res = await fetch(path, init);
+  if (res.status === 401 && location.pathname !== '/login') {
+    location.href = '/login';
+    throw new Error('authentication required');
+  }
+  return res;
+}
+
+/** Downloads the SQLite DB file as a Blob (backup). */
+export async function downloadBackup() {
+  const res = await binaryRequest('/api/config/backup');
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error ?? `request failed (${res.status})`);
+  }
+  return res.blob();
+}
+
+/** Uploads a DB file (File/Blob) to restore; the server restarts on success. */
+export async function restoreBackup(file) {
+  const res = await binaryRequest('/api/config/restore', {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: file
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.error ?? `request failed (${res.status})`);
+  return body;
+}
+
 // notification channels
 export function listNotificationChannels() {
   return request('/api/notifications');

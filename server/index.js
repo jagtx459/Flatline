@@ -1,6 +1,8 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, createWriteStream, readdirSync, statSync } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as store from './db.js';
@@ -32,6 +34,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const PORT = Number(process.env.PORT ?? 3131);
 const PKG_VERSION = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+// Config imports can carry many large encrypted secrets (kubeconfigs, keys), so
+// this route gets a roomier body cap than the default 1 MB — still bounded.
+const IMPORT_MAX_BYTES = 25 * 1024 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -45,9 +50,39 @@ const MIME = {
 
 // ---------- helpers ----------
 
+// Best encoding the client accepts, in our order of preference (brotli beats
+// gzip on text and matters most over a slow VPN link). Returns null for none.
+function pickEncoding(acceptEncoding) {
+  const ae = String(acceptEncoding ?? '');
+  if (/\bbr\b/.test(ae)) return 'br';
+  if (/\bgzip\b/.test(ae)) return 'gzip';
+  return null;
+}
+
+// Compressing responses below ~1 KB costs more in headers/CPU than it saves.
+const COMPRESS_MIN_BYTES = 1024;
+
 function sendJson(res, status, body) {
+  const json = JSON.stringify(body);
+  const enc = Buffer.byteLength(json) >= COMPRESS_MIN_BYTES
+    ? pickEncoding(res.req?.headers['accept-encoding'])
+    : null;
+  if (enc) {
+    // Bounded brotli quality: full-quality br on every dynamic response would
+    // burn CPU for little extra ratio; 5 is a good latency/size trade.
+    const data = enc === 'br'
+      ? zlib.brotliCompressSync(json, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } })
+      : zlib.gzipSync(json);
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-encoding': enc,
+      vary: 'Accept-Encoding'
+    });
+    res.end(data);
+    return;
+  }
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
+  res.end(json);
 }
 
 function sendError(res, status, message) {
@@ -430,8 +465,10 @@ async function handleApi(req, res, url) {
   }
 
   // Mutating requests must be JSON — an HTML form can't produce that, which
-  // (with the SameSite session cookie and Host check) shuts down CSRF.
-  if (mutating) {
+  // (with the SameSite session cookie and Host check) shuts down CSRF. The DB
+  // restore upload is the one exception (it streams a binary file); same-origin
+  // is still enforced above, so CSRF is still covered.
+  if (mutating && url.pathname !== '/api/config/restore') {
     const ctype = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
     if (ctype !== 'application/json') {
       sendError(res, 415, 'content-type must be application/json');
@@ -764,6 +801,81 @@ async function handleApi(req, res, url) {
     return handleKeyChange(res, key);
   }
 
+  // ---- backup / restore & config transfer ----
+
+  // GET /api/config/export — the portable config as JSON (secrets stay encrypted).
+  if (method === 'GET' && url.pathname === '/api/config/export') {
+    sendJson(res, 200, { flatline_config: 1, exported_at: Date.now(), ...store.exportConfig() });
+    return;
+  }
+
+  // POST /api/config/import — replace ALL config from an exported JSON file.
+  if (method === 'POST' && url.pathname === '/api/config/import') {
+    const body = await readJsonBody(req, IMPORT_MAX_BYTES);
+    let counts;
+    try {
+      counts = store.replaceConfig(body);
+    } catch (err) {
+      sendError(res, 400, `could not import config: ${err.message}`);
+      return;
+    }
+    reschedule();                 // pick up the new endpoint set
+    invalidateSecurityCache();    // allowed_hosts may have changed
+    store.recordEvent({ ts: Date.now(), kind: 'config_imported', message: 'Configuration imported from file — endpoints, groups, actions, and channels replaced' });
+    sendJson(res, 200, { ok: true, counts });
+    return;
+  }
+
+  // POST /api/config/reset — factory reset: wipe all config, history, and
+  // settings (incl. the site password) back to a fresh-install state.
+  if (method === 'POST' && url.pathname === '/api/config/reset') {
+    store.resetAll();
+    reschedule();                 // no endpoints left to poll
+    invalidateSecurityCache();    // password + allowed hosts are gone — auth is now off
+    store.recordEvent({ ts: Date.now(), kind: 'config_reset', message: 'Application reset to a clean state from the config page — all config, history, and site password cleared' });
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // GET /api/config/backup — download the full SQLite database file.
+  if (method === 'GET' && url.pathname === '/api/config/backup') {
+    store.checkpoint(); // fold the WAL in so the file is a complete snapshot
+    const data = readFileSync(store.dbFile);
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-disposition': 'attachment; filename="flatline-backup.db"',
+      'content-length': data.length
+    });
+    res.end(data);
+    return;
+  }
+
+  // POST /api/config/restore — overwrite the DB with an uploaded backup and
+  // reopen the connection in place (no restart). The body streams to disk (see
+  // restoreTmpFile) rather than buffering in memory.
+  if (method === 'POST' && url.pathname === '/api/config/restore') {
+    const ctype = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (ctype !== 'application/octet-stream') { sendError(res, 415, 'restore body must be application/octet-stream'); return; }
+    try {
+      await pipeline(req, createWriteStream(store.restoreTmpFile));
+    } catch (err) {
+      store.discardRestore();
+      sendError(res, 400, `upload failed: ${err.message}`);
+      return;
+    }
+    try {
+      store.applyRestore();
+    } catch (err) {
+      sendError(res, 400, `invalid database backup: ${err.message}`);
+      return;
+    }
+    reschedule();                 // poll the restored endpoint set
+    invalidateSecurityCache();    // password/allowed hosts came from the backup
+    store.recordEvent({ ts: Date.now(), kind: 'db_restored', message: 'Database restored from an uploaded backup' });
+    sendJson(res, 200, { ok: true, note: 'Database restored.' });
+    return;
+  }
+
   // ---- notification channels ----
 
   // POST /api/notifications/test — test a saved (id) or unsaved (draft) channel.
@@ -1039,6 +1151,46 @@ const PAGE_ROUTES = {
   '/login': '/login.html'
 };
 
+// Text assets are worth precompressing; PNG/ico are already compressed.
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
+
+// The public/ tree is small and never changes at runtime, so we read it once
+// into memory at startup with a content-hash ETag and precomputed brotli+gzip
+// variants. Requests then get cheap 304s (no re-download on every page nav) and
+// the smallest encoding the client accepts — the latter matters over a VPN.
+// Trade-off: editing a file needs a server restart to take effect.
+const STATIC_CACHE = buildStaticCache();
+
+function buildStaticCache() {
+  const cache = new Map();
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const abs = path.join(dir, name);
+      if (statSync(abs).isDirectory()) { walk(abs); continue; }
+      const data = readFileSync(abs);
+      const key = '/' + path.relative(PUBLIC_DIR, abs).split(path.sep).join('/');
+      const ext = path.extname(abs).toLowerCase();
+      const entry = {
+        data,
+        mime: MIME[ext] ?? 'application/octet-stream',
+        etag: `"${createHash('sha1').update(data).digest('base64url')}"`,
+        variants: {}
+      };
+      if (COMPRESSIBLE.has(ext)) {
+        entry.variants.gzip = zlib.gzipSync(data, { level: 9 });
+        entry.variants.br = zlib.brotliCompressSync(data, {
+          params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 }
+        });
+      }
+      cache.set(key, entry);
+    }
+  };
+  walk(PUBLIC_DIR);
+  return cache;
+}
+
+// async only so the dispatcher's uniform `handler.catch(...)` still applies —
+// the body itself is synchronous (everything is served from memory).
 async function handleStatic(req, res, pathname) {
   // When auth is enabled, pages redirect to/away from the login screen.
   // Assets (css/js/logo) stay open so the login page itself can render —
@@ -1058,20 +1210,30 @@ async function handleStatic(req, res, pathname) {
   }
 
   const rel = PAGE_ROUTES[pathname] ?? pathname;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!filePath.startsWith(PUBLIC_DIR + path.sep) && filePath !== PUBLIC_DIR) {
-    sendError(res, 403, 'forbidden');
+  const entry = STATIC_CACHE.get(rel);
+  if (!entry) {
+    sendError(res, 404, 'not found');
     return;
   }
 
-  try {
-    const data = await readFile(filePath);
-    const mime = MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
-    res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-cache' });
-    res.end(data);
-  } catch {
-    sendError(res, 404, 'not found');
+  // Revalidate cheaply: unchanged assets come back as an empty 304.
+  if (req.headers['if-none-match'] === entry.etag) {
+    res.writeHead(304, { etag: entry.etag, 'cache-control': 'no-cache' });
+    res.end();
+    return;
   }
+
+  const enc = pickEncoding(req.headers['accept-encoding']);
+  const body = (enc && entry.variants[enc]) ? entry.variants[enc] : entry.data;
+  const headers = {
+    'content-type': entry.mime,
+    'cache-control': 'no-cache',
+    etag: entry.etag,
+    vary: 'Accept-Encoding'
+  };
+  if (enc && entry.variants[enc]) headers['content-encoding'] = enc;
+  res.writeHead(200, headers);
+  res.end(body);
 }
 
 // ---------- server ----------

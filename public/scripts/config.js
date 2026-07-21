@@ -3,9 +3,10 @@ import {
   deleteNotificationChannel, testNotificationChannel,
   getKeyStatus, rotateKey, setKey,
   getSettings, putSettings,
-  getSecurityConfig, setSitePassword, removeSitePassword
+  getSecurityConfig, setSitePassword, removeSitePassword,
+  exportConfig, importConfig, resetApp, downloadBackup, restoreBackup
 } from './api.js';
-import { el, clear, fmtDateTime, initCollapsible, initDirtyNote, confirmDialog, alertDialog } from './dom.js';
+import { el, clear, fmtDateTime, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
 
 initHeaderAuth();
@@ -389,6 +390,8 @@ const $keyRotateSection = document.getElementById('key-rotate-section');
 const $keyRotate = document.getElementById('key-rotate');
 const $keyForm = document.getElementById('key-form');
 const $keyGenerate = document.getElementById('key-generate');
+const $keyUploadBtn = document.getElementById('key-upload-btn');
+const $keyUpload = document.getElementById('key-upload');
 const $keyNote = document.getElementById('key-note');
 const $keyError = document.getElementById('key-error');
 // No savedEl: $keyNote also carries the "Generated locally…" hint, which a
@@ -443,6 +446,13 @@ $keyGenerate.addEventListener('click', () => {
   $keyNote.textContent = 'Generated locally in your browser — copy it somewhere safe before saving.';
   $keyError.textContent = '';
   keyDirty.markDirty();
+});
+
+wireFileUpload($keyUploadBtn, $keyUpload, $keyForm.elements.namedItem('key'), () => {
+  const field = $keyForm.elements.namedItem('key');
+  field.value = field.value.trim();
+  $keyNote.textContent = 'Loaded from file — verify it, then re-encrypt.';
+  $keyError.textContent = '';
 });
 
 $keyForm.addEventListener('submit', (e) => {
@@ -613,6 +623,165 @@ $hostsForm.addEventListener('submit', (e) => {
       setTimeout(() => { $hostsNote.textContent = ''; }, 2500);
     } catch (err) {
       $hostsError.textContent = err.message;
+    }
+  })();
+});
+
+// ---------- backup & restore ----------
+
+const $configExport = document.getElementById('config-export');
+const $configImportBtn = document.getElementById('config-import-btn');
+const $configImport = document.getElementById('config-import');
+const $configNote = document.getElementById('config-transfer-note');
+const $configError = document.getElementById('config-transfer-error');
+const $dbBackup = document.getElementById('db-backup');
+const $dbRestoreBtn = document.getElementById('db-restore-btn');
+const $dbRestore = document.getElementById('db-restore');
+const $appReset = document.getElementById('app-reset');
+const $dbNote = document.getElementById('db-transfer-note');
+const $dbError = document.getElementById('db-transfer-error');
+
+/** yyyymmdd-hhmmss for download filenames. */
+function tsSlug() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/** Triggers a browser download of a Blob — nothing is written server-side. */
+function saveBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = el('a', { href: url, download: filename });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+$configExport.addEventListener('click', () => {
+  void (async () => {
+    $configError.textContent = '';
+    $configNote.textContent = 'Preparing export…';
+    try {
+      const data = await exportConfig();
+      saveBlob(`flatline-config-${tsSlug()}.json`,
+        new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      $configNote.textContent = 'Exported ✓';
+    } catch (err) {
+      $configNote.textContent = '';
+      $configError.textContent = err.message;
+    }
+  })();
+});
+
+$configImportBtn.addEventListener('click', () => $configImport.click());
+$configImport.addEventListener('change', () => {
+  const file = $configImport.files[0];
+  $configImport.value = ''; // allow re-picking the same file
+  if (!file) return;
+  void (async () => {
+    $configError.textContent = '';
+    $configNote.textContent = '';
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      $configError.textContent = 'that file is not valid JSON';
+      return;
+    }
+    const ok = await confirmDialog({
+      title: 'Import configuration?',
+      body: [
+        'This REPLACES all current endpoints, Flatline groups, action targets, action groups, and notification channels with the file’s contents.',
+        'Encrypted credentials import as-is and only work if this instance uses the same encryption key. This can’t be undone.'
+      ],
+      confirmText: 'Replace configuration',
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await importConfig(data);
+      $configNote.textContent = 'Configuration imported ✓';
+      await refreshChannels();
+      await loadSettings();
+      await refreshKeyStatus();
+      await refreshSecurity();
+    } catch (err) {
+      $configError.textContent = err.message;
+    }
+  })();
+});
+
+$dbBackup.addEventListener('click', () => {
+  void (async () => {
+    $dbError.textContent = '';
+    $dbNote.textContent = 'Preparing backup…';
+    try {
+      const blob = await downloadBackup();
+      saveBlob(`flatline-backup-${tsSlug()}.db`, blob);
+      $dbNote.textContent = 'Backup downloaded ✓';
+    } catch (err) {
+      $dbNote.textContent = '';
+      $dbError.textContent = err.message;
+    }
+  })();
+});
+
+$dbRestoreBtn.addEventListener('click', () => $dbRestore.click());
+$dbRestore.addEventListener('change', () => {
+  const file = $dbRestore.files[0];
+  $dbRestore.value = '';
+  if (!file) return;
+  void (async () => {
+    $dbError.textContent = '';
+    $dbNote.textContent = '';
+    const ok = await confirmDialog({
+      title: 'Restore database?',
+      body: [
+        'This OVERWRITES the entire database (configuration and all history) with the uploaded file.',
+        'Stored credentials work only if this instance uses the same encryption key as the backup. This can’t be undone.'
+      ],
+      confirmText: 'Overwrite database',
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await restoreBackup(file);
+      $dbNote.textContent = 'Database restored ✓';
+      await refreshChannels();
+      await loadSettings();
+      await refreshKeyStatus();
+      await refreshSecurity();
+    } catch (err) {
+      $dbError.textContent = err.message;
+    }
+  })();
+});
+
+$appReset.addEventListener('click', () => {
+  void (async () => {
+    $dbError.textContent = '';
+    $dbNote.textContent = '';
+    const ok = await confirmDialog({
+      title: 'Reset Flatline to a clean start?',
+      body: [
+        'This PERMANENTLY deletes ALL endpoints, Flatline groups, action targets, action groups, notification channels, and all history.',
+        'It also removes the site password (login turns OFF and the UI/API become open to anyone who can reach this port) and clears allowed hosts and settings. The encryption key is kept.',
+        'This cannot be undone.'
+      ],
+      confirmText: 'Reset everything',
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await resetApp();
+      $dbNote.textContent = 'Flatline reset to a clean start ✓';
+      await refreshChannels();
+      await loadSettings();
+      await refreshKeyStatus();
+      await refreshSecurity();
+    } catch (err) {
+      $dbError.textContent = err.message;
     }
   })();
 });

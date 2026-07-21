@@ -8,6 +8,10 @@
   <link rel="stylesheet" href="/assets/style.css">
   <link rel="icon" type="image/png" href="/assets/Logo.png">
   <script src="/scripts/theme-init.js"></script>
+  <link rel="modulepreload" href="/scripts/api.js">
+  <link rel="modulepreload" href="/scripts/dom.js">
+  <link rel="modulepreload" href="/scripts/header.js">
+  <link rel="modulepreload" href="/scripts/theme.js">
 </head>
 
 <body>
@@ -236,11 +240,13 @@
             <span class="cap">Set key manually (64 hex chars or base64 for 32 bytes)</span>
             <input type="text" name="key" maxlength="64" autocomplete="off" spellcheck="false"
               placeholder="paste or generate a key">
+            <input type="file" id="key-upload" hidden>
           </label>
         </div>
         <div class="form-actions">
           <button type="submit" class="btn danger-soft" id="key-set">Re-encrypt with this key</button>
           <button type="button" class="btn ghost" id="key-generate">Generate</button>
+          <button type="button" class="btn ghost" id="key-upload-btn">Upload from file</button>
           <span class="dirty-note" id="key-dirty"></span>
           <span class="note" id="key-note"></span>
           <span class="error" id="key-error"></span>
@@ -283,6 +289,37 @@
           <span class="error" id="hosts-error"></span>
         </div>
       </form>
+    </div>
+
+    <div class="card">
+      <h2>Backup &amp; restore</h2>
+
+      <h3 style="margin-top:4px">Configuration (JSON)</h3>
+      <p class="hint-row">Export endpoints, Flatline groups, action targets, action groups, and notification
+        channels to a JSON file. Credentials are included but stay <strong>encrypted</strong>. Importing to another instance works only if it uses the <strong>same encryption key</strong>. Importing
+        <strong>replaces</strong> all existing configuration.</p>
+      <div class="form-actions">
+        <button type="button" class="btn" id="config-export">Export config</button>
+        <button type="button" class="btn danger-soft" id="config-import-btn">Import config</button>
+        <input type="file" id="config-import" accept="application/json,.json" hidden>
+        <span class="note" id="config-transfer-note"></span>
+        <span class="error" id="config-transfer-error"></span>
+      </div>
+
+      <h3 style="margin-top:20px">Database</h3>
+      <p class="hint-row">Download a full snapshot of the SQLite database (configuration <em>and</em> history),
+        or restore one. Restoring <strong>replaces the entire database</strong>; stored credentials work only
+        if this instance uses the same encryption key as the backup. It is <strong>STRONGLY</strong> recommended to have access to your current encryption key or generate a new one prior to performing a backup->restore procedure.</p>
+      <div class="form-actions">
+        <button type="button" class="btn" id="db-backup">Backup database</button>
+        <button type="button" class="btn danger-soft" id="db-restore-btn">Restore database</button>
+        <input type="file" id="db-restore" accept=".db,application/octet-stream,application/x-sqlite3" hidden>
+        <button type="button" class="btn danger-soft" id="app-reset">Reset database</button>
+        <span class="note" id="db-transfer-note"></span>
+        <span class="error" id="db-transfer-error"></span>
+      </div>
+      <p class="hint-row">This will reset <strong>all</strong> endpoints, groups, actions,
+        channels, history, removes the site password, and clears settings. Only the encryption key is kept.</p>
     </div>
   </div>
 

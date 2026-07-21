@@ -4,7 +4,7 @@ import {
   listActionGroups, createActionGroup, updateActionGroup, deleteActionGroup,
   listGroups, updateGroup
 } from './api.js';
-import { el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, confirmDialog, alertDialog } from './dom.js';
+import { el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth } from './header.js';
 
 initHeaderAuth();
@@ -111,6 +111,19 @@ $httpScheme.addEventListener('change', syncHttpAuthFields);
 $sshAuthMethod.addEventListener('change', syncSshAuthFields);
 $k8sAuthMethod.addEventListener('change', syncK8sAuthFields);
 $k8sAction.addEventListener('change', syncK8sActionFields);
+
+// The file inputs live inside $form, so their change events bubble up and mark
+// the form dirty via initDirtyNote — no explicit markDirty needed here.
+wireFileUpload(
+  document.getElementById('ssh-key-upload-btn'),
+  document.getElementById('ssh-key-upload'),
+  $form.elements.namedItem('ssh_private_key')
+);
+wireFileUpload(
+  document.getElementById('k8s-kubeconfig-upload-btn'),
+  document.getElementById('k8s-kubeconfig-upload'),
+  $form.elements.namedItem('k8s_kubeconfig')
+);
 
 /** Shows "stored" state + a clear toggle next to each secret input. */
 function renderSecretStates(kind, storedFields) {

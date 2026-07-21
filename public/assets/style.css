@@ -113,6 +113,12 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+.card h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
 
 /* ---- collapsible card sections (add/edit forms) ---- */
 .card-header {
