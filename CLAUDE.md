@@ -85,6 +85,6 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 
 ### Code quality
 
-- **Reuse before adding** — check shared kustomize bases and existing manifests in sibling apps before writing new ones.
-- **No dead code** — if a Service has no Endpoints or an `Application` points at a deleted path, fix or remove it.
-- **No premature abstractions** — only extract a kustomize base when used in 2+ overlays.
+- **Reuse before adding** — check shared libraries or functionality manifests in other files before writing new ones.
+- **No dead code** — if a feature or functionality is not called or points at a deleted path, fix or remove it.
+- **No premature abstractions** — only extract a feature or function if a more generalized patter fits the use case or improves code readability
