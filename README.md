@@ -13,9 +13,14 @@
 </div>
 A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for initiating graceful shutdowns or migrations of infrastructure during a power outage to avoid data corruption and loss.  
 
-<div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard.png?raw=true" alt="icon" width="480" height="480">
+<div align="center">
+    <td>
+        <tr><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard.png?raw=true" alt="icon" width="480" height="480"> <img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard-dark.png?raw=true" alt="icon" width="480" height="480"></tr>
+        <tr>
 
 ****This app is still a work in progress and is intended for homelab and testing environements only, use at your own risk!*** *
+        </tr>
+    </td> 
 </div>
 
 ## How it works
@@ -79,12 +84,19 @@ Optional environment variables:
   - `FLATLINE_ALLOWED_HOSTS` (extra hostnames allowed in the `Host` header, e.g. `flatline.lan`)
   - `PORT`. 
 
-## Run directly
+## Run directly for dev and test
 
 ```sh
 npm install
-npm start          # http://localhost:3131
+npm start          # http://localhost:3131 —> data stored in data/
+npm run tests      # assertions against the app and action engine
+npm run dev        # seeded demo instance, everything healthy
+npm run dev:tests  # seeded demo with planned looping events
 ```
+
+`dev` uses `data/dev` and mock targets, never your real `data/`. Add `-- --reseed` for fresh data
+
+See [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md) for details.
 
 ## AI
 

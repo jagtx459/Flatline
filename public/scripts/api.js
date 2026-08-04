@@ -93,6 +93,21 @@ export function updateActionGroup(id, input) {
 export function deleteActionGroup(id) {
   return request(`/api/actions/groups/${id}`, { method: 'DELETE' });
 }
+export function runActionGroup(id) {
+  return request(`/api/actions/groups/${id}/run`, { method: 'POST' });
+}
+
+// action runs (an execution of an action group) — the list itself rides along
+// on the dashboard payload; these are the controls.
+export function pauseActionRun(id) {
+  return request(`/api/actions/runs/${id}/pause`, { method: 'POST' });
+}
+export function resumeActionRun(id) {
+  return request(`/api/actions/runs/${id}/resume`, { method: 'POST' });
+}
+export function cancelActionRun(id) {
+  return request(`/api/actions/runs/${id}/cancel`, { method: 'POST' });
+}
 
 // settings
 export function getSettings() {

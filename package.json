@@ -1,12 +1,14 @@
 {
   "name": "flatline",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Monitor ICMP/HTTP endpoints, to arm scripts for graceful shutdown or migrate infrastructure.",
   "type": "module",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test"
+    "dev": "node dev/start.js",
+    "dev:tests": "node dev/start.js --tests",
+    "tests": "node --test"
   },
   "engines": {
     "node": ">=24.0.0"

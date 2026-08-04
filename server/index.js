@@ -12,6 +12,10 @@ import {
 } from './secrets.js';
 import { startPoller, reschedule } from './poller.js';
 import { startShutdownWatcher, getGroupStates } from './shutdown.js';
+import {
+  startActionGroupRun, pauseRun, resumeRun, cancelRun, isRunning,
+  markInterruptedRuns, publicRun
+} from './actionRuns.js';
 import { runCheck } from './checks.js';
 import { testTarget, runStep, restoreStep } from './connectors.js';
 import {
@@ -396,6 +400,7 @@ function publicTarget(t) {
 
 const DASHBOARD_BUCKETS = 120;
 const RECENT_CHECKS = 90;
+const DASHBOARD_RUNS = 10;
 
 // Settings keys the API may expose — auth_password_hash must never leave the
 // process, even hashed.
@@ -404,6 +409,36 @@ const PUBLIC_SETTINGS = ['grace_minutes', 'retention_days', 'allowed_hosts'];
 function publicSettings() {
   const all = store.getSettings();
   return Object.fromEntries(PUBLIC_SETTINGS.filter((k) => k in all).map((k) => [k, all[k]]));
+}
+
+/**
+ * Action groups as the dashboard's left-hand list wants them: how many of the
+ * targets the group actually runs are reachable right now (same background
+ * health poll the Actions page dots use), plus when it last ran.
+ */
+function actionGroupSummaries() {
+  const targets = store.listActionTargets();
+  const flatlineGroups = store.listFlatlineGroups();
+  const lastRuns = store.lastActionRunByGroup();
+
+  return store.listActionGroups().map((g) => {
+    const ids = [...new Set(g.stages.flatMap((st) => st.steps.map((s) => s.target_id)))];
+    const members = ids.map((id) => targets.find((t) => t.id === id)).filter(Boolean);
+    const enabledMembers = members.filter((t) => t.enabled);
+    const lastRun = lastRuns.find((r) => r.action_group_id === g.id);
+    return {
+      id: g.id,
+      name: g.name,
+      enabled: !!g.enabled,
+      stage_count: g.stages.length,
+      target_total: members.length,
+      target_up: enabledMembers.filter((t) => getTargetHealth(t.id)?.ok === true).length,
+      target_down: enabledMembers.filter((t) => getTargetHealth(t.id)?.ok === false).length,
+      target_disabled: members.length - enabledMembers.length,
+      flatline_group_names: flatlineGroups.filter((fg) => fg.action_group_ids.includes(g.id)).map((fg) => fg.name),
+      last_run: lastRun ? { status: lastRun.status, started_at: lastRun.started_at } : null
+    };
+  });
 }
 
 function dashboardPayload(hours) {
@@ -439,6 +474,8 @@ function dashboardPayload(hours) {
     range_hours: hours,
     settings: publicSettings(),
     groups: getGroupStates(),
+    action_groups: actionGroupSummaries(),
+    action_runs: store.listActionRuns(DASHBOARD_RUNS).map(publicRun),
     endpoints,
     events: store.listEvents(25)
   };
@@ -736,6 +773,38 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // POST /api/actions/groups/:id/run — runs the whole action group now, outside any
+  // Flatline group or grace period. Real execution; the UI confirms first.
+  if (parts[1] === 'actions' && parts[2] === 'groups' && parts.length === 5 && parts[4] === 'run' && method === 'POST') {
+    const id = Number(parts[3]);
+    const group = Number.isInteger(id) ? store.getActionGroup(id) : undefined;
+    if (!group) { sendError(res, 404, 'action group not found'); return; }
+    if (isRunning(id)) { sendError(res, 409, `"${group.name}" is already running`); return; }
+
+    // startActionGroupRun records the action_run_started event itself.
+    const { run } = startActionGroupRun(group, { trigger: 'manual', detail: 'started from the dashboard' });
+    sendJson(res, 202, publicRun(store.getActionRun(run.id)));
+    return;
+  }
+
+  // POST /api/actions/runs/:id/(pause|resume|cancel) — steer a live run. The
+  // run list itself rides along on the dashboard payload.
+  if (parts[1] === 'actions' && parts[2] === 'runs') {
+    if (method === 'POST' && parts.length === 5) {
+      const id = Number(parts[3]);
+      const run = Number.isInteger(id) ? store.getActionRun(id) : undefined;
+      if (!run) { sendError(res, 404, 'run not found'); return; }
+
+      const control = { pause: pauseRun, resume: resumeRun, cancel: cancelRun }[parts[4]];
+      if (!control) { sendError(res, 404, 'unknown run control'); return; }
+
+      const problem = control(id);
+      if (problem) { sendError(res, 409, problem); return; }
+      sendJson(res, 200, publicRun(store.getActionRun(id)));
+      return;
+    }
+  }
+
   // /api/actions/groups and /api/actions/groups/:id
   if (parts[1] === 'actions' && parts[2] === 'groups') {
     if (method === 'GET' && parts.length === 3) {
@@ -871,6 +940,7 @@ async function handleApi(req, res, url) {
     }
     reschedule();                 // poll the restored endpoint set
     invalidateSecurityCache();    // password/allowed hosts came from the backup
+    markInterruptedRuns();        // runs in the backup belong to another process
     store.recordEvent({ ts: Date.now(), kind: 'db_restored', message: 'Database restored from an uploaded backup' });
     sendJson(res, 200, { ok: true, note: 'Database restored.' });
     return;
@@ -1296,6 +1366,7 @@ server.listen(PORT, () => {
   if (!authRequired()) {
     console.log('[auth] no FLATLINE_PASSWORD set — the UI and API are open to anyone who can reach this port');
   }
+  markInterruptedRuns();
   startPoller();
   startShutdownWatcher();
   startTargetHealthPoller();

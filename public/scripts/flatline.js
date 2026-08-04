@@ -89,6 +89,7 @@ function fillGroupForm(g) {
   $groupSaveNote.textContent = '';
   groupDirty.markClean();
   groupFormSection.expand();
+  endpointFormSection.collapse(); // one edit form open at a time
   $groupForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -263,6 +264,7 @@ function fillForm(ep) {
   formDirty.markClean();
   syncTypeFields();
   endpointFormSection.expand();
+  groupFormSection.collapse(); // one edit form open at a time
   $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
