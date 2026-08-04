@@ -19,7 +19,7 @@ import { startMockTargets, SCENARIO } from './mock-targets.js';
  * through npm they need the `--` separator (`npm run dev -- --reseed`), since
  * npm rejects any flag it doesn't recognise as one of its own.
  *
- * For pass/fail assertions use `npm test` instead — this script is the live
+ * For pass/fail assertions use `npm run tests` instead — this script is the live
  * instance, not the checker.
  */
 

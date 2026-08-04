@@ -46,7 +46,7 @@ jobs:
         run: npm audit --audit-level=high
 
       - name: Run tests
-        run: npm test
+        run: npm run tests
 
   trivy:
     name: Vulnerability scan

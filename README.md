@@ -81,17 +81,15 @@ Optional environment variables:
 
 ## Run directly for dev and test
 
-Needs Node 24+.
-
 ```sh
 npm install
-npm start          # http://localhost:3131 — the app, data in data/
-npm test           # assertions against the app and action engine
+npm start          # http://localhost:3131 —> data stored in data/
+npm run tests      # assertions against the app and action engine
 npm run dev        # seeded demo instance, everything healthy
-npm run dev:tests  # ...plus a looping outage scenario
+npm run dev:tests  # seeded demo with planned looping events
 ```
 
-`dev` uses `data/dev` and mock targets, never your real `data/`. Add `--reseed` for fresh data: `node dev/start.js --tests --reseed`.
+`dev` uses `data/dev` and mock targets, never your real `data/`. Add `-- --reseed` for fresh data
 
 See [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md) for details.
 

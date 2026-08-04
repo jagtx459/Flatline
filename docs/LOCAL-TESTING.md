@@ -2,12 +2,12 @@
 
 | Command | What it is |
 | --- | --- |
-| `npm test` | The checker. Asserts specific outcomes against the app and the run engine, and fails on error. Touches nothing you own — every test runs on its own throwaway database. |
+| `npm run tests` | The checker. Asserts specific outcomes against the app and the run engine, and fails on error. Touches nothing in the `data` directory. Every run of `tests` uses its own throwaway database. |
 | `npm run dev` | A live instance on demo data, everything healthy, for clicking around. |
 | `npm run dev:tests` | The same instance, with the scripted outage driving it on a loop so groups arm, fire, and recover while you watch. |
 
-`dev:tests` is a live exercise, not a pass/fail run — it shows you the whole path
-working. `npm test` is what says whether it's correct.
+`dev:tests` is a live exercise, not a pass/fail run. It shows you the whole path
+working in the UI.
 
 ### Passing flags
 
@@ -18,23 +18,18 @@ The simplest way to combine them is to skip npm and call the script:
 node dev/start.js --tests --reseed
 ```
 
-Through npm, flags need `--` first — `npm run dev -- --reseed`. That separator
-is npm's, not ours: without it npm reads `--reseed` as its own option and fails
-with `EUNKNOWNCONFIG` rather than passing it along. `npm run dev:tests` exists so
-the common case needs no separator at all.
-
-## npm test — the checker
+## npm run tests
 
 ```sh
-npm test
+npm run tests
 ```
 
-Runs everything in `test/`. Notably `test/action-runs.test.js` drives the action
+Runs everything in `tests/`. Notably `tests/action-runs.test.js` drives the action
 run engine against real sockets (a mock target server on an ephemeral port), so
 it pins the behaviour that's easy to break:
 
-- a stage's steps run **at once** — two 1.2s steps cost ~1.2s, not 2.4s
-- a step's timeout is a **give-up limit**, not a wait — a step with a 30s limit
+- a stage, with more than one step, run **at once**, two 1.2s steps cost ~1.2s, not 2.4s
+- a step's timeout is a **give-up limit**, not a wait. A step with a 30s limit
   against an instant target returns in milliseconds
 - a step that outlasts its limit fails, and the run says so
 - `on_failure: stop` halts the sequence; `continue` finishes it and still
@@ -46,8 +41,8 @@ it pins the behaviour that's easy to break:
 - run history outlives its action group, and prunes with retention (but a live
   run is never pruned)
 
-`test/outage-lifecycle.test.js` covers the whole outage path end to end —
-healthy endpoints, both fail, the group arms, its grace period elapses, its
+`tests/outage-lifecycle.test.js` covers the whole outage path end to end. Healthy 
+endpoints, both fail, the group arms, its grace period elapses, its
 action group actually runs, the endpoints recover, the group disarms, and a
 second outage fires again. It writes the endpoint states the poller would write
 and lets the real watcher react, dating the outage a minute back so a
@@ -55,7 +50,7 @@ minutes-long feature can be tested in seconds.
 
 Add to these files when you touch `server/actionRuns.js` or `server/shutdown.js`.
 
-## npm run dev — the live instance
+## npm run dev
 
 ```sh
 npm run dev                         # healthy instance to click around in
@@ -66,7 +61,7 @@ node dev/start.js --tests --reseed
 
 This starts mock targets on `127.0.0.1:3198`, seeds demo data (only when the
 database is empty, unless `--reseed`), and serves the app on
-<http://localhost:3131> against **`data/dev`** — the production `data/`
+<http://localhost:3131> against **`data/dev`**  directory; the production `data/`
 directory is never touched.
 
 Without `--tests` every endpoint reports healthy and stays that way, so nothing
@@ -79,8 +74,7 @@ ms), `/hang` (never answers, for watching a step hit its limit), and
 ### The outage cycle (`--tests` only)
 
 `npm run dev:tests` runs a scripted outage on a loop, so endpoints are seen
-healthy before they fail — the sequence a real trigger depends on. Each phase is
-announced in the console (`[dev] scenario: DOWN for 120s — …`).
+healthy before they fail. Each phase is announced in the console (`[dev] scenario: DOWN for 120s — …`).
 
 | Phase | Length | What should happen |
 | --- | --- | --- |
@@ -96,13 +90,13 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 
 | Thing | Behaviour |
 | --- | --- |
-| Office router (ICMP 127.0.0.1) | stays up — the ICMP example (ICMP can't be scripted) |
+| Office router (ICMP 127.0.0.1) | stays up the whole test (ICMP can't be scripted) |
 | UPS management (HTTP `/scenario`) | **follows the outage cycle** under `--tests`; healthy without it |
 | Lab API (HTTP `/scenario`) | **follows the outage cycle** under `--tests`; healthy without it |
 | NAS web UI (HTTP `/up`) | stays up |
-| Flatline group "Power loss" | ALL mode, 1 min grace — both members ride the cycle, so it arms only during the outage |
-| Flatline group "Lab services" | ANY mode, 1 min grace — the always-up NAS never trips it; Lab API does |
-| Action group "Graceful shutdown" | 3 stages, first one ~6s — long enough to pause and cancel |
+| Flatline group "Power loss" | ALL mode, 1 min grace. Both members follow the cycle, so it arms only during the outage |
+| Flatline group "Lab services" | ANY mode, 1 min grace. The always-up NAS never trips it; Lab API does |
+| Action group "Graceful shutdown" | 3 stages, first one ~6s, long enough to pause and cancel |
 | Action group "Failure demo" | stage 1 always fails with `on_failure: stop` |
 | Action group "Quick notify" | one instant stage |
 
@@ -117,14 +111,14 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 - [ ] The split row sits between the endpoint cards and Recent events, its two
       cards are the same height, and it stacks to one column under ~900px wide.
 - [ ] Clicking **either** the Action groups or Action runs header collapses
-      **both** — never one alone — and the choice survives a refresh.
+      **both** and the choice survives a refresh.
 - [ ] Left card lists every action group with its stage count, its target
       summary (`n/m targets up`, plus `down` / `disabled` when non-zero), the
       Flatline groups that run it, and its last run.
 - [ ] "Run now" asks for confirmation, then the run appears on the right.
 - [ ] "Run now" is disabled while that group is running, and for a group with
       no targets.
-- [ ] Within about a minute "Lab services" arms, then triggers on its own — two
+- [ ] Within about a minute "Lab services" arms, then triggers on its own, two
       runs appear without anyone pressing anything.
 
 **A live run (use "Graceful shutdown")**
