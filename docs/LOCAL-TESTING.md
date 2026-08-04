@@ -140,6 +140,8 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
       left it.
 - [ ] Recent events shows eight rows and scrolls to the rest; the heading
       stays put.
+- [ ] Clicking the Recent events heading folds it away on its own — the action
+      cards are unaffected — and the choice survives a refresh.
 - [ ] An armed group's banner has an × that clears it, the banner doesn't come
       back on the next refresh, and it does come back when the group triggers,
       or when it recovers and fails again.

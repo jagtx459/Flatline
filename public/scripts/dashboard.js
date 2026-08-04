@@ -743,13 +743,26 @@ async function control(fn, run, btn) {
 
 // ---- events ----
 
+const EVENTS_KEY = 'flatline.eventsCollapsed';
+
 function renderEvents() {
+  const collapsed = localStorage.getItem(EVENTS_KEY) === '1';
   const scrolled = $events.querySelector('.row-list')?.scrollTop ?? 0;
   clear($events);
-  $events.append(el('h2', {}, 'Recent events'));
+
+  const header = el('div', { class: 'card-header', 'aria-expanded': String(!collapsed) },
+    el('h2', {}, 'Recent events'),
+    el('span', { class: 'chevron' }, '▸'));
+  header.addEventListener('click', () => {
+    localStorage.setItem(EVENTS_KEY, collapsed ? '0' : '1');
+    renderEvents(); // this card only — a full render would reset the scroll position
+  });
+  $events.append(header);
+  if (collapsed) return;
 
   if (data.events.length === 0) {
-    $events.append(el('div', { class: 'empty' }, 'No events yet — state changes and action activity will appear here.'));
+    $events.append(el('div', { class: 'card-body' },
+      el('div', { class: 'empty' }, 'No events yet — state changes and action activity will appear here.')));
     return;
   }
 
@@ -790,7 +803,7 @@ function renderEvents() {
     ));
   }
 
-  $events.append(list);
+  $events.append(el('div', { class: 'card-body' }, list));
   capList(list, EVENT_ROWS);
   list.scrollTop = scrolled;
 }
