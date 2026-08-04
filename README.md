@@ -11,7 +11,7 @@
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/jagtx459/flatline/ci.yml?style=flat-square&label=Validation%20%26%20Scan)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/jagtx459/flatline/docker-publish.yml?style=flat-square&label=Build%20%26%20Publish%20Image)
 ![GitHub package.json version](https://img.shields.io/github/package-json/v/jagtx459/flatline?style=flat-square) 
-[![Docker Pulls](https://img.shields.io/docker/pulls/jagtx459/flatline?style=flat-square&label=pulls&logo=docker)](https://hub.docker.com/r/jagtx45/flatline)
+[![Docker Pulls](https://img.shields.io/docker/pulls/jagtx459/flatline?style=flat-square&label=pulls&logo=docker)](https://hub.docker.com/repository/docker/jagtx459/flatline)
 
 </div>
 A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for initiating graceful shutdowns or migrations of infrastructure during a power outage to avoid data corruption and loss.  
