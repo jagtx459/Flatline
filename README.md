@@ -13,9 +13,14 @@
 </div>
 A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for initiating graceful shutdowns or migrations of infrastructure during a power outage to avoid data corruption and loss.  
 
-<div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard.png?raw=true" alt="icon" width="480" height="480">
+<div align="center">
+    <td>
+        <tr><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard.png?raw=true" alt="icon" width="480" height="480"> <img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard-dark.png?raw=true" alt="icon" width="480" height="480"></tr>
+        <tr>
 
 ****This app is still a work in progress and is intended for homelab and testing environements only, use at your own risk!*** *
+        </tr>
+    </td> 
 </div>
 
 ## How it works
