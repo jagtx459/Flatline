@@ -38,8 +38,9 @@ export function enabledPill(enabled) {
 
 /** Wires up a click-to-toggle card section (header + body), collapsed by
  *  default, remembered per-browser across refreshes via localStorage.
- *  Returns { expand() } so callers can force it open (e.g. clicking Edit
- *  on a table row should reveal the form even if the section is collapsed). */
+ *  Returns { expand(), collapse() } so callers can force the state (clicking
+ *  Edit on a table row reveals that form, and folds the page's other form away
+ *  so only one edit form is open at a time). */
 export function initCollapsible(key, headerEl, bodyEl) {
     const storageKey = `flatline:collapsed:${key}`;
     let collapsed = localStorage.getItem(storageKey) !== '0';
@@ -56,7 +57,7 @@ export function initCollapsible(key, headerEl, bodyEl) {
     headerEl.addEventListener('click', () => setCollapsed(!collapsed));
     apply();
 
-    return { expand: () => setCollapsed(false) };
+    return { expand: () => setCollapsed(false), collapse: () => setCollapsed(true) };
 }
 // ---- shared tooltip (values lead, labels follow; textContent only) ----
 let tooltipEl = null;

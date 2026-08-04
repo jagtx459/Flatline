@@ -216,6 +216,38 @@ export const migrations = [
         ALTER TABLE action_group_members_new RENAME TO action_group_members;
       `);
     }
+  },
+  {
+    version: 5,
+    name: 'record action group runs',
+    up(db) {
+      // One row per execution of an action group, so the dashboard can show
+      // what is running (and what ran) across a restart. The action group's
+      // name is snapshotted alongside the id: the id goes NULL if the group is
+      // later deleted, but the history still reads correctly.
+      //
+      // 'interrupted' is the status a run is left in when the process stops
+      // mid-run — nothing can report its outcome after that.
+      db.exec(`
+        CREATE TABLE action_runs (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          action_group_id   INTEGER REFERENCES action_groups(id) ON DELETE SET NULL,
+          action_group_name TEXT NOT NULL,
+          trigger           TEXT NOT NULL CHECK (trigger IN ('flatline', 'manual')),
+          trigger_detail    TEXT,
+          status            TEXT NOT NULL CHECK (status IN
+                              ('running', 'paused', 'completed', 'failed', 'cancelled', 'interrupted')),
+          stage_index       INTEGER NOT NULL DEFAULT 0,
+          stage_count       INTEGER NOT NULL DEFAULT 0,
+          steps             TEXT NOT NULL DEFAULT '[]',
+          started_at        INTEGER NOT NULL,
+          estimated_end_ts  INTEGER,
+          ended_at          INTEGER,
+          message           TEXT
+        );
+        CREATE INDEX idx_action_runs_started ON action_runs (started_at);
+      `);
+    }
   }
 ];
 

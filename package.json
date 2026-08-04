@@ -6,6 +6,8 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
+    "dev": "node dev/start.js",
+    "dev:tests": "node dev/start.js --tests",
     "test": "node --test"
   },
   "engines": {

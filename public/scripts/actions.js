@@ -276,6 +276,7 @@ function fillTargetForm(t) {
   $formCancel.style.display = '';
   $formReset.style.display = 'none';
   targetFormSection.expand();
+  igroupFormSection.collapse(); // one edit form open at a time
   $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -559,8 +560,12 @@ function renderStage(stage, si, stageMap) {
     renderStages();
   });
 
+  // Targets in a stage start together, so the slowest "give up after" is the
+  // longest this stage can take — spelled out so the limits don't read as delays.
+  const worstCase = stage.steps.length ? Math.max(...stage.steps.map((s) => s.timeout_seconds)) : 0;
   const parallelNote = el('span', { class: 'hint' },
-    stage.steps.length > 1 ? ` · ${stage.steps.length} targets run at once` : ' · single target');
+    (stage.steps.length > 1 ? ` · ${stage.steps.length} targets run at once` : ' · single target')
+    + (worstCase ? ` · takes up to ${worstCase}s` : ''));
 
   const stepList = el('div', { class: 'step-list' });
   if (stage.steps.length === 0) {
@@ -606,11 +611,13 @@ function renderStageStep(stage, step, pi, stageMap) {
 
   const timeout = el('input', {
     type: 'number', min: '5', max: '3600', value: String(step.timeout_seconds),
-    class: 'step-timeout', title: 'Step timeout (seconds)'
+    class: 'step-timeout',
+    title: 'How long to wait for this target to answer before the step counts as failed. '
+      + 'Not a delay — a target that finishes sooner moves the stage along sooner.'
   });
   timeout.addEventListener('change', () => {
     step.timeout_seconds = Math.min(3600, Math.max(5, Number(timeout.value) || 60));
-    timeout.value = String(step.timeout_seconds);
+    renderStages(); // the stage's "takes up to Ns" note follows this value
   });
 
   const remove = el('button', { type: 'button', class: 'btn danger-ghost small', title: 'Remove target' }, '✕');
@@ -627,7 +634,8 @@ function renderStageStep(stage, step, pi, stageMap) {
         ? el('span', { class: 'step-reuse', title: 'This target runs in more than one stage' },
             ` (Appears in Stage ${appearsIn.join(', ')})`)
         : null),
-    el('span', { class: 'step-timeout-wrap' }, timeout, el('span', { class: 'hint' }, 's timeout')),
+    el('span', { class: 'step-timeout-wrap' },
+      el('span', { class: 'hint' }, 'give up after'), timeout, el('span', { class: 'hint' }, 's')),
     el('span', { class: 'step-btns' }, remove)
   );
 }
@@ -721,6 +729,7 @@ function fillIgForm(g) {
   $igSaveNote.textContent = '';
   igDirty.markClean();
   igroupFormSection.expand();
+  targetFormSection.collapse(); // one edit form open at a time
   $igForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 

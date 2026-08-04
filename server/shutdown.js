@@ -1,7 +1,5 @@
 import * as store from './db.js';
-import { decryptSecrets } from './secrets.js';
-import { runStep } from './connectors.js';
-import { recordTargetActivity } from './targetHealth.js';
+import { startActionGroupRun } from './actionRuns.js';
 
 /**
  * Watches each enabled Flatline group. A group "fails" when its endpoints are
@@ -9,8 +7,8 @@ import { recordTargetActivity } from './targetHealth.js';
  * one). A failed group arms its own countdown; if it stays failed past the
  * group's grace period, its assigned action groups trigger.
  *
- * The actual action execution is deliberately a stub for now — see
- * triggerActions() — the connectors (SSH/WinRM/K8s/HTTP) come in a later phase.
+ * Executing those action groups is actionRuns.js's job — this file only
+ * decides when they start.
  */
 
 const EVAL_INTERVAL_MS = 5000;
@@ -18,8 +16,9 @@ const EVAL_INTERVAL_MS = 5000;
 /** group id -> { armed, outageStartTs, deadlineTs, triggered, triggeredTs } */
 const states = new Map();
 
+/** Returns the interval so tests can stop the watcher; the server ignores it. */
 export function startShutdownWatcher() {
-  setInterval(evaluate, EVAL_INTERVAL_MS);
+  return setInterval(evaluate, EVAL_INTERVAL_MS);
 }
 
 /** Per-group countdown state for the dashboard. */
@@ -123,63 +122,11 @@ async function triggerActions(group, now) {
   });
   console.log(`[watcher] "${group.name}" TRIGGERED — running: ${names.join(', ') || '(none)'}`);
 
+  // Sequential, as before: one action group's stages finish before the next
+  // starts. A paused run therefore holds the ones behind it, which is the
+  // point of pausing.
   for (const ag of actionGroups) {
-    await runActionGroup(ag);
+    const { done } = startActionGroupRun(ag, { trigger: 'flatline', detail: group.name });
+    await done;
   }
-}
-
-/**
- * Runs an action group's stages in order. The steps within a stage run
- * simultaneously; the stage then decides whether it counts as failed (its
- * pass_rule) and, if so, whether to stop the rest of the sequence (its own
- * on_failure, falling back to the group's on_failure).
- */
-async function runActionGroup(actionGroup) {
-  const stages = actionGroup.stages ?? [];
-  for (let i = 0; i < stages.length; i++) {
-    const stage = stages[i];
-    const results = await Promise.all(stage.steps.map((step) => runActionStep(actionGroup, step)));
-
-    const failed = results.filter((r) => !r.ok).length;
-    const stageFailed = stage.pass_rule === 'all'
-      ? results.length > 0 && failed === results.length // every step in the stage failed
-      : failed > 0;                                     // any step in the stage failed
-
-    if (stageFailed && (stage.on_failure ?? actionGroup.on_failure) === 'stop') {
-      console.log(`[watcher] "${actionGroup.name}" stopping after stage ${i + 1} — ${failed}/${results.length} failed and on_failure is 'stop'`);
-      return;
-    }
-  }
-}
-
-/** Runs one step against its target and records the result. Returns { ok }. */
-async function runActionStep(actionGroup, step) {
-  const target = store.getActionTarget(step.target_id);
-  if (!target) {
-    store.recordEvent({
-      ts: Date.now(), kind: 'action_step_failed',
-      message: `"${actionGroup.name}": step target ${step.target_id} no longer exists`
-    });
-    return { ok: false };
-  }
-
-  let config;
-  try { config = JSON.parse(target.config); } catch { config = {}; }
-  const secrets = decryptSecrets(target.secret_enc);
-
-  let result;
-  try {
-    result = await runStep(target.kind, config, secrets, step.timeout_seconds * 1000);
-  } catch (err) {
-    result = { ok: false, message: err.message };
-  }
-
-  recordTargetActivity(target.id, result, 'run');
-  store.recordEvent({
-    ts: Date.now(),
-    kind: result.ok ? 'action_step_ok' : 'action_step_failed',
-    message: `"${actionGroup.name}" -> ${target.name} (${target.kind}): ${result.message}`
-  });
-  console.log(`[watcher] "${actionGroup.name}" -> ${target.name}: ${result.ok ? 'OK' : 'FAILED'} — ${result.message}`);
-  return { ok: result.ok };
 }

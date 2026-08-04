@@ -79,12 +79,21 @@ Optional environment variables:
   - `FLATLINE_ALLOWED_HOSTS` (extra hostnames allowed in the `Host` header, e.g. `flatline.lan`)
   - `PORT`. 
 
-## Run directly
+## Run directly for dev and test
+
+Needs Node 24+.
 
 ```sh
 npm install
-npm start          # http://localhost:3131
+npm start          # http://localhost:3131 — the app, data in data/
+npm test           # assertions against the app and action engine
+npm run dev        # seeded demo instance, everything healthy
+npm run dev:tests  # ...plus a looping outage scenario
 ```
+
+`dev` uses `data/dev` and mock targets, never your real `data/`. Add `--reseed` for fresh data: `node dev/start.js --tests --reseed`.
+
+See [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md) for details.
 
 ## AI
 

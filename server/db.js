@@ -155,6 +155,9 @@ export function uptimeStats(endpointId, fromTs) {
 export function pruneHistory(olderThanTs) {
   db.prepare('DELETE FROM checks WHERE ts < ?').run(olderThanTs);
   db.prepare('DELETE FROM events WHERE ts < ?').run(olderThanTs);
+  // Only finished runs — a long-running one predating the window is still live.
+  db.prepare("DELETE FROM action_runs WHERE started_at < ? AND status NOT IN ('running', 'paused')")
+    .run(olderThanTs);
 }
 
 // ---- events ----
@@ -355,6 +358,54 @@ function setActionGroupStages(groupId, stages) {
   });
 }
 
+// ---- action runs ----
+// One row per execution of an action group. `steps` is a JSON array of
+// { name, state } for the stage currently executing, rewritten as each of the
+// stage's parallel steps lands. See actionRuns.js for who writes these.
+
+export function createActionRun(r) {
+  const res = db.prepare(`
+    INSERT INTO action_runs
+      (action_group_id, action_group_name, trigger, trigger_detail, status,
+       stage_index, stage_count, steps, started_at, estimated_end_ts)
+    VALUES (?, ?, ?, ?, 'running', 0, ?, '[]', ?, ?)
+  `).run(r.action_group_id, r.action_group_name, r.trigger, r.trigger_detail ?? null,
+         r.stage_count, r.started_at, r.estimated_end_ts ?? null);
+  return getActionRun(Number(res.lastInsertRowid));
+}
+
+const RUN_COLUMNS = ['status', 'stage_index', 'steps', 'estimated_end_ts', 'ended_at', 'message'];
+
+/** Partial update — only the given columns are written. */
+export function updateActionRun(id, patch) {
+  const cols = RUN_COLUMNS.filter((c) => c in patch);
+  if (cols.length === 0) return getActionRun(id);
+  db.prepare(`UPDATE action_runs SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`)
+    .run(...cols.map((c) => patch[c]), id);
+  return getActionRun(id);
+}
+
+export function getActionRun(id) {
+  return db.prepare('SELECT * FROM action_runs WHERE id = ?').get(id);
+}
+
+export function listActionRuns(limit) {
+  return db.prepare('SELECT * FROM action_runs ORDER BY started_at DESC, id DESC LIMIT ?').all(limit);
+}
+
+export function listLiveActionRuns() {
+  return db.prepare("SELECT * FROM action_runs WHERE status IN ('running', 'paused') ORDER BY started_at").all();
+}
+
+/** Most recent run per action group, for the dashboard's action group list. */
+export function lastActionRunByGroup() {
+  return db.prepare(`
+    SELECT r.* FROM action_runs r
+    WHERE r.action_group_id IS NOT NULL
+      AND r.id = (SELECT MAX(id) FROM action_runs x WHERE x.action_group_id = r.action_group_id)
+  `).all();
+}
+
 // ---- notification channels ----
 // Same shape as action targets: config is plaintext JSON, secret_enc is the
 // encrypted blob from secrets.js and must be masked by the API layer.
@@ -545,6 +596,7 @@ export function resetAll() {
     for (const t of [...INSERT_ORDER].reverse()) db.exec(`DELETE FROM ${t}`);
     db.exec('DELETE FROM checks');  // deleting endpoints cascades most of these,
     db.exec('DELETE FROM events');  // but clear both outright (incl. system events)
+    db.exec('DELETE FROM action_runs');
     db.exec('DELETE FROM settings');
     const ins = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
     for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);

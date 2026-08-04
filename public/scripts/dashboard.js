@@ -1,5 +1,10 @@
-import { getDashboard } from './api.js';
-import { el, svg, clear, showTooltip, hideTooltip, fmtTime, fmtDateTime, fmtLatency, fmtUptime } from './dom.js';
+import {
+  getDashboard, runActionGroup, pauseActionRun, resumeActionRun, cancelActionRun
+} from './api.js';
+import {
+  el, svg, clear, showTooltip, hideTooltip, fmtTime, fmtDateTime, fmtLatency, fmtUptime,
+  confirmDialog, alertDialog
+} from './dom.js';
 import { initHeaderAuth } from './header.js';
 
 initHeaderAuth();
@@ -13,6 +18,7 @@ const RANGES = [
 ];
 
 const REFRESH_MS = 10_000;
+const ACTIVE_REFRESH_MS = 3_000;
 
 const GROUP_BY_OPTIONS = [
   { value: 'none', label: 'None' },
@@ -26,13 +32,14 @@ if (!RANGES.some((r) => r.hours === rangeHours)) rangeHours = 24;
 const groupByParam = new URLSearchParams(location.search).get('groupby');
 let groupBy = GROUP_BY_OPTIONS.some((o) => o.value === groupByParam)
   ? groupByParam
-  : (localStorage.getItem('flatline.groupBy') ?? 'none');
+  : (localStorage.getItem('flatline.groupBy') ?? 'group');
 let data = null;
 let fetchedAt = 0; // local clock at fetch, for countdown drift correction
 
 const $banners = document.getElementById('banners');
 const $filters = document.getElementById('filters');
 const $endpoints = document.getElementById('endpoints');
+const $actionPanel = document.getElementById('action-panel');
 const $events = document.getElementById('events');
 
 async function refresh() {
@@ -50,6 +57,7 @@ function render() {
   renderBanners();
   renderFilters();
   renderEndpoints();
+  renderActionPanel();
   renderEvents();
 }
 
@@ -174,15 +182,55 @@ function renderEndpoints() {
     }
   }
 
+  const collapsed = collapsedSections();
   for (const [title, eps] of sections) {
+    const key = `${groupBy}:${title}`;
+    const isCollapsed = collapsed.has(key);
     const down = eps.filter(e => e.enabled && e.state === 'down').length;
-    $endpoints.append(el('div', { class: 'group-heading' },
+
+    const heading = el('div', { class: 'group-heading', 'aria-expanded': String(!isCollapsed) },
+      el('span', { class: 'chevron' }, '▸'),
       el('span', { class: 'gh-title' }, title),
       el('span', { class: 'gh-count' }, down > 0 ? `${eps.length} endpoints · ${down} down` : `${eps.length} endpoints`)
-    ));
-    for (const ep of eps) {
-      $endpoints.append(endpointCard(ep));
-    }
+    );
+
+    // The cards get their own container so collapsing touches only this
+    // section. Re-rendering the page here instead would empty the document for
+    // an instant, and the browser would throw away the scroll position.
+    const body = el('div', { class: 'group-section' });
+    if (isCollapsed) body.style.display = 'none';
+    else for (const ep of eps) body.append(endpointCard(ep));
+
+    heading.addEventListener('click', () => toggleSection(key, heading, body, eps));
+    $endpoints.append(heading, body);
+  }
+}
+
+// Which group sections are folded away, remembered per grouping mode so
+// "Flatline group" and "Check type" keep their own state.
+const COLLAPSED_KEY = 'flatline.collapsedSections';
+
+function collapsedSections() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]'));
+  } catch {
+    return new Set();
+  }
+}
+
+function toggleSection(key, heading, body, eps) {
+  const set = collapsedSections();
+  const nowCollapsed = !set.has(key);
+  if (nowCollapsed) set.add(key);
+  else set.delete(key);
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
+
+  heading.setAttribute('aria-expanded', String(!nowCollapsed));
+  body.style.display = nowCollapsed ? 'none' : '';
+  // Cards are built the first time the section is actually visible — a chart
+  // measured while hidden would come out the wrong width.
+  if (!nowCollapsed && !body.firstChild) {
+    for (const ep of eps) body.append(endpointCard(ep));
   }
 }
 
@@ -436,6 +484,207 @@ function latencyChart(ep, width) {
   return root;
 }
 
+// ---- action groups + running actions (split row) ----
+
+const RUN_STATUS = {
+  running:     { cls: 'down',     label: 'RUNNING' },
+  paused:      { cls: 'unknown',  label: 'PAUSED' },
+  completed:   { cls: 'up',       label: 'COMPLETED' },
+  failed:      { cls: 'down',     label: 'FAILED' },
+  cancelled:   { cls: 'disabled', label: 'CANCELLED' },
+  interrupted: { cls: 'disabled', label: 'INTERRUPTED' }
+};
+
+const STEP_STATE_MARK = { running: '⋯', ok: '✓', failed: '✕' };
+
+const PANEL_KEY = 'flatline.actionPanelCollapsed';
+
+function renderActionPanel() {
+  clear($actionPanel);
+  const collapsed = localStorage.getItem(PANEL_KEY) === '1';
+  $actionPanel.append(
+    panelCard('Action groups', collapsed, actionGroupNodes),
+    panelCard('Action runs', collapsed, runListNodes)
+  );
+}
+
+/** The two halves fold as one — collapsing a single side would leave the row
+ *  lopsided, so either header toggles both. */
+function panelCard(title, collapsed, buildBody) {
+  const header = el('div', { class: 'card-header', 'aria-expanded': String(!collapsed) },
+    el('h2', {}, title),
+    el('span', { class: 'chevron' }, '▸'));
+  header.addEventListener('click', () => {
+    localStorage.setItem(PANEL_KEY, collapsed ? '0' : '1');
+    renderActionPanel(); // this row only — a full render would reset the scroll position
+  });
+
+  const card = el('div', { class: 'card' }, header);
+  if (!collapsed) card.append(el('div', { class: 'card-body' }, ...buildBody()));
+  return card;
+}
+
+function actionGroupNodes() {
+  if (data.action_groups.length === 0) {
+    return [el('div', { class: 'empty' },
+      el('div', {}, 'No action groups yet — build one on the '),
+      el('a', { href: '/actions' }, 'Actions page'))];
+  }
+
+  const rows = [];
+  for (const g of data.action_groups) {
+    const running = data.action_runs.some(
+      (r) => r.action_group_id === g.id && (r.status === 'running' || r.status === 'paused'));
+
+    const runBtn = el('button', { class: 'btn danger-soft small' }, 'Run now');
+    runBtn.disabled = running || g.target_total === 0;
+    if (running) runBtn.title = 'This action group is already running';
+    else if (g.target_total === 0) runBtn.title = 'This action group has no targets yet';
+    runBtn.addEventListener('click', () => void startRun(g, runBtn));
+
+    // Targets are counted once even when a group reuses one across stages.
+    const counts = [`${g.target_up}/${g.target_total} targets up`];
+    if (g.target_down > 0) counts.push(`${g.target_down} down`);
+    if (g.target_disabled > 0) counts.push(`${g.target_disabled} disabled`);
+
+    rows.push(el('div', { class: 'ag-row' },
+      el('div', { class: 'ag-head' },
+        el('span', { class: `pill ${g.enabled ? 'up' : 'disabled'}` },
+          el('span', { class: 'dot' }), g.enabled ? 'ENABLED' : 'DISABLED'),
+        el('span', { class: 'ag-name' }, g.name),
+        runBtn),
+      el('div', { class: 'ag-meta' },
+        el('span', {}, `${g.stage_count} stage${g.stage_count === 1 ? '' : 's'}`),
+        el('span', {}, counts.join(' · ')),
+        g.last_run
+          ? el('span', {}, `last run ${fmtDateTime(g.last_run.started_at)} (${g.last_run.status})`)
+          : el('span', {}, 'never run')),
+      g.flatline_group_names.length
+        ? el('div', { class: 'ag-meta' },
+            ...g.flatline_group_names.map((n) => el('span', { class: 'ag-badge' }, `⛓ ${n}`)))
+        : el('div', { class: 'ag-meta' }, el('span', {}, 'not assigned to a Flatline group'))
+    ));
+  }
+  return rows;
+}
+
+async function startRun(group, btn) {
+  const ok = await confirmDialog({
+    title: 'Run this action group now?',
+    body: [
+      `This runs all ${group.stage_count} stage(s) of "${group.name}" immediately, against every target in them.`,
+      'These are the real shutdown/drain actions — they CANNOT be undone from here!'
+    ],
+    confirmText: 'Run now',
+    danger: true
+  });
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    await runActionGroup(group.id);
+  } catch (err) {
+    await alertDialog({ title: 'Could not start the run', body: err.message });
+  }
+  await refresh();
+}
+
+function runListNodes() {
+  const live = data.action_runs.filter((r) => r.status === 'running' || r.status === 'paused');
+  // Nothing executing: fall back to the recent history so the panel still says
+  // something useful about what these action groups last did.
+  const shown = live.length ? live : data.action_runs.slice(0, 5);
+
+  if (shown.length === 0) {
+    return [el('div', { class: 'empty' },
+      el('div', {}, 'Nothing has run yet. Runs appear here when a Flatline group triggers, or when you start one.'))];
+  }
+
+  const nodes = live.length === 0
+    ? [el('div', { class: 'run-caption' }, 'Nothing running right now — most recent runs:')]
+    : [];
+  for (const run of shown) nodes.push(runRow(run));
+  return nodes;
+}
+
+function runRow(run) {
+  const status = RUN_STATUS[run.status] ?? { cls: 'unknown', label: run.status.toUpperCase() };
+  const live = run.status === 'running' || run.status === 'paused';
+
+  const row = el('div', { class: 'run-row' });
+  row.append(el('div', { class: 'run-head' },
+    el('span', { class: `pill ${status.cls}` }, el('span', { class: 'dot' }), status.label),
+    el('span', { class: 'run-name' }, run.action_group_name),
+    el('span', { class: 'run-stage' },
+      run.stage_count ? `stage ${Math.min(run.stage_index + 1, run.stage_count)} of ${run.stage_count}` : 'no stages')
+  ));
+
+  const timing = live
+    ? `started ${fmtDateTime(run.started_at)}${run.estimated_end_ts
+        ? ` · done by ${fmtDateTime(run.estimated_end_ts)} at the latest` : ''}`
+    : `${fmtDateTime(run.started_at)} → ${run.ended_at ? fmtDateTime(run.ended_at) : '—'}`;
+  row.append(el('div', { class: 'run-meta' },
+    el('span', {}, timing),
+    el('span', {}, run.trigger === 'manual' ? 'started manually' : `triggered by "${run.trigger_detail}"`)
+  ));
+
+  // The steps of a stage run at once, so this is the whole stage's progress,
+  // not a single "current" step.
+  if (run.steps.length) {
+    row.append(el('div', { class: 'run-steps' }, ...run.steps.map((s) =>
+      el('span', { class: `run-step ${s.state}` }, `${STEP_STATE_MARK[s.state] ?? ''} ${s.name}`))));
+  }
+  if (run.message) row.append(el('div', { class: 'run-message' }, run.message));
+
+  if (live) row.append(runControls(run));
+  return row;
+}
+
+function runControls(run) {
+  const wrap = el('div', { class: 'run-btns' });
+
+  const paused = run.status === 'paused';
+  const pauseBtn = el('button', { class: 'btn ghost small' }, paused ? 'Resume' : 'Pause');
+  pauseBtn.disabled = !run.controllable || run.cancel_requested;
+  pauseBtn.addEventListener('click', () => void control(paused ? resumeActionRun : pauseActionRun, run, pauseBtn));
+
+  const cancelBtn = el('button', { class: 'btn danger-ghost small' }, 'Cancel');
+  cancelBtn.disabled = !run.controllable || run.cancel_requested;
+  cancelBtn.addEventListener('click', () => {
+    void (async () => {
+      const ok = await confirmDialog({
+        title: 'Cancel this run?',
+        body: [
+          `"${run.action_group_name}" will stop before its next stage. Stages already run are NOT undone.`,
+          'The targets in the stage running right now finish first — a command already sent to a machine cannot be recalled.'
+        ],
+        confirmText: 'Cancel run',
+        danger: true
+      });
+      if (ok) await control(cancelActionRun, run, cancelBtn);
+    })();
+  });
+
+  wrap.append(pauseBtn, cancelBtn);
+  if (!run.controllable) {
+    wrap.append(el('span', { class: 'run-note' }, 'this run is no longer controllable'));
+  } else if (run.cancel_requested) {
+    wrap.append(el('span', { class: 'run-note' }, 'cancelling after the current stage…'));
+  } else if (run.pause_requested && run.status === 'running') {
+    wrap.append(el('span', { class: 'run-note' }, 'pausing after the current stage…'));
+  }
+  return wrap;
+}
+
+async function control(fn, run, btn) {
+  btn.disabled = true;
+  try {
+    await fn(run.id);
+  } catch (err) {
+    await alertDialog({ title: 'Could not change the run', body: err.message });
+  }
+  await refresh();
+}
+
 // ---- events ----
 
 function renderEvents() {
@@ -459,6 +708,8 @@ function renderEvents() {
       what = '✓ countdown disarmed'; cls = 'to-up';
     } else if (ev.kind === 'shutdown_triggered') {
       what = '⛔ ACTIONS TRIGGERED'; cls = 'to-down';
+    } else if (ev.kind === 'action_run_started') {
+      what = '▶ run started'; cls = 'to-down';
     } else if (ev.kind === 'action_step_ok') {
       what = '✓ step ok'; cls = 'to-up';
     } else if (ev.kind === 'action_step_failed') {
@@ -484,5 +735,9 @@ window.addEventListener('resize', () => {
   resizeTimer = window.setTimeout(render, 150);
 });
 
-void refresh();
-setInterval(() => void refresh(), REFRESH_MS);
+// A run's stages turn over in seconds, so poll faster while one is live.
+function scheduleRefresh() {
+  const live = data?.action_runs.some((r) => r.status === 'running' || r.status === 'paused');
+  setTimeout(() => void refresh().finally(scheduleRefresh), live ? ACTIVE_REFRESH_MS : REFRESH_MS);
+}
+void refresh().finally(scheduleRefresh);
