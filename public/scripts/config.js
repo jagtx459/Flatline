@@ -33,9 +33,14 @@ const EVENTS = [
   ['group_disarmed', 'Flatline group recovered (disarmed)'],
   ['group_triggered','Flatline group TRIGGERED (actions running)'],
   ['action_ok',      'Action step succeeded'],
-  ['action_failed',  'Action step failed']
+  ['action_failed',  'Action step failed'],
+  ['run_started',    'Action group run started'],
+  ['run_completed',  'Action group run completed'],
+  ['run_failed',     'Action group run FAILED (or cancelled, or cut short by a restart)']
 ];
-const DEFAULT_EVENTS = ['endpoint_down', 'group_armed', 'group_disarmed', 'group_triggered', 'action_failed'];
+const DEFAULT_EVENTS = [
+  'endpoint_down', 'group_armed', 'group_disarmed', 'group_triggered', 'action_failed', 'run_failed'
+];
 
 // ---------- channel form ----------
 

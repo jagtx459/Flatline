@@ -61,7 +61,8 @@ export const NOTIFY_SECRET_FIELDS = {
 export const NOTIFY_EVENTS = [
   'endpoint_down', 'endpoint_up',
   'group_armed', 'group_disarmed', 'group_triggered',
-  'action_ok', 'action_failed'
+  'action_ok', 'action_failed',
+  'run_started', 'run_completed', 'run_failed'
 ];
 
 const EVENT_LABELS = {
@@ -71,7 +72,10 @@ const EVENT_LABELS = {
   group_disarmed: 'Group recovered',
   group_triggered:'Group TRIGGERED',
   action_ok:      'Action step OK',
-  action_failed:  'Action step FAILED'
+  action_failed:  'Action step FAILED',
+  run_started:    'Action run started',
+  run_completed:  'Action run completed',
+  run_failed:     'Action run FAILED'
 };
 
 // The "initial templating": defaults used when a channel doesn't override
@@ -238,6 +242,11 @@ function mapEvent(ev) {
     case 'shutdown_triggered': return 'group_triggered';
     case 'action_step_ok': return 'action_ok';
     case 'action_step_failed': return 'action_failed';
+    // Run-level: one action group's whole sequence, not a single step.
+    // A cancelled or interrupted run maps to run_failed — it did not finish.
+    case 'action_run_started': return 'run_started';
+    case 'action_run_completed': return 'run_completed';
+    case 'action_run_failed': return 'run_failed';
     default: return null;
   }
 }

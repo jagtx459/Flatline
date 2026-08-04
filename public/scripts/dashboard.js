@@ -20,6 +20,10 @@ const RANGES = [
 const REFRESH_MS = 10_000;
 const ACTIVE_REFRESH_MS = 3_000;
 
+// How many rows each list shows before it starts scrolling.
+const PANEL_ROWS = 3;
+const EVENT_ROWS = 8;
+
 const GROUP_BY_OPTIONS = [
   { value: 'none', label: 'None' },
   { value: 'group', label: 'Flatline group' },
@@ -63,10 +67,22 @@ function render() {
 
 // ---- per-group action banners ----
 
+// Banners the user has cleared, by group and state. Kept in memory only: a
+// dismissal hides a notice, it must never hide it for good.
+const dismissedBanners = new Set();
+
 function renderBanners() {
   clear($banners);
+  const live = new Set();
+
   for (const g of data.groups) {
     if (!g.armed) continue;
+
+    // A group escalating from armed to triggered is a new notice, so clearing
+    // the countdown doesn't also swallow "TRIGGERED".
+    const key = `${g.group_id}:${g.triggered ? 'triggered' : 'armed'}`;
+    live.add(key);
+    if (dismissedBanners.has(key)) continue;
 
     const banner = el('div', { class: `banner ${g.triggered ? 'triggered' : 'armed'}` });
     const actions = g.action_group_names.length ? g.action_group_names.join(', ') : 'no action groups assigned';
@@ -86,7 +102,20 @@ function renderBanners() {
         cd
       );
     }
+
+    const close = el('button', { class: 'banner-x', type: 'button', title: 'Clear', 'aria-label': 'Clear' }, '×');
+    close.addEventListener('click', () => {
+      dismissedBanners.add(key);
+      banner.remove();
+    });
+    banner.append(close);
+
     $banners.append(banner);
+  }
+
+  // Forget the dismissal once the group recovers, so a later outage says so.
+  for (const key of dismissedBanners) {
+    if (!live.has(key)) dismissedBanners.delete(key);
   }
 }
 
@@ -495,17 +524,43 @@ const RUN_STATUS = {
   interrupted: { cls: 'disabled', label: 'INTERRUPTED' }
 };
 
-const STEP_STATE_MARK = { running: '⋯', ok: '✓', failed: '✕' };
+const STEP_STATE_MARK = { running: '⋯', ok: '✓', failed: '✕', skipped: '⊘' };
 
 const PANEL_KEY = 'flatline.actionPanelCollapsed';
 
 function renderActionPanel() {
+  // Refreshes rebuild these lists from scratch; without this a poll would yank
+  // a scrolled list back to the top under the user.
+  const scrolled = new Map([...$actionPanel.querySelectorAll('.row-list')]
+    .map((l) => [l.dataset.list, l.scrollTop]));
+
   clear($actionPanel);
   const collapsed = localStorage.getItem(PANEL_KEY) === '1';
   $actionPanel.append(
     panelCard('Action groups', collapsed, actionGroupNodes),
     panelCard('Action runs', collapsed, runListNodes)
   );
+
+  for (const list of $actionPanel.querySelectorAll('.row-list')) {
+    capList(list, PANEL_ROWS);
+    list.scrollTop = scrolled.get(list.dataset.list) ?? 0;
+  }
+}
+
+/**
+ * Show at most `max` rows and scroll the rest. The cap is measured off the rows
+ * themselves rather than set in CSS, since row heights vary — a run mid-stage
+ * carries step chips and buttons that a finished one doesn't.
+ *
+ * Call this with `list` already in the document, and synchronously: shortening
+ * the page a frame later is what makes the browser clamp the scroll position.
+ */
+function capList(list, max) {
+  const rows = list.children;
+  if (rows.length <= max) return;
+  const top = list.getBoundingClientRect().top;
+  list.style.maxHeight = `${rows[max].getBoundingClientRect().top - top}px`;
+  list.classList.add('scroll-list');
 }
 
 /** The two halves fold as one — collapsing a single side would leave the row
@@ -531,7 +586,7 @@ function actionGroupNodes() {
       el('a', { href: '/actions' }, 'Actions page'))];
   }
 
-  const rows = [];
+  const list = el('div', { class: 'row-list', 'data-list': 'groups' });
   for (const g of data.action_groups) {
     const running = data.action_runs.some(
       (r) => r.action_group_id === g.id && (r.status === 'running' || r.status === 'paused'));
@@ -547,7 +602,7 @@ function actionGroupNodes() {
     if (g.target_down > 0) counts.push(`${g.target_down} down`);
     if (g.target_disabled > 0) counts.push(`${g.target_disabled} disabled`);
 
-    rows.push(el('div', { class: 'ag-row' },
+    list.append(el('div', { class: 'ag-row' },
       el('div', { class: 'ag-head' },
         el('span', { class: `pill ${g.enabled ? 'up' : 'disabled'}` },
           el('span', { class: 'dot' }), g.enabled ? 'ENABLED' : 'DISABLED'),
@@ -565,7 +620,7 @@ function actionGroupNodes() {
         : el('div', { class: 'ag-meta' }, el('span', {}, 'not assigned to a Flatline group'))
     ));
   }
-  return rows;
+  return [list];
 }
 
 async function startRun(group, btn) {
@@ -599,10 +654,11 @@ function runListNodes() {
       el('div', {}, 'Nothing has run yet. Runs appear here when a Flatline group triggers, or when you start one.'))];
   }
 
+  // The caption sits outside the list so it stays put while the runs scroll.
   const nodes = live.length === 0
     ? [el('div', { class: 'run-caption' }, 'Nothing running right now — most recent runs:')]
     : [];
-  for (const run of shown) nodes.push(runRow(run));
+  nodes.push(el('div', { class: 'row-list', 'data-list': 'runs' }, ...shown.map(runRow)));
   return nodes;
 }
 
@@ -688,6 +744,7 @@ async function control(fn, run, btn) {
 // ---- events ----
 
 function renderEvents() {
+  const scrolled = $events.querySelector('.row-list')?.scrollTop ?? 0;
   clear($events);
   $events.append(el('h2', {}, 'Recent events'));
 
@@ -696,6 +753,7 @@ function renderEvents() {
     return;
   }
 
+  const list = el('div', { class: 'row-list' });
   for (const ev of data.events) {
     let what = '';
     let cls = '';
@@ -710,21 +768,31 @@ function renderEvents() {
       what = '⛔ ACTIONS TRIGGERED'; cls = 'to-down';
     } else if (ev.kind === 'action_run_started') {
       what = '▶ run started'; cls = 'to-down';
+    } else if (ev.kind === 'action_run_completed') {
+      what = '■ run completed'; cls = 'to-up';
+    } else if (ev.kind === 'action_run_failed') {
+      what = '■ run failed'; cls = 'to-down';
     } else if (ev.kind === 'action_step_ok') {
       what = '✓ step ok'; cls = 'to-up';
     } else if (ev.kind === 'action_step_failed') {
       what = '✕ step failed'; cls = 'to-down';
+    } else if (ev.kind === 'action_step_skipped') {
+      what = '⊘ step skipped';
     } else {
       what = ev.kind;
     }
 
-    $events.append(el('div', { class: 'event-row' },
+    list.append(el('div', { class: 'event-row' },
       el('span', { class: 'time' }, fmtDateTime(ev.ts)),
       el('span', { class: `what ${cls}` }, what),
       ev.endpoint_name ? el('span', {}, ev.endpoint_name) : null,
       ev.message ? el('span', { class: 'msg' }, ev.message) : null
     ));
   }
+
+  $events.append(list);
+  capList(list, EVENT_ROWS);
+  list.scrollTop = scrolled;
 }
 
 // ---- boot ----

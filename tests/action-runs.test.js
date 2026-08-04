@@ -199,6 +199,43 @@ test('an action group with no stages completes immediately instead of hanging', 
   assert.match(store.getActionRun(run.id).message, /no stages/);
 });
 
+test('every run records a start and an outcome, whatever started it', async () => {
+  const ok = target('event-ok', '/up');
+  const bad = target('event-bad', '/down');
+
+  /** The run-level events naming one group — earlier tests share this log. */
+  const runEvents = (name) => store.listEvents(50)
+    .filter((e) => e.kind.startsWith('action_run_') && e.message.includes(`"${name}"`))
+    .map((e) => e.kind);
+
+  const good = group('emits-completed', [[{ target: ok, seconds: 30 }]]);
+  await runs.startActionGroupRun(good, { trigger: 'flatline', detail: 'Power loss' }).done;
+  assert.deepEqual(runEvents('emits-completed').sort(),
+    ['action_run_completed', 'action_run_started'],
+    'a Flatline-triggered run announces itself too');
+
+  const doomed = group('emits-failed', [[{ target: bad, seconds: 30 }]]);
+  await runs.startActionGroupRun(doomed, { trigger: 'manual' }).done;
+  assert.deepEqual(runEvents('emits-failed').sort(),
+    ['action_run_failed', 'action_run_started'],
+    'a failed run does not also report success');
+});
+
+test('a cancelled run reports the same outcome event as a failed one', async () => {
+  const slow = target('event-cancel', '/slow?ms=600');
+  const g = group('emits-cancelled', [[{ target: slow, seconds: 30 }], [{ target: slow, seconds: 30 }]]);
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+
+  runs.cancelRun(run.id);
+  await done;
+
+  // A run that stopped early is news whether the user asked for it or not, so
+  // cancel maps to the same event a failure does.
+  const outcome = store.listEvents(10).find((e) => e.kind.startsWith('action_run_c') || e.kind === 'action_run_failed');
+  assert.equal(outcome.kind, 'action_run_failed');
+  assert.match(outcome.message, /CANCELLED/);
+});
+
 test('markInterruptedRuns closes out runs a stopped process left behind', () => {
   const g = group('orphan', [[{ target: target('orphan-target', '/up'), seconds: 30 }]]);
   const orphan = store.createActionRun({

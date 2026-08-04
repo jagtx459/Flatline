@@ -50,6 +50,19 @@ minutes-long feature can be tested in seconds.
 
 Add to these files when you touch `server/actionRuns.js` or `server/shutdown.js`.
 
+The rest cover what each page configures:
+
+| File | Page | What it pins |
+| --- | --- | --- |
+| `endpoints.test.js` | Flatline | Endpoints and group membership, `expect_status` / `expect_json`, check timeouts, and the real poller flipping state only once the threshold is met |
+| `action-config.test.js` | Actions | Targets and staged groups: stage and step order, a target reused across stages, what a delete takes with it, and the stage's "counts as failed when…" rule |
+| `config-security.test.js` | Config | Key rotation and its crash recovery, the optional login and its rate limit, the Host allowlist |
+| `config-transfer.test.js` | Config | Export, import, reset, and backup restore |
+| `notify.test.js` | Notifications | Channel config validation |
+
+The endpoints file takes ~15s: the poller's floor is one check every 5s, so
+watching a threshold actually trip cannot be hurried.
+
 ## npm run dev
 
 ```sh
@@ -120,6 +133,16 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
       no targets.
 - [ ] Within about a minute "Lab services" arms, then triggers on its own, two
       runs appear without anyone pressing anything.
+- [ ] Once there are more than three runs, the runs list shows three and
+      scrolls; same for action groups (add a fourth to see it). Neither card
+      grows down the page.
+- [ ] Scroll one of those lists, then wait for a refresh, it should stay where you
+      left it.
+- [ ] Recent events shows eight rows and scrolls to the rest; the heading
+      stays put.
+- [ ] An armed group's banner has an × that clears it, the banner doesn't come
+      back on the next refresh, and it does come back when the group triggers,
+      or when it recovers and fails again.
 
 **A live run (use "Graceful shutdown")**
 
@@ -136,10 +159,20 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 
 **Actions page**
 
+- [ ] Disable a target that a group uses, then run that group: its chip reads
+      ⊘ and the events list says the step was skipped. Nothing is sent to it,
+      and the stage is not marked failed on its account.
 - [ ] The Stages help explains "give up after" as a cut-off, not a delay.
 - [ ] Each step row reads `give up after [n] s`, and hovering the input explains it.
 - [ ] A stage header shows `takes up to Ns`, tracking the slowest step, and
       updates when a step's value changes.
+
+**Notifications**
+
+- [ ] A channel offers "Action group run started / completed / FAILED", and a
+      new channel has FAILED ticked by default.
+- [ ] Subscribe one to run FAILED, then cancel a run: it delivers, with
+      CANCELLED in the message. A completed run does not reach it.
 
 **One edit form at a time**
 

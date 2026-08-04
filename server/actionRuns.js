@@ -28,8 +28,22 @@ export function markInterruptedRuns() {
       estimated_end_ts: null,
       message: 'Flatline stopped while this run was in progress'
     });
+    recordOutcome(store.getActionRun(run.id));
     console.log(`[runs] run ${run.id} ("${run.action_group_name}") marked interrupted`);
   }
+}
+
+/**
+ * One event per finished run, split by outcome so a channel can subscribe to
+ * the bad news alone. Cancelled and interrupted count as failures: either way
+ * the sequence did not run to the end.
+ */
+function recordOutcome(run) {
+  store.recordEvent({
+    ts: Date.now(),
+    kind: run.status === 'completed' ? 'action_run_completed' : 'action_run_failed',
+    message: `"${run.action_group_name}" ${run.status.toUpperCase()} — ${run.message}`
+  });
 }
 
 /** Worst case for a stage: its steps run at once, so the slowest timeout wins. */
@@ -62,6 +76,15 @@ export function startActionGroupRun(actionGroup, { trigger, detail = null }) {
     estimated_end_ts: stages.length ? Date.now() + remainingWorstCaseMs(stages, 0) : Date.now()
   });
 
+  // Recorded here rather than at the call sites, so a run started by a
+  // Flatline group is announced the same way as one started from the dashboard.
+  store.recordEvent({
+    ts: Date.now(),
+    kind: 'action_run_started',
+    message: `"${actionGroup.name}" started ${trigger === 'manual' ? 'manually' : `by "${detail}"`}`
+      + ` — ${stages.length} stage(s)`
+  });
+
   controls.set(run.id, { pause: false, cancel: false, wake: null });
   const done = execute(run.id, actionGroup, stages)
     .catch((err) => {
@@ -77,6 +100,7 @@ function finish(runId, status, message) {
   store.updateActionRun(runId, {
     status, message, ended_at: Date.now(), estimated_end_ts: null
   });
+  recordOutcome(store.getActionRun(runId));
 }
 
 async function execute(runId, actionGroup, stages) {
@@ -124,21 +148,24 @@ async function execute(runId, actionGroup, stages) {
 
     const results = await Promise.all(stage.steps.map((step, si) =>
       runActionStep(actionGroup, step).then((r) => {
-        steps[si].state = r.ok ? 'ok' : 'failed';
+        steps[si].state = r.skipped ? 'skipped' : r.ok ? 'ok' : 'failed';
         store.updateActionRun(runId, { steps: JSON.stringify(steps) });
         return r;
       })));
 
-    const failed = results.filter((r) => !r.ok).length;
+    // Skipped steps are left out of the verdict — a stage of nothing but
+    // disabled targets has not failed, it simply had nothing to do.
+    const ran = results.filter((r) => !r.skipped);
+    const failed = ran.filter((r) => !r.ok).length;
     const stageFailed = stage.pass_rule === 'all'
-      ? results.length > 0 && failed === results.length // every step in the stage failed
-      : failed > 0;                                     // any step in the stage failed
+      ? ran.length > 0 && failed === ran.length // every step in the stage failed
+      : failed > 0;                             // any step in the stage failed
     if (stageFailed) failedStages += 1;
 
     if (stageFailed && (stage.on_failure ?? actionGroup.on_failure) === 'stop') {
-      console.log(`[runs] "${actionGroup.name}" stopping after stage ${i + 1} — ${failed}/${results.length} failed and on_failure is 'stop'`);
+      console.log(`[runs] "${actionGroup.name}" stopping after stage ${i + 1} — ${failed}/${ran.length} failed and on_failure is 'stop'`);
       finish(runId, 'failed',
-        `Stopped after stage ${i + 1} of ${stages.length} — ${failed} of ${results.length} targets failed`);
+        `Stopped after stage ${i + 1} of ${stages.length} — ${failed} of ${ran.length} targets failed`);
       return;
     }
   }
@@ -149,7 +176,7 @@ async function execute(runId, actionGroup, stages) {
       : `All ${stages.length} stage(s) completed`);
 }
 
-/** Runs one step against its target and records the result. Returns { ok }. */
+/** Runs one step against its target and records the result. Returns { ok, skipped }. */
 async function runActionStep(actionGroup, step) {
   const target = store.getActionTarget(step.target_id);
   if (!target) {
@@ -158,6 +185,17 @@ async function runActionStep(actionGroup, step) {
       message: `"${actionGroup.name}": step target ${step.target_id} no longer exists`
     });
     return { ok: false };
+  }
+
+  // A disabled target is out of the run entirely: nothing is sent to it, and
+  // it counts neither as a success nor a failure when the stage is judged.
+  if (!target.enabled) {
+    store.recordEvent({
+      ts: Date.now(), kind: 'action_step_skipped',
+      message: `"${actionGroup.name}" -> ${target.name} (${target.kind}): skipped — this target is disabled`
+    });
+    console.log(`[runs] "${actionGroup.name}" -> ${target.name}: SKIPPED — target is disabled`);
+    return { ok: true, skipped: true };
   }
 
   let config;

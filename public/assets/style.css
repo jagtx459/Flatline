@@ -138,6 +138,15 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
 .card-header[aria-expanded="true"] .chevron { transform: rotate(90deg); }
 .card-body { margin-top: 12px; }
 
+/* Long lists get a fixed window instead of pushing the rest of the page down.
+   The height is measured in JS (capList) because the rows vary in height; only
+   a list that actually overflows gets the class. */
+.scroll-list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 8px;
+}
+
 /* ---- shutdown banner ---- */
 .banner {
   display: none;
@@ -158,6 +167,18 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
+.banner .banner-x {
+  flex: none;
+  margin-left: 4px;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.banner .banner-x:hover { color: var(--text-primary); }
 
 /* ---- filter row ---- */
 .filter-row {
@@ -635,6 +656,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 }
 .run-step.ok { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 45%, var(--border)); }
 .run-step.failed { color: var(--status-critical); border-color: color-mix(in srgb, var(--status-critical) 45%, var(--border)); }
+.run-step.skipped { color: var(--text-muted); border-style: dashed; }
 .run-message { margin-top: 6px; color: var(--text-secondary); font-size: 12px; }
 .run-btns { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .run-btns .run-note { color: var(--text-muted); font-size: 12px; }

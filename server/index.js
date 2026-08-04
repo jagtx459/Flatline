@@ -781,11 +781,8 @@ async function handleApi(req, res, url) {
     if (!group) { sendError(res, 404, 'action group not found'); return; }
     if (isRunning(id)) { sendError(res, 409, `"${group.name}" is already running`); return; }
 
+    // startActionGroupRun records the action_run_started event itself.
     const { run } = startActionGroupRun(group, { trigger: 'manual', detail: 'started from the dashboard' });
-    store.recordEvent({
-      ts: Date.now(), kind: 'action_run_started',
-      message: `Manual run: action group "${group.name}" (${group.stages.length} stage(s))`
-    });
     sendJson(res, 202, publicRun(store.getActionRun(run.id)));
     return;
   }
