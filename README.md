@@ -15,7 +15,7 @@ A small self-hosted system monitor that pings or probes endpoints for availabili
 
 <div align="center">
     <td>
-        <tr><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard.png?raw=true" alt="icon" width="480" height="480"> <img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard-dark.png?raw=true" alt="icon" width="480" height="480"></tr>
+        <tr><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard.png?raw=true" alt="icon" width="340" height="400"> <img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard-dark.png?raw=true" alt="icon" width="340" height="400"></tr>
         <tr>
 
 ****This app is still a work in progress and is intended for homelab and testing environements only, use at your own risk!*** *
@@ -29,12 +29,12 @@ A small self-hosted system monitor that pings or probes endpoints for availabili
 2. An endpoint flips DOWN after N consecutive failures and back UP after M consecutive successes.
 3. Endpoints must be placed in a **Flatline Group**. A group fails when failure conditions are met; for example either **all** of them or **any** one, per group.
 
-<div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/endpoints.png?raw=true" alt="icon" width="480" height="480"></div>
+<div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/endpoints.png?raw=true" alt="icon" width="340" height="400"></div>
 
 4. A failing group will arm a countdown. If it recovers before the group's grace period elapses, it disarms; otherwise the group's assigned **Action Group** will run.
 5. **Action Groups** are created from **Action Targets** and run in the order you set. **Action Targets** are targeted infrastructure for running script(s) against to, for example, shutdown or remove workloads in your environment.
 
-<div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/actions.png?raw=true" alt="icon" width="480" height="480"></div>
+<div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/actions.png?raw=true" alt="icon" width="340" height="400"></div>
 
 ## Notifications
 
