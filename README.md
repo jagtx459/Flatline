@@ -15,33 +15,37 @@
 
 </div>
 A small self-hosted system monitor that pings or probes endpoints for availability with configurable mechanisms to run scripts in your environment. The intended use is for initiating graceful shutdowns or migrations of infrastructure during a power outage to avoid data corruption and loss.  
-
+<br/>
 <div align="center">
     <td>
         <tr><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard.png?raw=true" alt="icon" width="340" height="400"> <img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/dashboard-dark.png?raw=true" alt="icon" width="340" height="400"></tr>
-        <tr>
-
-****This app is still a work in progress and is intended for homelab and testing environements only, use at your own risk!*** *
-        </tr>
     </td> 
+</div>
+<br/>
+<div align="center">
+    
+****This app is still a work in progress and is intended for homelab and testing environements only, use at your own risk!*** *
 </div>
 
 ## How it works
 
 1. Each **Flatline Endpoint** is checked on its own interval using ICMP or HTTP(s).
 2. An endpoint flips DOWN after N consecutive failures and back UP after M consecutive successes.
-3. Endpoints must be placed in a **Flatline Group**. A group fails when failure conditions are met; for example either **all** of them or **any** one, per group.
+3. For an action to arm, endpoints must be placed in a **Flatline Group**. A group fails when configured failure conditions are met; for example either **all** of them or **any** one, per group.
 
 <div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/endpoints.png?raw=true" alt="icon" width="340" height="400"></div>
 
-4. A failing group will arm a countdown. If it recovers before the group's grace period elapses, it disarms; otherwise the group's assigned **Action Group** will run.
-5. **Action Groups** are created from **Action Targets** and run in the order you set. **Action Targets** are targeted infrastructure for running script(s) against to, for example, shutdown or remove workloads in your environment.
+4. A failing group will arm the grace period. If it recovers before the group's grace period elapses, it disarms; otherwise the group's assigned **Action Group** will run.
+5. **Action Groups** are created from **Action Targets** and run in the order you set. **Action Targets** are specific infrastructure for running script(s) against to, for example, shutdown or remove workloads in your environment.
 
 <div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/actions.png?raw=true" alt="icon" width="340" height="400"></div>
 
 ## Notifications
 
-Flatline supports a few, but more in the future releases, notification platforms for event triggers with basic template support for messages.
+Flatline supports a few, but more planned in future releases, notification platforms for event triggers with basic template support for messages. Currently supported platforms are:
+- Discord
+- Ntfy
+- Apprise
 
 ## Security **Please Read!* *
 
@@ -51,13 +55,13 @@ Flatline supports a few, but more in the future releases, notification platforms
 
 - **Non-root container**: the image runs as the unprivileged `node` user; only the `iputils` ping binary gets `cap_net_raw` so ICMP checks work without root.
 
-- **Credentials**: Infrastructure credentials  (passwords, SSH keys, tokens, kubeconfigs, webhook URLs) are encrypted at rest with AES-256-GCM and are write-only through the API. The server only reports *which* fields are set, never their values. The key comes from `FLATLINE_SECRET_KEY` (32 bytes as 64 hex chars or base64) or is auto-generated in `<data dir>/secret.key` on first use. **Back that key up**, as without it stored credentials are unrecoverable and must be re-entered. The key can be rotated from the `/config` page: a new key is staged, every encrypted blob is re-encrypted in a single transaction, and the key file is atomically swapped. When the key comes from `FLATLINE_SECRET_KEY`, set the new key manually on the config page and update the environment variable to match before the next restart.
+- **Credentials**: Infrastructure credentials  (passwords, SSH keys, tokens, kubeconfigs, webhook URLs) are encrypted at rest with AES-256-GCM and are write-only through the API. The server only reports *which* fields are set, never their values. The key comes from `FLATLINE_SECRET_KEY` (32 bytes as 64 hex chars or base64) or is auto-generated in `<data dir>/secret.key` on first use. **!Back that key up!**, as without it stored credentials are unrecoverable and must be re-entered. The key can be rotated from the `/config` page. When rotated a new key is staged, every encrypted blob is re-encrypted in a single transaction, and the key file is atomically swapped. If you are also using `FLATLINE_SECRET_KEY` and the key is rotated, you **!must also!** set the new key manually in the environment variable to match before the next restart or you will lose access to your data.
 
 ## Run with Docker (recommended)
 
 ### Pull the published image
 
-Each release is built, scanned for vulnerabilities, and published to both the GitHub Container Registry and Docker Hub. Pick either:
+Each release is built, tested for validation, scanned for vulnerabilities, and published to both the GitHub Container Registry and Docker Hub.
 
 ```sh
 # GitHub Container Registry
@@ -92,12 +96,12 @@ Optional environment variables:
 ```sh
 npm install
 npm start          # http://localhost:3131 —> data stored in data/
-npm run tests      # assertions against the app and action engine
+npm run tests      # scripted assertions against the app and action engine
 npm run dev        # seeded demo instance, everything healthy
 npm run dev:tests  # seeded demo with planned looping events
 ```
 
-`dev` uses `data/dev` and mock targets, never your real `data/`. Add `-- --reseed` for fresh data
+`dev` uses `data/dev` and mock targets, never your real `data/`. Add `-- --reseed` for fresh data.
 
 See [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md) for details.
 
