@@ -248,6 +248,46 @@ export const migrations = [
         CREATE INDEX idx_action_runs_started ON action_runs (started_at);
       `);
     }
+  },
+  {
+    version: 6,
+    name: 'waits between stages and wait steps within a stage',
+    up(db) {
+      // Two kinds of deliberate pause:
+      //
+      // action_group_stages.wait_seconds — the gap held open BEFORE that stage
+      // starts (ignored for the first stage, which must not delay the response
+      // to an outage). Existing groups get the 5s default, so a sequence that
+      // used to slam its stages together now breathes between them.
+      //
+      // A wait step — an action_group_members row with no target_id and a
+      // wait_seconds instead. It runs alongside the stage's other steps and
+      // holds the stage open for that long. target_id therefore becomes
+      // nullable, and the primary key moves off it: (group, stage, position)
+      // already identifies a step, and position is unique within a stage in
+      // both the migration-3 rows (one per stage) and everything written since.
+      db.exec(`
+        ALTER TABLE action_group_stages ADD COLUMN wait_seconds INTEGER NOT NULL DEFAULT 5;
+
+        CREATE TABLE action_group_members_new (
+          action_group_id INTEGER NOT NULL REFERENCES action_groups(id) ON DELETE CASCADE,
+          target_id       INTEGER REFERENCES action_targets(id) ON DELETE CASCADE,
+          position        INTEGER NOT NULL DEFAULT 0,
+          timeout_seconds INTEGER NOT NULL DEFAULT 60,
+          stage           INTEGER NOT NULL DEFAULT 0,
+          wait_seconds    INTEGER,
+          PRIMARY KEY (action_group_id, stage, position),
+          -- a step acts on a target or waits, never both and never neither
+          CHECK ((target_id IS NULL) <> (wait_seconds IS NULL))
+        );
+        INSERT INTO action_group_members_new
+            (action_group_id, target_id, position, timeout_seconds, stage, wait_seconds)
+          SELECT action_group_id, target_id, position, timeout_seconds, stage, NULL
+          FROM action_group_members;
+        DROP TABLE action_group_members;
+        ALTER TABLE action_group_members_new RENAME TO action_group_members;
+      `);
+    }
   }
 ];
 

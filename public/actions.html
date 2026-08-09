@@ -346,7 +346,8 @@ Restart-Service WinRM</pre>
       </div>
       <div class="card-body" id="igroup-form-body">
       <p class="hint-row">An action group is an ordered list of stages. On trigger the stages run
-        top to bottom; the targets within a stage run simultaneously. Pick which Flatline groups run
+        top to bottom; the targets within a stage run simultaneously, until a wait splits it — then
+        what is below the wait starts once it is up. Pick which Flatline groups run
         this action group below. Flatline groups are managed on the <a href="/flatline">Flatline page</a>.</p>
       <form id="igroup-form" method="post">
         <div class="grid">
@@ -362,13 +363,7 @@ Restart-Service WinRM</pre>
             </select>
           </label>
         </div>
-        <div class="field" style="margin-top:12px">
-          <span class="cap">Stages (run top to bottom; targets in a stage run simultaneously)</span>
-          <p class="hint-row" style="margin:4px 0 0">Every target gets a <strong>give up after</strong> limit —
-            the longest Flatline waits for that target to answer before marking its step failed and moving on.
-            It's a cut-off, not a pause: a target that finishes in 2 seconds takes 2 seconds. Because a stage's
-            targets all start together, the stage lasts as long as its <em>slowest</em> target — two targets at
-            60s take up to 60s, not 120s.</p>
+        <div class="field" style="margin-top:12px"> 
           <div id="stage-list" class="stage-list"></div>
           <button type="button" class="btn ghost small" id="stage-add-btn">+ Add stage</button>
         </div>

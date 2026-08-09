@@ -54,28 +54,41 @@ export function seedDemoData(mockPort) {
 
   const actionGroups = {
     // Slow first stage on purpose: long enough to watch, pause, and cancel.
+    // Its gaps are stretched past the 5s default so they are easy to catch on
+    // screen, and stage 2 holds itself open with a wait step of its own.
     graceful: store.createActionGroup({
       name: 'Graceful shutdown', on_failure: 'continue', enabled: 1,
       stages: [
-        { pass_rule: 'any', on_failure: null, steps: [
+        { pass_rule: 'any', on_failure: null, wait_seconds: 5, steps: [
           { target_id: targets.k8s.id, timeout_seconds: 30 },
           { target_id: targets.nas.id, timeout_seconds: 30 }
         ] },
-        { pass_rule: 'any', on_failure: null, steps: [{ target_id: targets.windows.id, timeout_seconds: 30 }] },
-        { pass_rule: 'any', on_failure: null, steps: [{ target_id: targets.nas.id, timeout_seconds: 30 }] }
+        // The wait splits this stage: the Windows host goes down, 20s pass, and
+        // only then is the cluster told — the "let it settle first" shape.
+        { pass_rule: 'any', on_failure: null, wait_seconds: 15, steps: [
+          { target_id: targets.windows.id, timeout_seconds: 30 },
+          { wait_seconds: 20 },
+          { target_id: targets.k8s.id, timeout_seconds: 30 }
+        ] },
+        { pass_rule: 'any', on_failure: null, wait_seconds: 10,
+          steps: [{ target_id: targets.nas.id, timeout_seconds: 30 }] }
       ]
     }),
     // Stage 1 always fails and stops the sequence — the "stopped early" path.
     failing: store.createActionGroup({
       name: 'Failure demo', on_failure: 'continue', enabled: 1,
       stages: [
-        { pass_rule: 'any', on_failure: 'stop', steps: [{ target_id: targets.flaky.id, timeout_seconds: 10 }] },
-        { pass_rule: 'any', on_failure: null, steps: [{ target_id: targets.windows.id, timeout_seconds: 10 }] }
+        { pass_rule: 'any', on_failure: 'stop', wait_seconds: 5,
+          steps: [{ target_id: targets.flaky.id, timeout_seconds: 10 }] },
+        { pass_rule: 'any', on_failure: null, wait_seconds: 5,
+          steps: [{ target_id: targets.windows.id, timeout_seconds: 10 }] }
       ]
     }),
+    // No gaps anywhere: the "get out of the way now" shape.
     quick: store.createActionGroup({
       name: 'Quick notify', on_failure: 'continue', enabled: 1,
-      stages: [{ pass_rule: 'any', on_failure: null, steps: [{ target_id: targets.windows.id, timeout_seconds: 10 }] }]
+      stages: [{ pass_rule: 'any', on_failure: null, wait_seconds: 0,
+        steps: [{ target_id: targets.windows.id, timeout_seconds: 10 }] }]
     })
   };
 

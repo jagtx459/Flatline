@@ -422,7 +422,8 @@ function actionGroupSummaries() {
   const lastRuns = store.lastActionRunByGroup();
 
   return store.listActionGroups().map((g) => {
-    const ids = [...new Set(g.stages.flatMap((st) => st.steps.map((s) => s.target_id)))];
+    // Wait steps have no target, so they count towards nothing here.
+    const ids = [...new Set(g.stages.flatMap((st) => st.steps.map((s) => s.target_id).filter((id) => id != null)))];
     const members = ids.map((id) => targets.find((t) => t.id === id)).filter(Boolean);
     const enabledMembers = members.filter((t) => t.enabled);
     const lastRun = lastRuns.find((r) => r.action_group_id === g.id);
@@ -1128,19 +1129,30 @@ function parseActionGroupInput(body) {
         return "stage on_failure must be 'continue', 'stop', or null to inherit the group setting";
       }
 
+      // The gap held before this stage. 0 means "no gap"; the first stage's is
+      // stored but never used, so a run reacts to an outage immediately.
+      const wait_seconds = intInRange(rawStage.wait_seconds, 0, 3600, store.DEFAULT_STAGE_WAIT_SECONDS);
+
       if (!Array.isArray(rawStage.steps) || rawStage.steps.length === 0) {
         return 'each stage must have at least one step';
       }
       const steps = [];
       const seen = new Set(); // a target may appear at most once per stage, but may be reused in other stages
       for (const raw of rawStage.steps) {
-        const n = Number(raw?.target_id);
+        // A step with no target is a wait step: it holds the stage open instead
+        // of acting on anything, so it has a duration rather than a limit.
+        if (raw?.target_id == null) {
+          if (raw?.wait_seconds == null) return 'a step must name a target or be a wait';
+          steps.push({ wait_seconds: intInRange(raw.wait_seconds, 1, 3600, store.DEFAULT_STAGE_WAIT_SECONDS) });
+          continue;
+        }
+        const n = Number(raw.target_id);
         if (!Number.isInteger(n) || !known.has(n)) return 'a stage contains an unknown target';
         if (seen.has(n)) return 'a stage lists the same target twice';
         seen.add(n);
         steps.push({ target_id: n, timeout_seconds: intInRange(raw?.timeout_seconds, 5, 3600, 60) });
       }
-      stages.push({ pass_rule, on_failure: stageFailure, steps });
+      stages.push({ pass_rule, on_failure: stageFailure, wait_seconds, steps });
     }
   }
 

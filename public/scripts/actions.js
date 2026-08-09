@@ -512,9 +512,32 @@ const igroupFormSection = initCollapsible('actions:igroup-form',
   document.getElementById('igroup-form-header'), document.getElementById('igroup-form-body'));
 const igDirty = initDirtyNote($igForm, document.getElementById('igroup-dirty'), $igSaveNote);
 
+/** The gap held before every stage but the first — server default, mirrored here. */
+const DEFAULT_STAGE_WAIT = 5;
+
 let editingIgId = null;
-/** Ordered stages being edited: [{ pass_rule, on_failure, steps: [{ target_id, timeout_seconds }] }] */
+/**
+ * Ordered stages being edited:
+ * [{ pass_rule, on_failure, wait_seconds, steps: [...] }], where a step is
+ * either { target_id, timeout_seconds } or a wait: { wait_seconds }.
+ */
 let stages = [];
+
+const isWaitStep = (step) => step.target_id == null;
+
+/**
+ * The longest a stage can take. Its wait steps split it into batches that run
+ * one after another, so that is every wait plus, per batch, its slowest target.
+ */
+function stageWorstCase(stage) {
+  let total = 0;
+  let batch = 0;
+  for (const step of stage.steps) {
+    if (isWaitStep(step)) { total += batch + step.wait_seconds; batch = 0; }
+    else batch = Math.max(batch, step.timeout_seconds);
+  }
+  return total + batch;
+}
 
 /** target_id -> [1-based stage numbers it appears in]. A target may be reused
  *  across stages, so this drives the "Appears in Stage …" indicator. */
@@ -522,6 +545,7 @@ function targetStageMap() {
   const map = new Map();
   stages.forEach((st, si) => {
     for (const s of st.steps) {
+      if (isWaitStep(s)) continue;
       const arr = map.get(s.target_id) ?? [];
       arr.push(si + 1);
       map.set(s.target_id, arr);
@@ -537,8 +561,31 @@ function renderStages() {
       'No stages yet — add one, then add targets to it. Stages run top to bottom.'));
   }
   const stageMap = targetStageMap();
-  stages.forEach((stage, si) => $stageList.append(renderStage(stage, si, stageMap)));
+  stages.forEach((stage, si) => {
+    // The gap belongs between two cards, so the first stage never shows one —
+    // a triggered run starts acting straight away.
+    if (si > 0) $stageList.append(renderStageWait(stage, si));
+    $stageList.append(renderStage(stage, si, stageMap));
+  });
   $stageAddBtn.disabled = targets.length === 0;
+}
+
+/** The pause held between two stages: editable, 0 for none. */
+function renderStageWait(stage, si) {
+  const input = el('input', {
+    type: 'number', min: '0', max: '3600', value: String(stage.wait_seconds),
+    class: 'step-timeout',
+    title: 'How long Flatline holds before starting this stage. 0 runs it as soon as the stage above finishes.'
+  });
+  input.addEventListener('change', () => {
+    stage.wait_seconds = Math.min(3600, Math.max(0, Number(input.value) || 0));
+    renderStages();
+  });
+  return el('div', { class: 'stage-wait' },
+    el('span', { class: 'hint' }, '⏱ wait'), input,
+    el('span', { class: 'hint' }, stage.wait_seconds === 0
+      ? `s — no pause before Stage ${si + 1}`
+      : `s before Stage ${si + 1}`));
 }
 
 function renderStage(stage, si, stageMap) {
@@ -560,18 +607,16 @@ function renderStage(stage, si, stageMap) {
     renderStages();
   });
 
-  // Targets in a stage start together, so the slowest "give up after" is the
-  // longest this stage can take — spelled out so the limits don't read as delays.
-  const worstCase = stage.steps.length ? Math.max(...stage.steps.map((s) => s.timeout_seconds)) : 0;
-  const parallelNote = el('span', { class: 'hint' },
-    (stage.steps.length > 1 ? ` · ${stage.steps.length} targets run at once` : ' · single target')
-    + (worstCase ? ` · takes up to ${worstCase}s` : ''));
+  const worstCase = stageWorstCase(stage);
+  const timingNote = el('span', { class: 'hint' }, worstCase ? ` · takes up to ${worstCase}s` : '');
 
   const stepList = el('div', { class: 'step-list' });
   if (stage.steps.length === 0) {
     stepList.append(el('div', { class: 'hint-row', style: 'margin:4px 0' }, 'No targets yet — add one below.'));
   }
-  stage.steps.forEach((step, pi) => stepList.append(renderStageStep(stage, step, pi, stageMap)));
+  stage.steps.forEach((step, pi) => stepList.append(isWaitStep(step)
+    ? renderWaitStep(stage, step, pi)
+    : renderStageStep(stage, step, pi, stageMap)));
 
   // Add-target row: any target not already in THIS stage (reuse across stages is allowed).
   const inThisStage = new Set(stage.steps.map((s) => s.target_id));
@@ -595,13 +640,75 @@ function renderStage(stage, si, stageMap) {
     renderStages();
   });
 
+  const addWaitBtn = el('button', { type: 'button', class: 'btn ghost small',
+    title: 'Split this stage — the steps below the wait start only once it is up' },
+    '+ Add wait');
+  addWaitBtn.addEventListener('click', () => {
+    stage.steps.push({ wait_seconds: DEFAULT_STAGE_WAIT });
+    renderStages();
+  });
+
   return el('div', { class: 'stage-card' },
     el('div', { class: 'stage-head' },
-      el('span', { class: 'stage-title' }, `Stage ${si + 1}`, parallelNote),
+      el('span', { class: 'stage-title' }, `Stage ${si + 1}`, timingNote),
       el('span', { class: 'stage-btns' }, up, down, removeStage)),
     stepList,
-    el('div', { class: 'step-add' }, select, addBtn),
+    el('div', { class: 'step-add' }, select, addBtn, addWaitBtn),
     renderStageFailure(stage)
+  );
+}
+
+/** Move buttons for a step within its stage, matching the stage cards' own ↑ ↓.
+ *  Lets a wait be dropped in beside the targets it belongs with, without
+ *  removing and re-adding everything below it. */
+function stepMoveButtons(stage, pi) {
+  const up = el('button', { type: 'button', class: 'btn ghost small', title: 'Move up within this stage' }, '↑');
+  up.disabled = pi === 0;
+  up.addEventListener('click', () => {
+    [stage.steps[pi - 1], stage.steps[pi]] = [stage.steps[pi], stage.steps[pi - 1]];
+    renderStages();
+  });
+
+  const down = el('button', { type: 'button', class: 'btn ghost small', title: 'Move down within this stage' }, '↓');
+  down.disabled = pi === stage.steps.length - 1;
+  down.addEventListener('click', () => {
+    [stage.steps[pi], stage.steps[pi + 1]] = [stage.steps[pi + 1], stage.steps[pi]];
+    renderStages();
+  });
+
+  return [up, down];
+}
+
+/** A wait step: no target, no outcome — it splits the stage at its place in the
+ *  order, holding everything below it until the time is up. */
+function renderWaitStep(stage, step, pi) {
+  const gates = pi < stage.steps.length - 1;
+  const seconds = el('input', {
+    type: 'number', min: '1', max: '3600', value: String(step.wait_seconds),
+    class: 'step-timeout',
+    title: gates
+      ? 'How long to hold before the steps below this one start. Whatever is above it has already run.'
+      : 'How long to hold the stage open after its targets are done, before the next stage.'
+  });
+  seconds.addEventListener('change', () => {
+    step.wait_seconds = Math.min(3600, Math.max(1, Number(seconds.value) || DEFAULT_STAGE_WAIT));
+    renderStages(); // the stage's "takes up to Ns" note follows this value
+  });
+
+  const remove = el('button', { type: 'button', class: 'btn danger-ghost small', title: 'Remove wait' }, '✕');
+  remove.addEventListener('click', () => {
+    stage.steps.splice(pi, 1);
+    renderStages();
+  });
+
+  return el('div', { class: 'step-row wait' },
+    el('span', { class: 'step-name' }, '⏱ Wait',
+      el('span', { class: 'hint' }, gates
+        ? ' (everything below starts after this)'
+        : ' (holds the stage open at the end)')),
+    el('span', { class: 'step-timeout-wrap' },
+      el('span', { class: 'hint' }, 'for'), seconds, el('span', { class: 'hint' }, 's')),
+    el('span', { class: 'step-btns' }, ...stepMoveButtons(stage, pi), remove)
   );
 }
 
@@ -636,7 +743,7 @@ function renderStageStep(stage, step, pi, stageMap) {
         : null),
     el('span', { class: 'step-timeout-wrap' },
       el('span', { class: 'hint' }, 'give up after'), timeout, el('span', { class: 'hint' }, 's')),
-    el('span', { class: 'step-btns' }, remove)
+    el('span', { class: 'step-btns' }, ...stepMoveButtons(stage, pi), remove)
   );
 }
 
@@ -690,7 +797,7 @@ function selectedIgFlatlineGroupIds() {
 }
 
 $stageAddBtn.addEventListener('click', () => {
-  stages.push({ pass_rule: 'any', on_failure: null, steps: [] });
+  stages.push({ pass_rule: 'any', on_failure: null, wait_seconds: DEFAULT_STAGE_WAIT, steps: [] });
   renderStages();
 });
 
@@ -713,6 +820,7 @@ function fillIgForm(g) {
   stages = g.stages.map((st) => ({
     pass_rule: st.pass_rule,
     on_failure: st.on_failure ?? null,
+    wait_seconds: st.wait_seconds ?? DEFAULT_STAGE_WAIT,
     steps: st.steps.map((s) => ({ ...s }))
   }));
   $igForm.elements.namedItem('name').value = g.name;
@@ -786,6 +894,23 @@ $igForm.addEventListener('submit', (e) => {
   })();
 });
 
+/** One stage as text: "k8s + NAS, wait 10s, Windows" — batch, wait, batch. */
+function stageStepText(stage) {
+  const parts = [];
+  let batch = [];
+  for (const s of stage.steps) {
+    if (s.target_id != null) {
+      batch.push(targetById(s.target_id)?.name ?? '?');
+      continue;
+    }
+    if (batch.length) parts.push(batch.join(' + '));
+    batch = [];
+    parts.push(`wait ${s.wait_seconds}s`);
+  }
+  if (batch.length) parts.push(batch.join(' + '));
+  return parts.join(', ');
+}
+
 function renderIgTable() {
   clear($igTable);
   if (igroups.length === 0) {
@@ -815,10 +940,13 @@ function renderIgTable() {
       })();
     });
 
-    // "+" joins targets that run at once within a stage; "→" separates stages.
+    // "+" joins what runs at once, "," what follows it once a wait is up, and
+    // "→" separates stages, carrying the gap held between them.
     const stageText = g.stages.length
-      ? g.stages.map((st, i) =>
-          `${i + 1}. ${st.steps.map((s) => targetById(s.target_id)?.name ?? '?').join(' + ')}`).join('  →  ')
+      ? g.stages.map((st, i) => {
+          const gap = i === 0 ? '' : st.wait_seconds > 0 ? `  →(${st.wait_seconds}s)→  ` : '  →  ';
+          return `${gap}${i + 1}. ${stageStepText(st)}`;
+        }).join('')
       : '—';
     const hasOverride = g.stages.some((st) => st.on_failure);
 
