@@ -24,7 +24,12 @@ function seed() {
   });
   const ag = store.createActionGroup({
     name: 'graceful', on_failure: 'continue', enabled: 1,
-    stages: [{ pass_rule: 'any', on_failure: null, steps: [{ target_id: target.id, timeout_seconds: 60 }] }]
+    stages: [
+      { pass_rule: 'any', on_failure: null, wait_seconds: 0,
+        steps: [{ target_id: target.id, timeout_seconds: 60 }] },
+      // A wait step and a non-default gap, so the export carries both.
+      { pass_rule: 'any', on_failure: null, wait_seconds: 20, steps: [{ wait_seconds: 90 }] }
+    ]
   });
   const fg = store.createFlatlineGroup({
     name: 'grid', grace_minutes: 5, mode: 'all', enabled: 1,
@@ -55,7 +60,15 @@ test('export includes the relational join rows', () => {
   const cfg = store.exportConfig();
   assert.equal(cfg.flatline_group_endpoints.length, 1);
   assert.equal(cfg.flatline_group_actions.length, 1);
-  assert.equal(cfg.action_group_members.length, 1);
+  assert.equal(cfg.action_group_members.length, 2);
+});
+
+test('export carries the waits, so an imported group keeps its timing', () => {
+  const cfg = store.exportConfig();
+  assert.deepEqual(cfg.action_group_stages.map((s) => s.wait_seconds), [0, 20]);
+  // The wait step travels as a member with no target and a duration of its own.
+  const wait = cfg.action_group_members.find((m) => m.target_id === null);
+  assert.equal(wait.wait_seconds, 90);
 });
 
 test('replaceConfig rejects a file without the marker', () => {

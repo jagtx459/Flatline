@@ -33,14 +33,21 @@ function target(name, route = '/up', over = {}) {
   });
 }
 
-/** stages: [[{ target, seconds }]] — one array per stage, steps run together. */
-function group(name, stages, { on_failure = 'continue', passRule = 'any', stageFailure = null } = {}) {
+/**
+ * stages: [[{ target, seconds } | { wait }]] — one array per stage, steps run
+ * together; `wait` makes a wait step. The gap between stages is zeroed unless a
+ * test is about it, so the rest of the suite runs at full speed.
+ */
+function group(name, stages, { on_failure = 'continue', passRule = 'any', stageFailure = null, waits = [] } = {}) {
   return store.createActionGroup({
     name, on_failure, enabled: 1,
-    stages: stages.map((steps) => ({
+    stages: stages.map((steps, i) => ({
       pass_rule: passRule,
       on_failure: stageFailure,
-      steps: steps.map((s) => ({ target_id: s.target.id, timeout_seconds: s.seconds ?? 30 }))
+      wait_seconds: waits[i] ?? 0,
+      steps: steps.map((s) => (s.wait != null
+        ? { wait_seconds: s.wait }
+        : { target_id: s.target.id, timeout_seconds: s.seconds ?? 30 }))
     }))
   });
 }
@@ -143,6 +150,83 @@ test('deleting a target takes its steps out of every group that used it', () => 
   // A group can quietly lose a step this way, so the remaining shape matters.
   assert.deepEqual(store.getActionGroup(one.id).stages[0].steps.map((s) => s.target_id), [keeper.id]);
   assert.deepEqual(store.getActionGroup(two.id).stages[0].steps, [], 'the stage survives, now empty');
+});
+
+// ---- waits ----
+
+test('a stage saved without a wait gets the five second default', () => {
+  const g = store.createActionGroup({
+    name: 'implicit gap', on_failure: 'continue', enabled: 1,
+    stages: [
+      { pass_rule: 'any', on_failure: null, steps: [{ target_id: target('gap-a').id, timeout_seconds: 30 }] },
+      { pass_rule: 'any', on_failure: null, steps: [{ target_id: target('gap-b').id, timeout_seconds: 30 }] }
+    ]
+  });
+  assert.deepEqual(store.getActionGroup(g.id).stages.map((s) => s.wait_seconds), [5, 5]);
+});
+
+test('a stage keeps the gap it was given, including none at all', () => {
+  const t = target('explicit-gap');
+  const g = group('explicit', [[{ target: t }], [{ target: t }], [{ target: t }]], { waits: [0, 45, 0] });
+
+  // 0 is a real choice ("run straight on"), not a missing value to fall back from.
+  assert.deepEqual(store.getActionGroup(g.id).stages.map((s) => s.wait_seconds), [0, 45, 0]);
+});
+
+test('a wait step round-trips in place among the targets of its stage', () => {
+  const first = target('before-the-wait');
+  const second = target('after-the-wait');
+  const g = group('with-a-wait', [[{ target: first, seconds: 20 }, { wait: 15 }, { target: second, seconds: 25 }]]);
+
+  const stored = store.getActionGroup(g.id).stages[0];
+  assert.deepEqual(stored.steps, [
+    { target_id: first.id, timeout_seconds: 20 },
+    { wait_seconds: 15 },
+    { target_id: second.id, timeout_seconds: 25 }
+  ]);
+});
+
+test('reordering the steps within a stage sticks', () => {
+  const first = target('moves-down');
+  const second = target('moves-up');
+  const g = group('reordered', [[{ target: first }, { wait: 10 }, { target: second }]]);
+
+  // What the ↑ / ↓ buttons on a step row save: the same steps, a new order.
+  const stage = store.getActionGroup(g.id).stages[0];
+  const moved = [stage.steps[1], stage.steps[0], stage.steps[2]];
+  store.updateActionGroup(g.id, {
+    name: 'reordered', on_failure: 'continue', enabled: 1,
+    stages: [{ pass_rule: 'any', on_failure: null, wait_seconds: 0, steps: moved }]
+  });
+
+  assert.deepEqual(store.getActionGroup(g.id).stages[0].steps, [
+    { wait_seconds: 10 },
+    { target_id: first.id, timeout_seconds: 30 },
+    { target_id: second.id, timeout_seconds: 30 }
+  ]);
+});
+
+test('deleting a target leaves the wait steps of its stage standing', () => {
+  const doomed = target('deleted-beside-a-wait');
+  const g = group('outlives-a-target', [[{ target: doomed }, { wait: 30 }]]);
+
+  store.deleteActionTarget(doomed.id);
+
+  // The wait has no target to cascade from, so the stage keeps its timing.
+  assert.deepEqual(store.getActionGroup(g.id).stages[0].steps, [{ wait_seconds: 30 }]);
+});
+
+test('a wait step counts neither as a pass nor a fail when the stage is judged', async () => {
+  const bad = target('fails-beside-a-wait', '/down');
+  // "counts as failed when all targets fail" — with one target and one wait,
+  // that one target failing IS all of them. A wait must not pass for a target.
+  const g = group('wait-does-not-rescue', [[{ target: bad }, { wait: 1 }]], { passRule: 'all' });
+
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await done;
+
+  assert.equal(store.getActionRun(run.id).status, 'failed');
+  assert.deepEqual(JSON.parse(store.getActionRun(run.id).steps).map((s) => s.state), ['failed', 'ok']);
 });
 
 // ---- wiring to Flatline groups ----

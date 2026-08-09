@@ -524,7 +524,9 @@ const RUN_STATUS = {
   interrupted: { cls: 'disabled', label: 'INTERRUPTED' }
 };
 
-const STEP_STATE_MARK = { running: '⋯', ok: '✓', failed: '✕', skipped: '⊘' };
+// 'pending' is a step further down its stage, behind a wait that has not been
+// held yet — it has not started, so it gets a mark of its own.
+const STEP_STATE_MARK = { pending: '·', running: '⋯', ok: '✓', failed: '✕', skipped: '⊘' };
 
 const PANEL_KEY = 'flatline.actionPanelCollapsed';
 

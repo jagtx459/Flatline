@@ -42,6 +42,7 @@ console.log(`[dev] mock targets on http://127.0.0.1:${MOCK_PORT} (/up /down /slo
 if (driveOutage) {
   const cycle = SCENARIO.reduce((s, p) => s + p.seconds, 0);
   console.log(`[dev] --tests: outage scenario loops every ${cycle}s — "UPS management" and "Lab API" follow it`);
+  console.log('[dev] --tests: each completed run is checked against the waits its stages ask for');
 } else {
   console.log('[dev] all endpoints stay healthy — pass --tests to drive the scripted outage');
 }
@@ -58,5 +59,45 @@ if (reseed || store.listEndpoints().length === 0) {
   console.log('[dev] existing dev database kept — pass --reseed to start over');
 }
 
+if (driveOutage) watchWaits(store);
+
 console.log(`[dev] data dir: ${process.env.FLATLINE_DATA_DIR}`);
 await import('../server/index.js');
+
+/**
+ * The least time a group can possibly take: the gap held before every stage but
+ * the first, plus every wait step inside them — a stage's waits gate the steps
+ * below them, so they add up. Anything the targets do is on top of this.
+ */
+function waitFloorMs(stages) {
+  return stages.reduce((ms, st, i) => {
+    const inStage = st.steps
+      .filter((s) => s.target_id == null)
+      .reduce((n, s) => n + s.wait_seconds, 0);
+    return ms + (i > 0 ? st.wait_seconds : 0) + inStage;
+  }, 0) * 1000;
+}
+
+/**
+ * Reports every completed run against that floor, so a regression in the waits
+ * shows up here on the outage loop and not only under `npm run tests`. Runs that
+ * stopped early are skipped, they would never reach the gaps they were cut off at.
+ */
+function watchWaits(db) {
+  const reported = new Set();
+  setInterval(() => {
+    for (const run of db.listActionRuns(20)) {
+      if (!run.ended_at || reported.has(run.id)) continue;
+      reported.add(run.id);
+      if (run.status !== 'completed') continue;
+      const group = db.listActionGroups().find((g) => g.id === run.action_group_id);
+      if (!group) continue;
+
+      const floor = waitFloorMs(group.stages);
+      const elapsed = run.ended_at - run.started_at;
+      const verdict = elapsed >= floor ? 'held' : 'NOT HELD';
+      console.log(`[dev] waits ${verdict}: "${run.action_group_name}" took ${(elapsed / 1000).toFixed(1)}s`
+        + ` against ${(floor / 1000).toFixed(1)}s of waits`);
+    }
+  }, 2000).unref();
+}

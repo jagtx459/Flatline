@@ -36,6 +36,16 @@ it pins the behaviour that's easy to break:
   reports failure
 - pause holds at the **next stage boundary** (never mid-step) and resume carries on
 - cancel drops the remaining stages; the stage already running still finishes
+- stages are **5s apart by default**, and the first stage still starts at once
+- the gap between stages is reported on the run while it's held, and counted in
+  the finish estimate
+- cancel cuts a gap short — and a run cancelled mid-stage never enters the next
+  one — while a stray resume does not
+- a **wait step** inside a stage gates it: the steps above it run, the wait is
+  held, and only then do the steps below it start. The batches on either side
+  still run in parallel within themselves
+- cancelling during a wait step leaves everything below it unrun, and a wait
+  counts neither as a pass nor a fail
 - controls refuse politely once a run is over
 - `markInterruptedRuns()` closes out runs a stopped process left behind
 - run history outlives its action group, and prunes with retention (but a live
@@ -109,9 +119,14 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 | NAS web UI (HTTP `/up`) | stays up |
 | Flatline group "Power loss" | ALL mode, 1 min grace. Both members follow the cycle, so it arms only during the outage |
 | Flatline group "Lab services" | ANY mode, 1 min grace. The always-up NAS never trips it; Lab API does |
-| Action group "Graceful shutdown" | 3 stages, first one ~6s, long enough to pause and cancel |
+| Action group "Graceful shutdown" | 3 stages, first one ~6s, long enough to pause and cancel. 15s and 10s gaps between stages; stage 2 is split by a 20s wait, so the cluster is told only after the Windows host has had time to go down |
 | Action group "Failure demo" | stage 1 always fails with `on_failure: stop` |
-| Action group "Quick notify" | one instant stage |
+| Action group "Quick notify" | one instant stage, no gaps |
+
+Under `--tests` every completed run is also checked against the waits its stages
+ask for, and the console says so: `[dev] waits held: "Graceful shutdown" took
+51.2s against 45.0s of waits`. `NOT HELD` means the run finished quicker than its
+own waits allow — that is a regression in `server/actionRuns.js`.
 
 ### Checklist
 
@@ -151,6 +166,11 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 - [ ] Status, `stage n of m`, and start / "done by … at the latest" all show.
 - [ ] Step chips show every target in the current stage, flipping ⋯ → ✓ / ✕ as
       each lands (they run together, so several move at once).
+- [ ] Between stages the run reads `Waiting 15s before stage 2 of 3` and stays
+      RUNNING — a gap is not a pause.
+- [ ] Stage 2's chips move in waves: `✓ Windows host`, then `⋯ wait 20s` while
+      `· k8s cluster` sits pending, then the cluster runs. Nothing below a wait
+      starts before it is up.
 - [ ] Pause → the note reads "pausing after the current stage…", the run keeps
       going, and only at the stage boundary does it become PAUSED.
 - [ ] A paused run stays paused; the button now reads Resume, and it continues.
@@ -164,10 +184,20 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 - [ ] Disable a target that a group uses, then run that group: its chip reads
       ⊘ and the events list says the step was skipped. Nothing is sent to it,
       and the stage is not marked failed on its account.
-- [ ] The Stages help explains "give up after" as a cut-off, not a delay.
 - [ ] Each step row reads `give up after [n] s`, and hovering the input explains it.
-- [ ] A stage header shows `takes up to Ns`, tracking the slowest step, and
-      updates when a step's value changes.
+- [ ] A stage header shows `Stage n · takes up to Ns` and nothing else, and it
+      updates when a step's value changes. With no waits it tracks the slowest
+      step; add one and it adds up (batch + wait + batch).
+- [ ] Adding a stage puts a `⏱ wait [5] s before Stage n` row above it — never
+      above stage 1 — and editing it re-labels 0 as "no pause".
+- [ ] `+ Add wait` adds a dashed `⏱ Wait for [n] s` row inside the stage. With a
+      step below it, it reads "everything below starts after this"; as the last
+      row, "holds the stage open at the end". It survives save + reload.
+- [ ] Every step row has ↑ / ↓ that move it within its stage (disabled at the
+      ends), so a wait can be dropped between two targets without removing them.
+      The new order survives save + reload, and changes what actually runs when.
+- [ ] The group table's Stages column reads `1. a + b, wait 20s, c  →(15s)→  2. d`
+      — `+` runs together, `,` follows a wait, `→` separates stages.
 
 **Notifications**
 

@@ -14,6 +14,16 @@ import { recordTargetActivity } from './targetHealth.js';
  * Pause and cancel take effect at stage boundaries. A step that is already
  * executing is a command running on a remote host — it can't be recalled — so
  * the stage always finishes (or times out) before the run stops.
+ *
+ * Stages are separated by a deliberate wait (see stage.wait_seconds), which is
+ * part of that boundary: nothing has been sent to a machine during it, so a
+ * cancel cuts it short rather than sitting it out.
+ *
+ * A wait step *inside* a stage splits it: the steps before it start together,
+ * the wait is held, and only then do the steps after it start. So a stage runs
+ * as a sequence of parallel batches, and the order of its steps matters. Those
+ * waits are cancellable for the same reason the ones between stages are —
+ * nothing has been sent for the batches below them yet.
  */
 
 /** run id -> control switches, only for runs this process is executing. */
@@ -46,13 +56,33 @@ function recordOutcome(run) {
   });
 }
 
-/** Worst case for a stage: its steps run at once, so the slowest timeout wins. */
+/**
+ * Worst case for a stage. Its wait steps split it into batches that run one
+ * after another, so the cost is every wait plus, per batch, its slowest step —
+ * a stage with no waits is one batch, and costs exactly that batch's slowest.
+ */
 function stageWorstCaseMs(stage) {
-  return Math.max(...stage.steps.map((s) => s.timeout_seconds)) * 1000;
+  let total = 0;
+  let batch = 0;
+  for (const step of stage.steps) {
+    if (step.target_id == null) {
+      total += batch + step.wait_seconds * 1000;
+      batch = 0;
+    } else {
+      batch = Math.max(batch, step.timeout_seconds * 1000);
+    }
+  }
+  return total + batch;
 }
 
+/**
+ * Time left from the moment stage `fromIndex` starts running: every stage from
+ * there on, plus the wait before each — except its own, which by then has
+ * already been held (and which the first stage never has at all).
+ */
 function remainingWorstCaseMs(stages, fromIndex) {
-  return stages.slice(fromIndex).reduce((ms, st) => ms + stageWorstCaseMs(st), 0);
+  return stages.slice(fromIndex).reduce((ms, st, i) =>
+    ms + (i > 0 ? st.wait_seconds * 1000 : 0) + stageWorstCaseMs(st), 0);
 }
 
 export function isRunning(actionGroupId) {
@@ -85,7 +115,7 @@ export function startActionGroupRun(actionGroup, { trigger, detail = null }) {
       + ` — ${stages.length} stage(s)`
   });
 
-  controls.set(run.id, { pause: false, cancel: false, wake: null });
+  controls.set(run.id, { pause: false, paused: false, cancel: false, wake: null });
   const done = execute(run.id, actionGroup, stages)
     .catch((err) => {
       console.error(`[runs] run ${run.id} ("${actionGroup.name}") failed unexpectedly:`, err);
@@ -114,6 +144,22 @@ async function execute(runId, actionGroup, stages) {
   let failedStages = 0;
 
   for (let i = 0; i < stages.length; i++) {
+    const stage = stages[i];
+
+    // The gap between stages, held before the pause/cancel checks so a request
+    // made during it is honoured the moment it ends — and a cancel ends it now.
+    // A run cancelled earlier skips the gap outright: there is no next stage to
+    // hold it open for.
+    if (!ctl.cancel && i > 0 && stage.wait_seconds > 0) {
+      store.updateActionRun(runId, {
+        status: 'running',
+        estimated_end_ts: Date.now() + stage.wait_seconds * 1000 + remainingWorstCaseMs(stages, i),
+        message: `Waiting ${stage.wait_seconds}s before stage ${i + 1} of ${stages.length}`
+      });
+      console.log(`[runs] "${actionGroup.name}" waiting ${stage.wait_seconds}s before stage ${i + 1}`);
+      await sleep(ctl, stage.wait_seconds * 1000);
+    }
+
     if (ctl.cancel) {
       finish(runId, 'cancelled', `Cancelled before stage ${i + 1} of ${stages.length}`);
       return;
@@ -125,7 +171,9 @@ async function execute(runId, actionGroup, stages) {
         message: `Paused before stage ${i + 1} of ${stages.length}`
       });
       console.log(`[runs] run ${runId} ("${actionGroup.name}") paused before stage ${i + 1}`);
+      ctl.paused = true;
       await new Promise((resolve) => { ctl.wake = resolve; });
+      ctl.paused = false;
       ctl.wake = null;
       if (ctl.cancel) {
         finish(runId, 'cancelled', `Cancelled while paused before stage ${i + 1} of ${stages.length}`);
@@ -133,10 +181,13 @@ async function execute(runId, actionGroup, stages) {
       }
     }
 
-    const stage = stages[i];
+    // 'pending' is a step whose batch has not started yet — everything below
+    // the stage's next wait step.
     const steps = stage.steps.map((s) => ({
-      name: store.getActionTarget(s.target_id)?.name ?? `deleted target ${s.target_id}`,
-      state: 'running'
+      name: s.target_id == null
+        ? `wait ${s.wait_seconds}s`
+        : store.getActionTarget(s.target_id)?.name ?? `deleted target ${s.target_id}`,
+      state: 'pending'
     }));
     store.updateActionRun(runId, {
       status: 'running',
@@ -146,12 +197,11 @@ async function execute(runId, actionGroup, stages) {
       message: null
     });
 
-    const results = await Promise.all(stage.steps.map((step, si) =>
-      runActionStep(actionGroup, step).then((r) => {
-        steps[si].state = r.skipped ? 'skipped' : r.ok ? 'ok' : 'failed';
-        store.updateActionRun(runId, { steps: JSON.stringify(steps) });
-        return r;
-      })));
+    const { results, cancelled } = await runStage(runId, actionGroup, stage, steps, ctl);
+    if (cancelled) {
+      finish(runId, 'cancelled', `Cancelled during stage ${i + 1} of ${stages.length}`);
+      return;
+    }
 
     // Skipped steps are left out of the verdict — a stage of nothing but
     // disabled targets has not failed, it simply had nothing to do.
@@ -174,6 +224,76 @@ async function execute(runId, actionGroup, stages) {
     failedStages > 0
       ? `Ran all ${stages.length} stage(s); ${failedStages} failed but the sequence continued`
       : `All ${stages.length} stage(s) completed`);
+}
+
+/**
+ * Runs one stage, returning { results, cancelled }. `results` covers the steps
+ * that actually started — the ones a cancel cut off are not in it.
+ *
+ * The stage's wait steps split its steps into batches: a batch starts together,
+ * its wait is then held, and only then does the batch below it start. `steps` is
+ * the progress array the dashboard reads, rewritten as each step lands.
+ *
+ * A cancel takes effect at those waits, where nothing is in flight, and nowhere
+ * else: once a batch has started, its commands are running on remote hosts and
+ * cannot be recalled. A pause is not honoured mid-stage at all — it holds at the
+ * next stage boundary, as it always has.
+ */
+async function runStage(runId, actionGroup, stage, steps, ctl) {
+  const results = [];
+  const save = () => store.updateActionRun(runId, { steps: JSON.stringify(steps) });
+
+  let batch = []; // indices of the steps waiting to start together
+  const runBatch = async () => {
+    if (batch.length === 0) return;
+    for (const si of batch) steps[si].state = 'running';
+    save();
+    const started = batch;
+    batch = [];
+    results.push(...await Promise.all(started.map((si) =>
+      runActionStep(actionGroup, stage.steps[si]).then((r) => {
+        steps[si].state = r.skipped ? 'skipped' : r.ok ? 'ok' : 'failed';
+        save();
+        return r;
+      }))));
+  };
+
+  for (let si = 0; si < stage.steps.length; si++) {
+    const step = stage.steps[si];
+    if (step.target_id != null) {
+      batch.push(si);
+      continue;
+    }
+
+    await runBatch();
+    if (ctl.cancel) return { results, cancelled: true };
+
+    // A cut-off wait is left mid-flight rather than marked done: it is exactly
+    // where the run stopped, and the steps below it stay 'pending'.
+    steps[si].state = 'running';
+    save();
+    console.log(`[runs] "${actionGroup.name}" holding stage open for ${step.wait_seconds}s`);
+    await sleep(ctl, step.wait_seconds * 1000);
+    if (ctl.cancel) return { results, cancelled: true };
+    steps[si].state = 'ok';
+    save();
+  }
+
+  await runBatch();
+  return { results, cancelled: false };
+}
+
+/**
+ * Waits, unless the run is cancelled first — this only ever covers a gap
+ * between stages or a wait step inside one, where nothing has been sent to a
+ * machine and there is nothing to let finish. Shares ctl.wake with the pause
+ * hold: a run is only ever in one of them.
+ */
+function sleep(ctl, ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { ctl.wake = null; resolve(); }, ms);
+    ctl.wake = () => { clearTimeout(timer); ctl.wake = null; resolve(); };
+  });
 }
 
 /** Runs one step against its target and records the result. Returns { ok, skipped }. */
@@ -234,7 +354,9 @@ export function resumeRun(id) {
   const ctl = controls.get(id);
   if (!ctl) return 'this run is no longer controllable';
   ctl.pause = false;
-  if (ctl.wake) ctl.wake();
+  // Only release an actual pause hold — ctl.wake may be a wait between stages,
+  // and resuming a run that was never paused must not cut that wait short.
+  if (ctl.paused) ctl.wake();
   return null;
 }
 
@@ -242,7 +364,7 @@ export function cancelRun(id) {
   const ctl = controls.get(id);
   if (!ctl) return 'this run is no longer controllable';
   ctl.cancel = true;
-  if (ctl.wake) ctl.wake(); // release a paused run so it can record the cancel
+  if (ctl.wake) ctl.wake(); // release a paused run, or a wait between stages
   return null;
 }
 

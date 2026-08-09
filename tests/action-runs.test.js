@@ -29,14 +29,21 @@ function target(name, route) {
   });
 }
 
-/** stages: [[{ target, seconds }]] — one array per stage, steps run together. */
-function group(name, stages, { on_failure = 'continue', stageFailure = null } = {}) {
+/**
+ * stages: [[{ target, seconds } | { wait }]] — one array per stage, steps run
+ * together; `wait` makes a wait step. `waits[i]` is the gap held before stage i,
+ * and defaults to none here so tests about anything else run at full speed.
+ */
+function group(name, stages, { on_failure = 'continue', stageFailure = null, waits = [] } = {}) {
   return store.createActionGroup({
     name, on_failure, enabled: 1,
-    stages: stages.map((steps) => ({
+    stages: stages.map((steps, i) => ({
       pass_rule: 'any',
       on_failure: stageFailure,
-      steps: steps.map((s) => ({ target_id: s.target.id, timeout_seconds: s.seconds }))
+      wait_seconds: waits[i] ?? 0,
+      steps: steps.map((s) => (s.wait != null
+        ? { wait_seconds: s.wait }
+        : { target_id: s.target.id, timeout_seconds: s.seconds }))
     }))
   });
 }
@@ -122,6 +129,220 @@ test("on_failure 'stop' halts the sequence; 'continue' finishes it but still rep
   await b.done;
   assert.equal(status(b.run.id), 'failed');
   assert.equal(store.getActionRun(b.run.id).stage_index, 1, 'stage 2 should still have run');
+});
+
+// ---- waits ----
+// Two separate things: the gap held BETWEEN stages (stage.wait_seconds, 5s
+// unless changed), and a wait step INSIDE a stage that holds it open.
+
+const message = (id) => store.getActionRun(id).message ?? '';
+
+test('stages are five seconds apart by default, and the first stage still starts at once', async () => {
+  const ok = target('default-gap', '/up');
+  // No wait_seconds anywhere in this payload — the stored default is what runs.
+  const g = store.createActionGroup({
+    name: 'default gap', on_failure: 'continue', enabled: 1,
+    stages: [
+      { pass_rule: 'any', on_failure: null, steps: [{ target_id: ok.id, timeout_seconds: 30 }] },
+      { pass_rule: 'any', on_failure: null, steps: [{ target_id: ok.id, timeout_seconds: 30 }] }
+    ]
+  });
+  assert.deepEqual(store.getActionGroup(g.id).stages.map((s) => s.wait_seconds), [5, 5]);
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await done;
+  const elapsed = Date.now() - started;
+
+  assert.equal(status(run.id), 'completed');
+  assert.ok(elapsed >= 5000, `two instant stages took ${elapsed}ms — the 5s gap between them was not held`);
+  // Stage 1's own wait_seconds is stored but never used: 10s would mean the run
+  // sat on its hands before doing anything, which an outage cannot afford.
+  assert.ok(elapsed < 9000, `the run took ${elapsed}ms — it waited before stage 1 as well`);
+});
+
+test('the gap between stages is reported on the run while it is being held', async () => {
+  const ok = target('gap-visible', '/up');
+  const g = group('shows-the-gap', [[{ target: ok, seconds: 30 }], [{ target: ok, seconds: 30 }]],
+    { waits: [0, 3] });
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+
+  await waitFor(() => /Waiting 3s before stage 2 of 2/.test(message(run.id)), 'the gap to be reported');
+  const held = store.getActionRun(run.id);
+  assert.equal(held.status, 'running', 'a gap is not a pause — the run is still going');
+  assert.equal(held.stage_index, 0, 'stage 2 has not started yet');
+  assert.ok(held.estimated_end_ts > Date.now(), 'the estimate still covers the gap and the stage after it');
+
+  await done;
+  assert.equal(status(run.id), 'completed');
+});
+
+test('the finish estimate counts the gaps, not just the work', async () => {
+  const ok = target('gap-estimate', '/up');
+  const g = group('estimated', [[{ target: ok, seconds: 10 }], [{ target: ok, seconds: 10 }]],
+    { waits: [0, 30] });
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+
+  // 10s of stage + a 30s gap + 10s of stage, measured from the row as created.
+  const budget = run.estimated_end_ts - run.started_at;
+  assert.ok(budget >= 50_000 && budget < 51_000, `estimated ${budget}ms for 10s + a 30s gap + 10s`);
+
+  // Cancelled while stage 1 runs: the gap after it is never entered, so a run
+  // that is already over does not hold the line for half a minute.
+  runs.cancelRun(run.id);
+  await done;
+  assert.equal(status(run.id), 'cancelled');
+  assert.ok(Date.now() - started < 5000, 'a cancelled run held the gap to a stage it would never run');
+});
+
+test('cancelling during a gap ends the run there instead of sitting out the rest', async () => {
+  const ok = target('gap-cancel', '/up');
+  const g = group('long-gap', [[{ target: ok, seconds: 30 }], [{ target: ok, seconds: 30 }]],
+    { waits: [0, 30] });
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await waitFor(() => /Waiting 30s/.test(message(run.id)), 'the gap to start');
+  assert.equal(runs.cancelRun(run.id), null);
+  await done;
+  const elapsed = Date.now() - started;
+
+  assert.equal(status(run.id), 'cancelled');
+  assert.equal(store.getActionRun(run.id).stage_index, 0, 'the stage after the gap must not run');
+  assert.ok(elapsed < 5000, `the run sat out ${elapsed}ms of a 30s gap it was never going to use`);
+});
+
+test('a pause asked for during a gap takes hold as soon as the gap ends', async () => {
+  const ok = target('gap-pause', '/up');
+  const g = group('pausable-gap', [[{ target: ok, seconds: 30 }], [{ target: ok, seconds: 30 }]],
+    { waits: [0, 2] });
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+
+  await waitFor(() => /Waiting 2s/.test(message(run.id)), 'the gap to start');
+  assert.equal(runs.pauseRun(run.id), null);
+  await waitFor(() => status(run.id) === 'paused', 'the run to pause once the gap ended');
+  assert.equal(store.getActionRun(run.id).stage_index, 0);
+
+  assert.equal(runs.resumeRun(run.id), null);
+  await done;
+  assert.equal(status(run.id), 'completed');
+});
+
+test('a resume with nothing to release does not cut a gap short', async () => {
+  const ok = target('gap-stray-resume', '/up');
+  const g = group('unpaused-gap', [[{ target: ok, seconds: 30 }], [{ target: ok, seconds: 30 }]],
+    { waits: [0, 4] });
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await waitFor(() => /Waiting 4s/.test(message(run.id)), 'the gap to start');
+  assert.equal(runs.resumeRun(run.id), null); // the run is not paused — there is nothing to resume
+  await done;
+
+  const elapsed = Date.now() - started;
+  assert.equal(status(run.id), 'completed');
+  assert.ok(elapsed >= 4000, `the 4s gap ended after ${elapsed}ms — a stray resume released it`);
+});
+
+test('a wait step gates the steps below it: they start only once it is up', async () => {
+  const first = target('runs-first', '/up');
+  const second = target('runs-after-the-wait', '/up');
+  const g = group('gated', [[{ target: first, seconds: 30 }, { wait: 2 }, { target: second, seconds: 30 }]]);
+
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+
+  // Mid-wait: the target above it is done, the one below has not started.
+  await waitFor(() => steps(run.id)[1]?.state === 'running', 'the wait to start');
+  assert.deepEqual(steps(run.id).map((s) => s.state), ['ok', 'running', 'pending']);
+
+  await done;
+  assert.equal(status(run.id), 'completed');
+  assert.deepEqual(steps(run.id).map((s) => s.name), ['runs-first', 'wait 2s', 'runs-after-the-wait']);
+  assert.deepEqual(steps(run.id).map((s) => s.state), ['ok', 'ok', 'ok']);
+});
+
+test('a wait step costs its full time, and the batches around it still run at once', async () => {
+  const a = target('batched-a', '/slow?ms=1200');
+  const b = target('batched-b', '/slow?ms=1200');
+  const g = group('batched', [[
+    { target: a, seconds: 30 }, { target: b, seconds: 30 },
+    { wait: 2 },
+    { target: a, seconds: 30 }, { target: b, seconds: 30 }
+  ]]);
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await done;
+  const elapsed = Date.now() - started;
+
+  assert.equal(status(run.id), 'completed');
+  // 1.2s batch + 2s wait + 1.2s batch. Sequential batches, parallel within one:
+  // four 1.2s steps run one after another would be 4.8s + the wait.
+  assert.ok(elapsed >= 4400, `the stage took ${elapsed}ms — the wait or a batch was skipped`);
+  assert.ok(elapsed < 6000, `the stage took ${elapsed}ms — the steps in a batch did not overlap`);
+});
+
+test('a wait step at the end of a stage just holds it open', async () => {
+  const ok = target('wait-last', '/up');
+  const g = group('trailing-wait', [[{ target: ok, seconds: 30 }, { wait: 2 }]]);
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await done;
+
+  assert.equal(status(run.id), 'completed');
+  assert.ok(Date.now() - started >= 2000, 'a wait with nothing below it still held the stage');
+  assert.deepEqual(steps(run.id).map((s) => s.state), ['ok', 'ok']);
+});
+
+test('cancelling during a wait step leaves the steps below it unrun', async () => {
+  const first = target('cancel-gate-first', '/up');
+  const second = target('cancel-gate-second', '/down'); // would fail the run had it started
+  const g = group('cancel-mid-stage',
+    [[{ target: first, seconds: 30 }, { wait: 30 }, { target: second, seconds: 30 }]]);
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await waitFor(() => steps(run.id)[1]?.state === 'running', 'the wait to start');
+  assert.equal(runs.cancelRun(run.id), null);
+  await done;
+  const elapsed = Date.now() - started;
+
+  assert.equal(status(run.id), 'cancelled');
+  assert.ok(elapsed < 5000, `the run sat out ${elapsed}ms of a 30s wait after being cancelled`);
+  // The wait keeps ⋯ — that is where the run stopped — and nothing below it ran.
+  assert.deepEqual(steps(run.id).map((s) => s.state), ['ok', 'running', 'pending']);
+  assert.match(store.getActionRun(run.id).message, /Cancelled during stage 1 of 1/);
+});
+
+test('the finish estimate counts a stage as batch + wait + batch', () => {
+  const ok = target('gated-estimate', '/up');
+  const g = group('gated-estimated', [[
+    { target: ok, seconds: 10 }, { wait: 30 }, { target: ok, seconds: 10 }
+  ]]);
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+
+  // 10s + 30s + 10s. Were the stage still one parallel batch it would read 30s.
+  const budget = run.estimated_end_ts - run.started_at;
+  assert.ok(budget >= 50_000 && budget < 51_000, `estimated ${budget}ms for 10s + a 30s wait + 10s`);
+
+  runs.cancelRun(run.id);
+  return done;
+});
+
+test('a stage of nothing but a wait is a delay, and completes', async () => {
+  const ok = target('after-the-delay', '/up');
+  const g = group('delay-stage', [[{ wait: 1 }], [{ target: ok, seconds: 30 }]]);
+
+  const started = Date.now();
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await done;
+
+  assert.equal(status(run.id), 'completed');
+  assert.ok(Date.now() - started >= 1000, 'the wait-only stage did not hold');
+  assert.equal(store.getActionRun(run.id).stage_count, 2);
 });
 
 test('pause holds the run at the next stage boundary, and resume carries on', async () => {

@@ -560,6 +560,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .step-row .step-timeout { width: 70px; padding: 4px 6px; }
 .step-row .step-timeout-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 12px; }
 .step-row .step-btns { display: inline-flex; gap: 4px; }
+/* a wait step runs no command, so it reads quieter than the targets beside it */
+.step-row.wait { border-style: dashed; }
+.step-row.wait .step-name { font-weight: 400; color: var(--text-muted); }
 .step-add { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
 .step-add select { width: auto; min-width: 220px; }
 
@@ -572,6 +575,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   margin-bottom: 10px;
   background: var(--surface);
 }
+/* the gap between two stage cards, and how long it is held */
+.stage-wait {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 6px 14px;
+  font-size: 12px;
+}
+.stage-wait .step-timeout { width: 70px; padding: 4px 6px; }
 .stage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .stage-head .stage-title { font-weight: 600; }
 .stage-head .stage-btns { display: inline-flex; gap: 4px; }
@@ -657,6 +669,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .run-step.ok { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 45%, var(--border)); }
 .run-step.failed { color: var(--status-critical); border-color: color-mix(in srgb, var(--status-critical) 45%, var(--border)); }
 .run-step.skipped { color: var(--text-muted); border-style: dashed; }
+/* not started yet — it sits behind a wait further up its stage */
+.run-step.pending { color: var(--text-muted); opacity: 0.7; }
 .run-message { margin-top: 6px; color: var(--text-secondary); font-size: 12px; }
 .run-btns { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .run-btns .run-note { color: var(--text-muted); font-size: 12px; }

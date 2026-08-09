@@ -293,11 +293,11 @@ export function listActionGroups() {
     FROM action_groups g ORDER BY g.id
   `).all();
   const members = db.prepare(`
-    SELECT action_group_id, target_id, stage, timeout_seconds
+    SELECT action_group_id, target_id, stage, timeout_seconds, wait_seconds
     FROM action_group_members ORDER BY stage, position
   `).all();
   const stages = db.prepare(`
-    SELECT action_group_id, stage, pass_rule, on_failure
+    SELECT action_group_id, stage, pass_rule, on_failure, wait_seconds
     FROM action_group_stages ORDER BY stage
   `).all();
   for (const g of groups) {
@@ -306,9 +306,12 @@ export function listActionGroups() {
       .map((s) => ({
         pass_rule: s.pass_rule,
         on_failure: s.on_failure, // null = inherit the group's on_failure
+        wait_seconds: s.wait_seconds, // held before this stage; the first stage's is not used
         steps: members
           .filter((m) => m.action_group_id === g.id && m.stage === s.stage)
-          .map((m) => ({ target_id: m.target_id, timeout_seconds: m.timeout_seconds }))
+          .map((m) => m.target_id === null
+            ? { wait_seconds: m.wait_seconds }
+            : { target_id: m.target_id, timeout_seconds: m.timeout_seconds })
       }));
   }
   return groups;
@@ -340,23 +343,30 @@ export function deleteActionGroup(id) {
 /**
  * Stages run in array order; the steps within a stage run simultaneously.
  * `stage` records the sequence across stages, `position` the order within one.
+ * A step with no target_id is a wait step — it holds the stage open for
+ * wait_seconds instead of acting on anything.
  */
 function setActionGroupStages(groupId, stages) {
   db.prepare('DELETE FROM action_group_stages WHERE action_group_id = ?').run(groupId);
   db.prepare('DELETE FROM action_group_members WHERE action_group_id = ?').run(groupId);
   const insStage = db.prepare(`
-    INSERT INTO action_group_stages (action_group_id, stage, pass_rule, on_failure)
-    VALUES (?, ?, ?, ?)
-  `);
-  const insMember = db.prepare(`
-    INSERT INTO action_group_members (action_group_id, target_id, stage, position, timeout_seconds)
+    INSERT INTO action_group_stages (action_group_id, stage, pass_rule, on_failure, wait_seconds)
     VALUES (?, ?, ?, ?, ?)
   `);
+  const insMember = db.prepare(`
+    INSERT INTO action_group_members (action_group_id, target_id, stage, position, timeout_seconds, wait_seconds)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
   (stages ?? []).forEach((st, si) => {
-    insStage.run(groupId, si, st.pass_rule, st.on_failure ?? null);
-    (st.steps ?? []).forEach((s, pi) => insMember.run(groupId, s.target_id, si, pi, s.timeout_seconds));
+    insStage.run(groupId, si, st.pass_rule, st.on_failure ?? null, st.wait_seconds ?? DEFAULT_STAGE_WAIT_SECONDS);
+    (st.steps ?? []).forEach((s, pi) => s.target_id == null
+      ? insMember.run(groupId, null, si, pi, 60, s.wait_seconds)
+      : insMember.run(groupId, s.target_id, si, pi, s.timeout_seconds, null));
   });
 }
+
+/** The gap held before every stage but the first, unless a stage overrides it. */
+export const DEFAULT_STAGE_WAIT_SECONDS = 5;
 
 // ---- action runs ----
 // One row per execution of an action group. `steps` is a JSON array of
@@ -503,8 +513,8 @@ const CONFIG_TABLES = {
               'down_threshold', 'up_threshold', 'expect_status', 'expect_json', 'enabled', 'created_at'],
   action_targets: ['id', 'name', 'kind', 'config', 'secret_enc', 'enabled', 'created_at'],
   action_groups: ['id', 'name', 'on_failure', 'enabled', 'created_at'],
-  action_group_stages: ['action_group_id', 'stage', 'pass_rule', 'on_failure'],
-  action_group_members: ['action_group_id', 'target_id', 'position', 'timeout_seconds', 'stage'],
+  action_group_stages: ['action_group_id', 'stage', 'pass_rule', 'on_failure', 'wait_seconds'],
+  action_group_members: ['action_group_id', 'target_id', 'position', 'timeout_seconds', 'stage', 'wait_seconds'],
   flatline_groups: ['id', 'name', 'grace_minutes', 'mode', 'enabled', 'created_at'],
   flatline_group_endpoints: ['flatline_group_id', 'endpoint_id'],
   flatline_group_actions: ['flatline_group_id', 'action_group_id'],
