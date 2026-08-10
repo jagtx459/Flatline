@@ -4,12 +4,20 @@ import {
   getKeyStatus, rotateKey, setKey,
   getSettings, putSettings,
   getSecurityConfig, setSitePassword, removeSitePassword,
+  listRelays, createRelay, updateRelay, deleteRelay, testRelay,
   exportConfig, importConfig, resetApp, downloadBackup, restoreBackup
 } from './api.js';
-import { el, clear, fmtDateTime, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
+import { el, clear, enabledPill, fmtDateTime, initCollapsible, initDirtyNote, initTabs, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
 
 initHeaderAuth();
+
+// Sub-tabs split this page's cards into panels. They only hide and show, so
+// every getElementById below still resolves whichever tab is open.
+const configTabs = initTabs('config', document.getElementById('config-tabs'));
+// The {url} placeholder hint on the Notifications tab points at the setting
+// that fills it, which lives on General.
+document.getElementById('baseurl-jump').addEventListener('click', () => configTabs.show('general'));
 
 let channels = [];
 
@@ -499,6 +507,7 @@ async function loadSettings() {
   const s = await getSettings();
   $settingsForm.elements.namedItem('retention_days').value = s.retention_days ?? '14';
   settingsDirty.markClean();
+  applyBaseUrl(s);
 }
 
 $settingsForm.addEventListener('submit', (e) => {
@@ -516,6 +525,346 @@ $settingsForm.addEventListener('submit', (e) => {
     } catch (err) {
       $settingsNote.className = 'error';
       $settingsNote.textContent = err.message;
+    }
+  })();
+});
+
+// ---------- wake-on-lan relays ----------
+// A machine on the target's network that Flatline asks to broadcast the magic
+// packet, for targets it cannot reach a broadcast to itself. The connection
+// half mirrors an ssh/winrm action target; the wake command is a template
+// holding {mac}, so one relay serves every machine on its network.
+
+const RELAY_KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
+
+/** Default wake command per relay kind. Windows needs nothing installed; the
+ *  Linux default assumes the `wakeonlan` package (see the form's help block). */
+const DEFAULT_WAKE_COMMAND = {
+  ssh: 'wakeonlan {mac}',
+  winrm: "$m = '{mac}'.Replace('-',':').Split(':') | ForEach-Object { [byte]('0x' + $_) }; "
+    + '$p = [byte[]]@(0xFF) * 6 + [byte[]]$m * 16; '
+    + '$u = New-Object System.Net.Sockets.UdpClient; $u.EnableBroadcast = $true; '
+    + "[void]$u.Send($p, $p.Length, '255.255.255.255', 9); $u.Close()"
+};
+
+const RELAY_SECRET_INPUTS = {
+  ssh: { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase', sudo_password: 'ssh_sudo_password' },
+  winrm: { password: 'winrm_password' }
+};
+
+const $relayForm = document.getElementById('relay-form');
+const $relayTable = document.getElementById('relay-table');
+const $relayTitle = document.getElementById('relay-form-title');
+const $relaySubmit = document.getElementById('relay-submit');
+const $relayCancel = document.getElementById('relay-cancel');
+const $relayReset = document.getElementById('relay-reset');
+const $relayTest = document.getElementById('relay-test');
+const $relayTestResult = document.getElementById('relay-test-result');
+const $relaySaveNote = document.getElementById('relay-save-note');
+const $relayError = document.getElementById('relay-error');
+const $relayKind = document.getElementById('r-kind');
+const relayFormSection = initCollapsible('config:relay-form',
+  document.getElementById('relay-form-header'), document.getElementById('relay-form-body'));
+const relayDirty = initDirtyNote($relayForm, document.getElementById('relay-dirty'), $relaySaveNote);
+
+let relays = [];
+let editingRelayId = null;
+let clearedRelaySecrets = new Set();
+
+const relayField = (name) => $relayForm.elements.namedItem(name);
+
+function syncRelayKind() {
+  const kind = $relayKind.value;
+  for (const section of $relayForm.querySelectorAll('.relay-section')) {
+    section.style.display = section.dataset.relayKind === kind ? '' : 'none';
+  }
+  const method = relayField('ssh_auth_method').value;
+  for (const node of $relayForm.querySelectorAll('[data-relay-ssh-auth]')) {
+    node.style.display = node.dataset.relaySshAuth === method ? '' : 'none';
+  }
+  $relayTestResult.textContent = '';
+}
+
+$relayKind.addEventListener('change', () => {
+  // Switching type makes the other type's command meaningless, so follow it —
+  // but never overwrite something the user typed themselves.
+  const cmd = relayField('wake_command');
+  if (!cmd.value || Object.values(DEFAULT_WAKE_COMMAND).includes(cmd.value)) {
+    cmd.value = DEFAULT_WAKE_COMMAND[$relayKind.value];
+  }
+  syncRelayKind();
+});
+relayField('ssh_auth_method').addEventListener('change', syncRelayKind);
+document.getElementById('relay-cmd-reset').addEventListener('click', () => {
+  relayField('wake_command').value = DEFAULT_WAKE_COMMAND[$relayKind.value];
+  relayDirty.markDirty();
+});
+wireFileUpload(
+  document.getElementById('relay-key-upload-btn'),
+  document.getElementById('relay-key-upload'),
+  relayField('ssh_private_key')
+);
+
+/** "stored ✓" state + a clear toggle beside each stored relay credential. */
+function renderRelaySecretStates(kind, storedFields) {
+  clearedRelaySecrets = new Set();
+  for (const label of $relayForm.querySelectorAll('label.secret')) {
+    const state = label.querySelector('.secret-state');
+    clear(state);
+    const name = label.dataset.secret;
+    if (!storedFields.includes(name) || label.closest('.relay-section')?.dataset.relayKind !== kind) continue;
+
+    const clearBtn = el('button', { type: 'button', class: 'link-btn' }, 'clear');
+    const hint = el('span', {}, '· stored ✓ (leave blank to keep) ');
+    clearBtn.addEventListener('click', () => {
+      if (clearedRelaySecrets.has(name)) {
+        clearedRelaySecrets.delete(name);
+        clearBtn.textContent = 'clear';
+        hint.textContent = '· stored ✓ (leave blank to keep) ';
+      } else {
+        clearedRelaySecrets.add(name);
+        clearBtn.textContent = 'undo';
+        hint.textContent = '· will be removed on save ';
+      }
+      relayDirty.markDirty();
+    });
+    state.append(hint, clearBtn);
+  }
+}
+
+function collectRelayConfig(kind) {
+  return kind === 'ssh'
+    ? {
+        host: relayField('ssh_host').value,
+        port: Number(relayField('ssh_port').value) || 22,
+        username: relayField('ssh_username').value,
+        auth_method: relayField('ssh_auth_method').value
+      }
+    : {
+        host: relayField('winrm_host').value,
+        port: Number(relayField('winrm_port').value) || 5985,
+        domain: relayField('winrm_domain').value,
+        username: relayField('winrm_username').value
+      };
+}
+
+function collectRelaySecrets(kind) {
+  const secrets = {};
+  for (const [secretName, inputName] of Object.entries(RELAY_SECRET_INPUTS[kind])) {
+    const v = relayField(inputName).value;
+    if (clearedRelaySecrets.has(secretName)) secrets[secretName] = null;
+    else if (v) secrets[secretName] = v;
+  }
+  return secrets;
+}
+
+function resetRelayForm() {
+  editingRelayId = null;
+  $relayForm.reset();
+  relayField('wake_command').value = DEFAULT_WAKE_COMMAND[$relayKind.value];
+  $relayTitle.textContent = 'Add relay';
+  $relaySubmit.textContent = 'Add relay';
+  $relayCancel.style.display = 'none';
+  $relayReset.style.display = '';
+  $relayError.textContent = '';
+  $relaySaveNote.textContent = '';
+  relayDirty.markClean();
+  renderRelaySecretStates('none', []);
+  syncRelayKind();
+}
+
+function fillRelayForm(r) {
+  resetRelayForm();
+  editingRelayId = r.id;
+  relayField('name').value = r.name;
+  $relayKind.value = r.kind;
+  relayField('enabled').checked = !!r.enabled;
+  relayField('wake_command').value = r.wake_command ?? '';
+  relayField('network').value = r.network ?? '';
+
+  const c = r.config;
+  if (r.kind === 'ssh') {
+    relayField('ssh_host').value = c.host ?? '';
+    relayField('ssh_port').value = String(c.port ?? 22);
+    relayField('ssh_username').value = c.username ?? '';
+    relayField('ssh_auth_method').value = c.auth_method ?? 'password';
+  } else {
+    relayField('winrm_host').value = c.host ?? '';
+    relayField('winrm_port').value = String(c.port ?? 5985);
+    relayField('winrm_domain').value = c.domain ?? '';
+    relayField('winrm_username').value = c.username ?? '';
+  }
+
+  renderRelaySecretStates(r.kind, r.secret_fields);
+  syncRelayKind();
+  $relayTitle.textContent = `Edit relay: ${r.name}`;
+  $relaySubmit.textContent = 'Save changes';
+  $relayCancel.style.display = '';
+  $relayReset.style.display = 'none';
+  relayFormSection.expand();
+  $relayForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+$relayCancel.addEventListener('click', (e) => {
+  e.preventDefault();
+  resetRelayForm();
+});
+$relayReset.addEventListener('click', () => resetRelayForm());
+
+$relayForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  void (async () => {
+    const kind = $relayKind.value;
+    const input = {
+      name: relayField('name').value,
+      kind,
+      config: collectRelayConfig(kind),
+      wake_command: relayField('wake_command').value,
+      network: relayField('network').value,
+      secrets: collectRelaySecrets(kind),
+      enabled: relayField('enabled').checked
+    };
+    const wasEditing = editingRelayId != null;
+    try {
+      const saved = wasEditing ? await updateRelay(editingRelayId, input) : await createRelay(input);
+      $relayError.textContent = '';
+      await loadRelays();
+      if (wasEditing) {
+        fillRelayForm(relays.find((r) => r.id === saved.id) ?? saved);
+        $relaySaveNote.textContent = 'Saved ✓';
+      } else {
+        resetRelayForm();
+      }
+    } catch (err) {
+      $relayError.textContent = err.message;
+    }
+  })();
+});
+
+$relayTest.addEventListener('click', () => {
+  void (async () => {
+    const kind = $relayKind.value;
+    $relayTestResult.className = 'note';
+    $relayTestResult.textContent = 'Testing…';
+    $relayError.textContent = '';
+    try {
+      const result = await testRelay({
+        id: editingRelayId ?? undefined,
+        kind,
+        config: collectRelayConfig(kind),
+        secrets: collectRelaySecrets(kind)
+      });
+      $relayTestResult.className = result.ok ? 'note' : 'error';
+      $relayTestResult.textContent = `${result.ok ? '✓' : '✕'} ${result.message}`;
+    } catch (err) {
+      $relayTestResult.className = 'error';
+      $relayTestResult.textContent = err.message;
+    }
+  })();
+});
+
+function relayConnection(r) {
+  const c = r.config;
+  return r.kind === 'winrm'
+    ? `${c.domain ? c.domain + '\\' : ''}${c.username}@${c.host}:${c.port}`
+    : `${c.username}@${c.host}:${c.port}`;
+}
+
+function renderRelayTable() {
+  clear($relayTable);
+  if (relays.length === 0) {
+    $relayTable.append(el('div', { class: 'empty' },
+      el('div', { class: 'big' }, 'No relays yet'),
+      el('div', {}, 'Add one only if you need to wake machines on a network Flatline is not attached to.')));
+    return;
+  }
+
+  const tbody = el('tbody', {});
+  for (const r of relays) {
+    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
+    editBtn.addEventListener('click', () => fillRelayForm(r));
+    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
+    delBtn.addEventListener('click', () => {
+      void (async () => {
+        const ok = await confirmDialog({
+          title: 'Delete relay?',
+          body: [`"${r.name}" and its stored credentials will be permanently deleted.`,
+            'Any action target set to wake through this relay will stop waking until you point it at another one.'],
+          confirmText: 'Delete relay',
+          danger: true
+        });
+        if (!ok) return;
+        await deleteRelay(r.id);
+        if (editingRelayId === r.id) resetRelayForm();
+        await loadRelays();
+      })();
+    });
+
+    const credentials = r.secret_fields.length ? `🔒 ${r.secret_fields.join(', ')}` : '—';
+    tbody.append(el('tr', {},
+      el('td', {}, enabledPill(r.enabled)),
+      el('td', { class: 'truncate', title: r.name }, el('strong', {}, r.name)),
+      el('td', {}, RELAY_KIND_LABELS[r.kind] ?? r.kind),
+      el('td', { class: 'target-cell', title: relayConnection(r) }, relayConnection(r)),
+      el('td', { class: 'mono' }, r.network),
+      el('td', { class: 'target-cell mono', title: r.wake_command }, r.wake_command),
+      el('td', { class: 'truncate', title: credentials }, credentials),
+      el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, editBtn, delBtn))
+    ));
+  }
+
+  const table = el('table', { class: 'endpoints' });
+  table.append(
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'Status'), el('th', {}, 'Name'), el('th', {}, 'Type'), el('th', {}, 'Connection'),
+      el('th', {}, 'Network'), el('th', {}, 'Wake command'), el('th', {}, 'Credentials'), el('th', {}, ''))),
+    tbody
+  );
+  $relayTable.append(table);
+}
+
+async function loadRelays() {
+  relays = await listRelays();
+  renderRelayTable();
+}
+
+// ---------- site URL ----------
+// Consumed by notification templates as {url}. FLATLINE_BASE_URL wins when set,
+// in which case the field is shown read-only rather than hidden — an operator
+// looking for it should find it and see why it can't be edited here.
+
+const $baseUrlForm = document.getElementById('baseurl-form');
+const $baseUrlStatus = document.getElementById('baseurl-status');
+const $baseUrlNote = document.getElementById('baseurl-note');
+const $baseUrlError = document.getElementById('baseurl-error');
+const $baseUrlSave = document.getElementById('baseurl-save');
+const baseUrlDirty = initDirtyNote($baseUrlForm, document.getElementById('baseurl-dirty'), $baseUrlNote);
+
+function applyBaseUrl(s) {
+  const input = $baseUrlForm.elements.namedItem('base_url');
+  input.value = s.base_url ?? '';
+  const fromEnv = s.base_url_source === 'env';
+  input.disabled = fromEnv;
+  $baseUrlSave.disabled = fromEnv;
+  $baseUrlStatus.textContent = fromEnv
+    ? 'Set by the FLATLINE_BASE_URL environment variable — unset it to edit here.'
+    : s.base_url
+      ? 'Notifications link back to this address.'
+      : 'Not set — notifications carry no link.';
+  baseUrlDirty.markClean();
+}
+
+$baseUrlForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  void (async () => {
+    $baseUrlError.textContent = '';
+    $baseUrlNote.textContent = '';
+    try {
+      applyBaseUrl(await putSettings({ base_url: $baseUrlForm.elements.namedItem('base_url').value }));
+      $baseUrlNote.textContent = 'Saved ✓';
+      setTimeout(() => { $baseUrlNote.textContent = ''; }, 2500);
+    } catch (err) {
+      $baseUrlError.textContent = err.message;
     }
   })();
 });
@@ -754,6 +1103,7 @@ $dbRestore.addEventListener('change', () => {
       await restoreBackup(file);
       $dbNote.textContent = 'Database restored ✓';
       await refreshChannels();
+      await loadRelays();
       await loadSettings();
       await refreshKeyStatus();
       await refreshSecurity();
@@ -782,6 +1132,7 @@ $appReset.addEventListener('click', () => {
       await resetApp();
       $dbNote.textContent = 'Flatline reset to a clean start ✓';
       await refreshChannels();
+      await loadRelays();
       await loadSettings();
       await refreshKeyStatus();
       await refreshSecurity();
@@ -794,7 +1145,9 @@ $appReset.addEventListener('click', () => {
 // ---------- boot ----------
 
 resetChannelForm();
+resetRelayForm();
 void refreshChannels();
+void loadRelays();
 void loadSettings();
 void refreshKeyStatus();
 void refreshSecurity();
