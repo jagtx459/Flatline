@@ -73,7 +73,7 @@
 
         <!-- SSH -->
         <div class="kind-section" data-kind="ssh">
-          <p class="hint-row">▶ On trigger: Flatline connects over SSH with these credentials and
+          <p class="hint-row">On trigger: Flatline connects over SSH with these credentials and
             <strong>runs the command below</strong> on the host.
           </p>
           <details class="setup-help">
@@ -140,7 +140,7 @@ sudo chmod 440 /etc/sudoers.d/flatline
           </div>
           <div class="restore-panel">
             <div class="card-header" id="ssh-restore-header">
-              <p class="restore-title">◀ Restore</p>
+              <p class="restore-title">Restore</p>
               <span class="chevron">▸</span>
             </div>
             <div class="card-body" id="ssh-restore-body">
@@ -264,7 +264,7 @@ sudo chmod 440 /etc/sudoers.d/flatline
 
         <!-- WinRM -->
         <div class="kind-section" data-kind="winrm">
-          <p class="hint-row">▶ On trigger: Flatline signs in to the Windows host over <strong>WinRM</strong>
+          <p class="hint-row">On trigger: Flatline signs in to the Windows host over <strong>WinRM</strong>
             with these credentials and <strong>runs the command below</strong> via remote PowerShell.
             Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>); the default port is
             5985. Works with a local or domain account (NTLM).</p>
@@ -431,7 +431,7 @@ Restart-Service WinRM</pre>
 
         <!-- K8s -->
         <div class="kind-section" data-kind="k8s">
-          <p class="hint-row">▶ On trigger: Flatline authenticates to the cluster API and
+          <p class="hint-row">On trigger: Flatline authenticates to the cluster API and
             <strong>performs the selected action</strong> below.
           </p>
           <div class="grid">
@@ -504,7 +504,7 @@ Restart-Service WinRM</pre>
 
         <!-- HTTP -->
         <div class="kind-section" data-kind="http">
-          <p class="hint-row">▶ On trigger: Flatline <strong>sends exactly this request</strong>
+          <p class="hint-row">On trigger: Flatline <strong>sends exactly this request</strong>
             (method, body, and auth below), use it for webhooks or services with their own shutdown API.</p>
           <div class="grid">
             <label class="field"><span class="cap">URL</span><input type="text" name="http_url" maxlength="2000"

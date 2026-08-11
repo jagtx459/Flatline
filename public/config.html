@@ -235,30 +235,6 @@
     </div>
 
     <div class="card">
-      <h2>Site URL</h2>
-      <p class="hint-row">The address this Flatline is reached at. Notifications use it to include a
-        <code>{url}</code> link back to the dashboard, so an alert read on your phone can be clicked
-        through. Leave it blank and notifications carry no link — Flatline cannot guess an address that
-        works from wherever the alert is read.</p>
-      <p class="note" id="baseurl-status">Loading…</p>
-      <form id="baseurl-form" method="post" style="margin-top:12px">
-        <div class="grid">
-          <label class="field" style="grid-column: span 2">
-            <span class="cap">Base URL</span>
-            <input type="text" name="base_url" maxlength="2000" autocomplete="off" spellcheck="false"
-              placeholder="http://flatline.lan:3131">
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn" id="baseurl-save">Save site URL</button>
-          <span class="dirty-note" id="baseurl-dirty"></span>
-          <span class="note" id="baseurl-note"></span>
-          <span class="error" id="baseurl-error"></span>
-        </div>
-      </form>
-    </div>
-
-    <div class="card">
       <h2>Encryption key</h2>
       <p class="hint-row">Stored credentials (passwords, SSH keys, tokens, webhook URLs) are encrypted with
         AES-256-GCM. Rotating re-encrypts everything under a fresh key in one step; nothing has to be
@@ -293,6 +269,8 @@
 
     <div class="card">
       <h2>Site access</h2>
+
+      <h3 style="margin-top:4px">Password</h3>
       <p class="note" id="auth-status">Loading…</p>
 
       <form id="password-form" method="post" style="margin-top:12px">
@@ -311,10 +289,33 @@
         </div>
       </form>
 
-      <form id="hosts-form" method="post" style="margin-top:16px">
+      <h3 style="margin-top:20px">Site URL</h3>
+      <p class="hint-row">The address this Flatline is reached at. Notifications use it to include a
+        <code>{url}</code> link back to the dashboard, so an alert read on your phone can be clicked
+        through. Leave it blank and notifications carry no link — Flatline cannot guess an address that
+        works from wherever the alert is read.</p>
+      <p class="note" id="baseurl-status">Loading…</p>
+      <form id="baseurl-form" method="post" style="margin-top:12px">
+        <div class="grid">
+          <label class="field" style="grid-column: span 2">
+            <span class="cap">Base URL</span>
+            <input type="text" name="base_url" maxlength="2000" autocomplete="off" spellcheck="false"
+              placeholder="http://flatline.lan:3131">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="baseurl-save">Save site URL</button>
+          <span class="dirty-note" id="baseurl-dirty"></span>
+          <span class="note" id="baseurl-note"></span>
+          <span class="error" id="baseurl-error"></span>
+        </div>
+      </form>
+
+      <h3 style="margin-top:20px">Allowed hostnames</h3>
+      <form id="hosts-form" method="post" style="margin-top:12px">
         <div class="grid">
           <label class="field" style="grid-column: span 3">
-            <span class="cap">Allowed hostnames (comma-separated, IPs and localhost will always work)</span>
+            <span class="cap">Comma-separated — IPs and localhost will always work</span>
             <input type="text" name="allowed_hosts" maxlength="2000" autocomplete="off" spellcheck="false"
               placeholder="flatline.lan, monitor.home.lan">
           </label>
