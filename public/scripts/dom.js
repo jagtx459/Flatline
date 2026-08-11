@@ -59,6 +59,52 @@ export function initCollapsible(key, headerEl, bodyEl) {
 
     return { expand: () => setCollapsed(false), collapse: () => setCollapsed(true) };
 }
+/**
+ * Wires a tab bar to its panels: each [role="tab"] button carries data-tab, and
+ * the panel it reveals carries a matching data-panel. The choice is remembered
+ * per-browser; a URL hash beats that on load, so another page can deep-link to
+ * one tab (e.g. /config#relays).
+ *
+ * Panels are hidden, never detached — every element inside stays in the DOM, so
+ * the getElementById lookups the page does at load keep working whichever tab
+ * happens to be showing.
+ */
+export function initTabs(key, tablistEl) {
+    const storageKey = `flatline:tab:${key}`;
+    const tabs = [...tablistEl.querySelectorAll('[role="tab"]')];
+    const panels = [...document.querySelectorAll('[data-panel]')];
+    let active = tabs[0]?.dataset.tab;
+
+    function show(name, focus = false) {
+        active = tabs.some((t) => t.dataset.tab === name) ? name : tabs[0]?.dataset.tab;
+        for (const tab of tabs) {
+            const on = tab.dataset.tab === active;
+            tab.classList.toggle('active', on);
+            tab.setAttribute('aria-selected', String(on));
+            // Only the selected tab is in the tab order; arrows move between them.
+            tab.tabIndex = on ? 0 : -1;
+            if (on && focus) tab.focus();
+        }
+        for (const panel of panels) panel.hidden = panel.dataset.panel !== active;
+        localStorage.setItem(storageKey, active);
+    }
+
+    tablistEl.addEventListener('click', (e) => {
+        const tab = e.target.closest('[role="tab"]');
+        if (tab) show(tab.dataset.tab);
+    });
+    tablistEl.addEventListener('keydown', (e) => {
+        const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const i = tabs.findIndex((t) => t.dataset.tab === active);
+        show(tabs[(i + step + tabs.length) % tabs.length].dataset.tab, true);
+    });
+
+    show(location.hash.slice(1) || localStorage.getItem(storageKey));
+    return { show };
+}
+
 // ---- shared tooltip (values lead, labels follow; textContent only) ----
 let tooltipEl = null;
 function tooltip() {

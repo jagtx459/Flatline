@@ -73,7 +73,7 @@
 
         <!-- SSH -->
         <div class="kind-section" data-kind="ssh">
-          <p class="hint-row">▶ On trigger: Flatline connects over SSH with these credentials and
+          <p class="hint-row">On trigger: Flatline connects over SSH with these credentials and
             <strong>runs the command below</strong> on the host.
           </p>
           <details class="setup-help">
@@ -138,15 +138,133 @@ sudo chmod 440 /etc/sudoers.d/flatline
                   class="secret-state"></span></span>
               <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
           </div>
-          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. cancel a pending shutdown). Runs over the same connection,with the sudo password above if set. Leave blank if there's nothing to undo.</p>
-          <label class="field"><span class="cap">Restore command (optional)</span>
-            <input type="text" name="ssh_restore_command" maxlength="10000" placeholder="sudo shutdown -c">
-          </label>
+          <div class="restore-panel">
+            <div class="card-header" id="ssh-restore-header">
+              <p class="restore-title">Restore</p>
+              <span class="chevron">▸</span>
+            </div>
+            <div class="card-body" id="ssh-restore-body">
+              <p class="hint-row">Brings this host back after the outage: wake it, wait for SSH to answer,
+                then run one last step. The target's <strong>Restore</strong> button runs this same sequence
+                on demand, whether or not auto-restore is on.</p>
+              <label class="check">
+                <input type="checkbox" name="ssh_auto_restore">
+                <span>Auto-restore when the Flatline group recovers</span>
+              </label>
+              <p class="hint-row" style="margin:6px 0 0">Runs on its own once the Flatline group that triggered
+                the shutdown reports healthy again. Targets restore in the reverse of the order they were shut
+                down in, so only the ones ticked here come back automatically.</p>
+
+              <div class="restore-step">
+                <span class="restore-num">1</span>
+                <div class="restore-body">
+                  <div class="grid">
+                    <label class="field"><span class="cap">Wake-on-LAN MAC</span>
+                      <input type="text" name="ssh_wol_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF"></label>
+                    <label class="field"><span class="cap">Send the packet</span>
+                      <select name="ssh_wake_mode" data-wake-mode-select="ssh">
+                        <option value="packet">From Flatline itself</option>
+                        <option value="relay">Through a relay on the target's network</option>
+                      </select>
+                    </label>
+                    <label class="field" data-wake-mode="packet"><span class="cap">Broadcast address</span>
+                      <input type="text" name="ssh_wol_broadcast" maxlength="255" placeholder="255.255.255.255"></label>
+                    <label class="field" data-wake-mode="relay"><span class="cap">Relay</span>
+                      <select name="ssh_wake_relay_id" data-relay-picker="ssh"></select>
+                    </label>
+                  </div>
+                  <p class="hint-row" data-relay-note="ssh" style="margin:6px 0 0"></p>
+                  <p class="hint-row" style="margin:6px 0 0">Leave the MAC blank if the host comes back on its own.
+                    Leave the MAC blank for no wake step at all — Flatline then just waits for the host and runs
+                  the final step. A MAC is <strong>required</strong> once you pick a relay below. The NIC needs
+                  WoL enabled in firmware.
+                    A magic packet is a broadcast and <strong>broadcasts do not cross routers</strong>, so there
+                    are two ways to get one to the target:</p>
+                  <ol class="hint-row" style="margin:6px 0 0; padding-left:18px">
+                    <li><strong>From Flatline itself</strong> — only works when Flatline shares a network with
+                      the target. In Docker that needs <code>network_mode: host</code>; the default bridge cannot
+                      reach your LAN. Leave the broadcast address blank to send on every network Flatline is
+                      attached to, or name one (e.g. <code>10.1.20.255</code>) to send only there.</li>
+                    <li><strong>Through a relay</strong> — for a target on another VLAN. Flatline signs in to a
+                      machine already on that network and has it send the packet locally. Set relays up under
+                      <a href="/config#relays">Config → Relays</a>.</li>
+                  </ol>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <span class="restore-num">2</span>
+                <div class="restore-body">
+                  <div class="restore-inline">
+                    <span>Wait up to</span>
+                    <input type="number" name="ssh_restore_wait_seconds" min="0" max="3600" value="300">
+                    <span>seconds for SSH to answer, then give up.</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <span class="restore-num">3</span>
+                <div class="restore-body">
+                  <label class="field"><span class="cap">Once it answers</span>
+                    <select name="ssh_restore_action" data-restore-action-select="ssh">
+                      <option value="none">Do nothing — being back up is enough</option>
+                      <option value="command">Run a command over SSH</option>
+                      <option value="http">Send an HTTP request</option>
+                    </select>
+                  </label>
+
+                  <div data-restore-action="command" style="margin-top:10px">
+                    <label class="field"><span class="cap">Command</span>
+                      <input type="text" name="ssh_restore_command" maxlength="10000" placeholder="sudo shutdown -c">
+                    </label>
+                    <p class="hint-row" style="margin:6px 0 0">Runs over the same connection and credentials as the
+                      trigger command, with the sudo password above if one is set.</p>
+                  </div>
+
+                  <div data-restore-action="http" style="margin-top:10px">
+                    <p class="hint-row">Sent from Flatline, not from the host — use it for a service that has its own
+                      resume API. Its auth is separate from the SSH credentials above.</p>
+                    <div class="grid">
+                      <label class="field" style="grid-column: span 2"><span class="cap">URL</span>
+                        <input type="text" name="ssh_restore_url" maxlength="2000" placeholder="https://host/api/resume"></label>
+                      <label class="field"><span class="cap">Method</span>
+                        <select name="ssh_restore_method">
+                          <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
+                        </select>
+                      </label>
+                      <label class="field"><span class="cap">Auth scheme</span>
+                        <select name="ssh_restore_auth_scheme" data-restore-auth-select="ssh">
+                          <option value="none">None</option>
+                          <option value="bearer">Bearer / JWT</option>
+                          <option value="header">Custom header token</option>
+                          <option value="basic">Basic auth</option>
+                        </select>
+                      </label>
+                      <label class="field" data-restore-auth="header"><span class="cap">Header name</span>
+                        <input type="text" name="ssh_restore_header_name" maxlength="2000" placeholder="X-Api-Key"></label>
+                      <label class="field" data-restore-auth="basic"><span class="cap">Username</span>
+                        <input type="text" name="ssh_restore_username" maxlength="2000" autocomplete="off"></label>
+                      <label class="field secret" data-secret="restore_token" data-restore-auth="bearer header">
+                        <span class="cap">Token / JWT <span class="secret-state"></span></span>
+                        <input type="password" name="ssh_restore_token" autocomplete="new-password"></label>
+                      <label class="field secret" data-secret="restore_password" data-restore-auth="basic">
+                        <span class="cap">Password <span class="secret-state"></span></span>
+                        <input type="password" name="ssh_restore_password" autocomplete="new-password"></label>
+                    </div>
+                    <label class="field" style="margin-top:10px"><span class="cap">Request body (optional)</span>
+                      <textarea name="ssh_restore_body" rows="3" spellcheck="false" placeholder='{"action":"resume"}'></textarea>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- WinRM -->
         <div class="kind-section" data-kind="winrm">
-          <p class="hint-row">▶ On trigger: Flatline signs in to the Windows host over <strong>WinRM</strong>
+          <p class="hint-row">On trigger: Flatline signs in to the Windows host over <strong>WinRM</strong>
             with these credentials and <strong>runs the command below</strong> via remote PowerShell.
             Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>); the default port is
             5985. Works with a local or domain account (NTLM).</p>
@@ -187,15 +305,133 @@ Restart-Service WinRM</pre>
             <input type="text" name="winrm_command" maxlength="10000"
               placeholder="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
           </label>
-          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. cancel a pending shutdown). Leave blank if there's nothing to undo.</p>
-          <label class="field"><span class="cap">Restore command (optional)</span>
-            <input type="text" name="winrm_restore_command" maxlength="10000" placeholder="shutdown /a">
-          </label>
+          <div class="restore-panel">
+            <div class="card-header" id="winrm-restore-header">
+              <p class="restore-title">◀ Restore</p>
+              <span class="chevron">▸</span>
+            </div>
+            <div class="card-body" id="winrm-restore-body">
+              <p class="hint-row">Brings this host back after the outage: wake it, wait for WinRM to answer,
+                then run one last step. The target's <strong>Restore</strong> button runs this same sequence
+                on demand, whether or not auto-restore is on.</p>
+              <label class="check">
+                <input type="checkbox" name="winrm_auto_restore">
+                <span>Auto-restore when the Flatline group recovers</span>
+              </label>
+              <p class="hint-row" style="margin:6px 0 0">Runs on its own once the Flatline group that triggered
+                the shutdown reports healthy again. Targets restore in the reverse of the order they were shut
+                down in, so only the ones ticked here come back automatically.</p>
+
+              <div class="restore-step">
+                <span class="restore-num">1</span>
+                <div class="restore-body">
+                  <div class="grid">
+                    <label class="field"><span class="cap">Wake-on-LAN MAC</span>
+                      <input type="text" name="winrm_wol_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF"></label>
+                    <label class="field"><span class="cap">Send the packet</span>
+                      <select name="winrm_wake_mode" data-wake-mode-select="winrm">
+                        <option value="packet">From Flatline itself</option>
+                        <option value="relay">Through a relay on the target's network</option>
+                      </select>
+                    </label>
+                    <label class="field" data-wake-mode="packet"><span class="cap">Broadcast address</span>
+                      <input type="text" name="winrm_wol_broadcast" maxlength="255" placeholder="255.255.255.255"></label>
+                    <label class="field" data-wake-mode="relay"><span class="cap">Relay</span>
+                      <select name="winrm_wake_relay_id" data-relay-picker="winrm"></select>
+                    </label>
+                  </div>
+                  <p class="hint-row" data-relay-note="winrm" style="margin:6px 0 0"></p>
+                  <p class="hint-row" style="margin:6px 0 0">Leave the MAC blank for no wake step at all —
+                    Flatline then just waits for the host and runs the final step. A MAC is
+                    <strong>required</strong> once you pick a relay below. Windows needs WoL enabled in firmware
+                    <em>and</em> fast startup turned off, or a shut-down machine will not listen for the packet.
+                    A magic packet is a broadcast and <strong>broadcasts do not cross routers</strong>, so there
+                    are two ways to get one to the target:</p>
+                  <ol class="hint-row" style="margin:6px 0 0; padding-left:18px">
+                    <li><strong>From Flatline itself</strong> — only works when Flatline shares a network with
+                      the target. In Docker that needs <code>network_mode: host</code>; the default bridge cannot
+                      reach your LAN. Leave the broadcast address blank to send on every network Flatline is
+                      attached to, or name one (e.g. <code>10.1.20.255</code>) to send only there.</li>
+                    <li><strong>Through a relay</strong> — for a target on another VLAN. Flatline signs in to a
+                      machine already on that network and has it send the packet locally. Set relays up under
+                      <a href="/config#relays">Config → Relays</a>.</li>
+                  </ol>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <span class="restore-num">2</span>
+                <div class="restore-body">
+                  <div class="restore-inline">
+                    <span>Wait up to</span>
+                    <input type="number" name="winrm_restore_wait_seconds" min="0" max="3600" value="300">
+                    <span>seconds for WinRM to answer, then give up.</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <span class="restore-num">3</span>
+                <div class="restore-body">
+                  <label class="field"><span class="cap">Once it answers</span>
+                    <select name="winrm_restore_action" data-restore-action-select="winrm">
+                      <option value="none">Do nothing — being back up is enough</option>
+                      <option value="command">Run a command over WinRM</option>
+                      <option value="http">Send an HTTP request</option>
+                    </select>
+                  </label>
+
+                  <div data-restore-action="command" style="margin-top:10px">
+                    <label class="field"><span class="cap">Command (PowerShell)</span>
+                      <input type="text" name="winrm_restore_command" maxlength="10000" placeholder="shutdown /a">
+                    </label>
+                    <p class="hint-row" style="margin:6px 0 0">Runs over WinRM with the same credentials as the
+                      trigger command.</p>
+                  </div>
+
+                  <div data-restore-action="http" style="margin-top:10px">
+                    <p class="hint-row">Sent from Flatline, not from the host — use it for a service that has its own
+                      resume API. Its auth is separate from the WinRM credentials above.</p>
+                    <div class="grid">
+                      <label class="field" style="grid-column: span 2"><span class="cap">URL</span>
+                        <input type="text" name="winrm_restore_url" maxlength="2000" placeholder="https://host/api/resume"></label>
+                      <label class="field"><span class="cap">Method</span>
+                        <select name="winrm_restore_method">
+                          <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
+                        </select>
+                      </label>
+                      <label class="field"><span class="cap">Auth scheme</span>
+                        <select name="winrm_restore_auth_scheme" data-restore-auth-select="winrm">
+                          <option value="none">None</option>
+                          <option value="bearer">Bearer / JWT</option>
+                          <option value="header">Custom header token</option>
+                          <option value="basic">Basic auth</option>
+                        </select>
+                      </label>
+                      <label class="field" data-restore-auth="header"><span class="cap">Header name</span>
+                        <input type="text" name="winrm_restore_header_name" maxlength="2000" placeholder="X-Api-Key"></label>
+                      <label class="field" data-restore-auth="basic"><span class="cap">Username</span>
+                        <input type="text" name="winrm_restore_username" maxlength="2000" autocomplete="off"></label>
+                      <label class="field secret" data-secret="restore_token" data-restore-auth="bearer header">
+                        <span class="cap">Token / JWT <span class="secret-state"></span></span>
+                        <input type="password" name="winrm_restore_token" autocomplete="new-password"></label>
+                      <label class="field secret" data-secret="restore_password" data-restore-auth="basic">
+                        <span class="cap">Password <span class="secret-state"></span></span>
+                        <input type="password" name="winrm_restore_password" autocomplete="new-password"></label>
+                    </div>
+                    <label class="field" style="margin-top:10px"><span class="cap">Request body (optional)</span>
+                      <textarea name="winrm_restore_body" rows="3" spellcheck="false" placeholder='{"action":"resume"}'></textarea>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- K8s -->
         <div class="kind-section" data-kind="k8s">
-          <p class="hint-row">▶ On trigger: Flatline authenticates to the cluster API and
+          <p class="hint-row">On trigger: Flatline authenticates to the cluster API and
             <strong>performs the selected action</strong> below.
           </p>
           <div class="grid">
@@ -268,7 +504,7 @@ Restart-Service WinRM</pre>
 
         <!-- HTTP -->
         <div class="kind-section" data-kind="http">
-          <p class="hint-row">▶ On trigger: Flatline <strong>sends exactly this request</strong>
+          <p class="hint-row">On trigger: Flatline <strong>sends exactly this request</strong>
             (method, body, and auth below), use it for webhooks or services with their own shutdown API.</p>
           <div class="grid">
             <label class="field"><span class="cap">URL</span><input type="text" name="http_url" maxlength="2000"

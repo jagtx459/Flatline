@@ -209,6 +209,25 @@ export function checkChannelSecrets(kind, cfg, secrets) {
   return null;
 }
 
+// ---------------- site URL ----------------
+// Where this Flatline is reached at. It lives here because notifications are
+// its only consumer — an alert read on a phone is no use without a link back.
+// Move it somewhere neutral if a second caller ever appears.
+
+const ENV_BASE_URL = process.env.FLATLINE_BASE_URL;
+
+/** 'env' when FLATLINE_BASE_URL is set — which wins, as it does for the site
+ *  password and the host allowlist — otherwise 'settings'. */
+export function baseUrlSource() {
+  return ENV_BASE_URL ? 'env' : 'settings';
+}
+
+/** The site URL with any trailing slash removed, or '' when unset. Empty means
+ *  {url} renders as nothing, rather than as a link that goes nowhere. */
+export function baseUrl() {
+  return (ENV_BASE_URL || store.getSettings().base_url || '').replace(/\/+$/, '');
+}
+
 // ---------------- templating ----------------
 
 /** {placeholder} substitution; unknown placeholders are left as-is. */
@@ -224,7 +243,8 @@ function templateContext(eventKind, ev, endpointName) {
     endpoint: endpointName ?? '',
     message: ev.message ?? EVENT_LABELS[eventKind] ?? eventKind,
     time: new Date(ev.ts ?? Date.now()).toLocaleString(),
-    state: ev.toState ?? ''
+    state: ev.toState ?? '',
+    url: baseUrl()
   };
 }
 

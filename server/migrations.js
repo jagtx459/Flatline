@@ -288,6 +288,69 @@ export const migrations = [
         ALTER TABLE action_group_members_new RENAME TO action_group_members;
       `);
     }
+  },
+  {
+    version: 7,
+    name: 'ssh/winrm restore command becomes a restore sequence',
+    up(db) {
+      // Restore for ssh/winrm is now a sequence — an optional Wake-on-LAN
+      // packet, a wait for the host to answer, then a final step chosen by
+      // restore_action. An existing target only has a bare restore_command, and
+      // restore_action defaults to 'none', so without this its restore would
+      // quietly stop doing anything. Auto-restore stays off: nobody asked for
+      // their machines to start coming back on their own.
+      const rows = db.prepare(
+        "SELECT id, config FROM action_targets WHERE kind IN ('ssh', 'winrm')"
+      ).all();
+      const update = db.prepare('UPDATE action_targets SET config = ? WHERE id = ?');
+
+      for (const row of rows) {
+        let config;
+        try { config = JSON.parse(row.config); } catch { continue; }
+        if (typeof config !== 'object' || config === null) continue;
+
+        config.auto_restore = 0;
+        config.restore_wait_seconds = 300;
+        config.restore_action = config.restore_command ? 'command' : 'none';
+        update.run(JSON.stringify(config), row.id);
+      }
+    }
+  },
+  {
+    version: 8,
+    name: 'wake-on-lan relays',
+    up(db) {
+      // A relay is a machine that already sits on the target's LAN, which
+      // Flatline can reach and ask to broadcast a magic packet. It exists
+      // because a broadcast never crosses a router: a target on another VLAN
+      // is unreachable by Wake-on-LAN from Flatline itself, however the
+      // firewall is configured.
+      //
+      // Same shape as an action target — a connection plus encrypted
+      // credentials — minus everything about shutting down, since a relay is
+      // only ever asked to wake something. wake_command is a template holding
+      // {mac}: what to install and what to run differ per box (wakeonlan vs
+      // wol vs a PowerShell one-liner), while the MAC belongs to the target
+      // being woken, so one relay serves every host on its LAN.
+      //
+      // network is the broadcast domain the relay can actually reach, as CIDR
+      // (10.1.20.0/24). A relay only helps for targets inside it, and picking
+      // the wrong one fails silently — nothing ever answers a magic packet —
+      // so the UI checks the target's address against this and warns.
+      db.exec(`
+        CREATE TABLE relays (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          name         TEXT NOT NULL,
+          kind         TEXT NOT NULL CHECK (kind IN ('ssh', 'winrm')),
+          config       TEXT NOT NULL,
+          secret_enc   TEXT,
+          wake_command TEXT NOT NULL,
+          network      TEXT NOT NULL,
+          enabled      INTEGER NOT NULL DEFAULT 1,
+          created_at   INTEGER NOT NULL
+        );
+      `);
+    }
   }
 ];
 

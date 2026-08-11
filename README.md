@@ -89,6 +89,7 @@ Optional environment variables:
   - `FLATLINE_PASSWORD` (require a login) 
   - `FLATLINE_SECRET_KEY` (credential encryption key; otherwise auto-generated in `/data`)
   - `FLATLINE_ALLOWED_HOSTS` (extra hostnames allowed in the `Host` header, e.g. `flatline.lan`)
+  - `FLATLINE_BASE_URL` (the address Flatline is reached at, used for the `{url}` link in notifications; also settable on the `/config` page)
   - `PORT`. 
 
 ## Run directly for dev and test

@@ -1,4 +1,6 @@
+import dgram from 'node:dgram';
 import https from 'node:https';
+import os from 'node:os';
 import { Client as SshClient } from 'ssh2';
 import { parse as parseYaml } from 'yaml';
 import { winrmExec } from './winrm.js';
@@ -9,11 +11,12 @@ import { winrmExec } from './winrm.js';
  *     target's configured command/action (except HTTP, whose entire purpose
  *     IS a specific request — there's no separate no-op to send instead).
  *   - runStep()     — the real thing, used by the shutdown watcher on trigger.
- *   - restoreStep() — undoes a prior runStep(), where that's meaningful
- *     (currently k8s only: uncordon nodes, or replay a target's configured
- *     restore command). There's no stored snapshot of prior state — the
- *     'drain' undo is just "uncordon everything" and 'custom' undo is
- *     whatever restore command the target owner configured.
+ *   - restoreStep() — brings a target back after a runStep(). For ssh/winrm
+ *     that is the restore sequence: wake the host, wait for it to answer, then
+ *     run the final step its owner configured. For k8s/http it stays a single
+ *     undo (uncordon everything, or replay a configured restore request).
+ *     There's no stored snapshot of prior state anywhere — a restore is only
+ *     as good as what the target owner configured.
  *
  * The 'winrm' kind runs commands on a Windows host over WinRM (NTLMv2, see
  * winrm.js): the config identifies the machine and login, and the command
@@ -22,6 +25,17 @@ import { winrmExec } from './winrm.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const TEST_TIMEOUT_MS = 8_000;
+
+/** Formats a finished remote command the same way for SSH and WinRM. */
+function formatRun(code, output, noun) {
+  const out = output.trim();
+  return {
+    ok: code === 0,
+    message: code === 0
+      ? (out || `${noun} completed`)
+      : `${noun} exited ${code}${out ? `: ${out.slice(0, 500)}` : ''}`
+  };
+}
 
 export async function testTarget(kind, config, secrets) {
   switch (kind) {
@@ -43,15 +57,20 @@ export async function runStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT
   }
 }
 
-/** Undoes a prior runStep(), where the target owner configured how — an
- *  optional restore command (ssh), restore request (http), or the k8s-
- *  specific drain/custom handling below. */
-export async function restoreStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT_MS) {
+/**
+ * Brings a target back after a runStep() — the ssh/winrm restore sequence, a
+ * configured restore request (http), or the k8s drain/custom handling below.
+ *
+ * `relay` is only used by the ssh/winrm sequence, and only when the target is
+ * set to wake through one. It is passed in already resolved and decrypted,
+ * because this module talks to machines and never to the database.
+ */
+export async function restoreStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT_MS, relay = null) {
   switch (kind) {
-    case 'ssh': return restoreSsh(config, secrets, timeoutMs);
+    case 'ssh': return restoreSequence(kind, config, secrets, timeoutMs, relay);
+    case 'winrm': return restoreSequence(kind, config, secrets, timeoutMs, relay);
     case 'http': return restoreHttp(config, secrets, timeoutMs);
     case 'k8s': return restoreK8s(config, secrets, timeoutMs);
-    case 'winrm': return restoreWinrm(config, secrets, timeoutMs);
     default: return { ok: false, message: `restore is not supported for '${kind}' targets` };
   }
 }
@@ -121,18 +140,14 @@ async function testSsh(config, secrets) {
   }
 }
 
-async function runSsh(config, secrets, timeoutMs) {
-  if (!config.command) return { ok: false, message: 'no command configured' };
+/** Connects, runs one command, formats the outcome — shared by the trigger
+ *  command and the restore sequence's final step. */
+async function execSsh(config, secrets, command, timeoutMs, noun) {
   let conn;
   try {
     conn = await sshConnect(config, secrets, Math.min(timeoutMs, TEST_TIMEOUT_MS * 2));
-    const { code, output } = await execOnce(conn, config.command, timeoutMs, secrets.sudo_password);
-    return {
-      ok: code === 0,
-      message: code === 0
-        ? (output.trim() || 'command completed')
-        : `command exited ${code}${output ? `: ${output.trim().slice(0, 500)}` : ''}`
-    };
+    const { code, output } = await execOnce(conn, command, timeoutMs, secrets.sudo_password);
+    return formatRun(code, output, noun);
   } catch (err) {
     return { ok: false, message: err.message };
   } finally {
@@ -140,41 +155,14 @@ async function runSsh(config, secrets, timeoutMs) {
   }
 }
 
-/** Undoes a prior runSsh() by running the target's optional restore command
- *  over the same connection/credentials — there's no stored snapshot of
- *  prior state, so this is only as good as whatever the target owner wrote. */
-async function restoreSsh(config, secrets, timeoutMs) {
-  if (!config.restore_command) return { ok: false, message: 'no restore command configured for this target' };
-  let conn;
-  try {
-    conn = await sshConnect(config, secrets, Math.min(timeoutMs, TEST_TIMEOUT_MS * 2));
-    const { code, output } = await execOnce(conn, config.restore_command, timeoutMs, secrets.sudo_password);
-    return {
-      ok: code === 0,
-      message: code === 0
-        ? (output.trim() || 'restore command completed')
-        : `restore command exited ${code}${output ? `: ${output.trim().slice(0, 500)}` : ''}`
-    };
-  } catch (err) {
-    return { ok: false, message: err.message };
-  } finally {
-    conn?.end();
-  }
+async function runSsh(config, secrets, timeoutMs) {
+  if (!config.command) return { ok: false, message: 'no command configured' };
+  return execSsh(config, secrets, config.command, timeoutMs, 'command');
 }
 
 // ---------------- WinRM ----------------
 // See winrm.js — commands run on the Windows host via remote PowerShell over
 // WinRM (NTLMv2 auth, message sealing). The stored password is the only secret.
-
-function formatRun(code, output, noun) {
-  const out = output.trim();
-  return {
-    ok: code === 0,
-    message: code === 0
-      ? (out || `${noun} completed`)
-      : `${noun} exited ${code}${out ? `: ${out.slice(0, 500)}` : ''}`
-  };
-}
 
 async function testWinrm(config, secrets) {
   try {
@@ -187,26 +175,20 @@ async function testWinrm(config, secrets) {
   }
 }
 
-async function runWinrm(config, secrets, timeoutMs) {
-  if (!config.command) return { ok: false, message: 'no command configured' };
+/** Runs one command over WinRM — shared by the trigger command and the restore
+ *  sequence's final step. */
+async function execWinrm(config, secrets, command, timeoutMs, noun) {
   try {
-    const { code, stdout, stderr } = await winrmExec(config, secrets, config.command, timeoutMs);
-    return formatRun(code, stdout || stderr, 'command');
+    const { code, stdout, stderr } = await winrmExec(config, secrets, command, timeoutMs);
+    return formatRun(code, stdout || stderr, noun);
   } catch (err) {
     return { ok: false, message: err.message };
   }
 }
 
-/** Undoes a prior runWinrm() by running the target's optional restore command
- *  over WinRM with the same credentials. */
-async function restoreWinrm(config, secrets, timeoutMs) {
-  if (!config.restore_command) return { ok: false, message: 'no restore command configured for this target' };
-  try {
-    const { code, stdout, stderr } = await winrmExec(config, secrets, config.restore_command, timeoutMs);
-    return formatRun(code, stdout || stderr, 'restore command');
-  } catch (err) {
-    return { ok: false, message: err.message };
-  }
+async function runWinrm(config, secrets, timeoutMs) {
+  if (!config.command) return { ok: false, message: 'no command configured' };
+  return execWinrm(config, secrets, config.command, timeoutMs, 'command');
 }
 
 // ---------------- HTTP ----------------
@@ -248,6 +230,208 @@ async function runHttp(config, secrets, timeoutMs) {
 async function restoreHttp(config, secrets, timeoutMs) {
   if (!config.restore_url) return { ok: false, message: 'no restore request configured for this target' };
   return sendHttp(config.restore_url, config.restore_method ?? 'POST', config.restore_body, httpAuthHeaders(config, secrets), timeoutMs);
+}
+
+// ---------------- Restore sequence (ssh / winrm) ----------------
+// Three parts, each optional except the wait that joins them: wake the host
+// with a magic packet, wait for it to answer again, then run one final step —
+// a command on the host, or an HTTP request Flatline sends itself.
+//
+// The wait is what makes the final step safe to configure at all: a machine
+// that has just been woken refuses connections for a while, so the step has to
+// hold until the host is actually back rather than firing and failing.
+
+const WOL_PORT = 9;
+const DEFAULT_BROADCAST = '255.255.255.255';
+const DEFAULT_RESTORE_WAIT_S = 300;
+const REACHABILITY_POLL_MS = 10_000;
+
+/** The magic packet itself: 6 x 0xFF, then the MAC repeated 16 times. */
+function magicPacket(mac) {
+  const macBytes = Buffer.from(mac.split(':').map((h) => parseInt(h, 16)));
+  return Buffer.concat([Buffer.alloc(6, 0xff), ...Array(16).fill(macBytes)]);
+}
+
+/** The .255 for one interface's own subnet, from its address and netmask. */
+function directedBroadcast(address, netmask) {
+  const a = address.split('.').map(Number);
+  const m = netmask.split('.').map(Number);
+  return a.map((octet, i) => (octet & m[i]) | (~m[i] & 0xff)).join('.');
+}
+
+/**
+ * Where to send when the target has no explicit broadcast address: every
+ * non-internal IPv4 interface's own directed broadcast, sent from that
+ * interface.
+ *
+ * A plain 255.255.255.255 from an unbound socket leaves by exactly one
+ * interface, whichever the routing table picks — on a host with Hyper-V, WSL or
+ * Docker adapters that is regularly not the LAN the target is on. Sending one
+ * packet per interface removes the guess.
+ */
+function localBroadcastTargets() {
+  return Object.values(os.networkInterfaces()).flat()
+    .filter((a) => a && a.family === 'IPv4' && !a.internal)
+    .map((a) => ({ from: a.address, to: directedBroadcast(a.address, a.netmask) }));
+}
+
+/** Sends one packet, optionally out of a specific local interface. */
+function sendPacket(packet, from, to) {
+  return new Promise((resolve, reject) => {
+    const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+
+    let settled = false;
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      try { socket.close(); } catch { /* already closing */ }
+      if (err) reject(err); else resolve();
+    };
+
+    socket.once('error', done);
+    socket.bind(0, from, () => {
+      try {
+        socket.setBroadcast(true);
+      } catch (err) {
+        done(err);
+        return;
+      }
+      socket.send(packet, WOL_PORT, to, done);
+    });
+  });
+}
+
+/**
+ * Wakes a host. With no broadcast address configured the packet goes out every
+ * local network (see localBroadcastTargets); with one, it goes exactly there
+ * and normal routing applies — which is how you reach a subnet this host is not
+ * itself on, provided the router forwards directed broadcasts.
+ *
+ * Returns the destinations that accepted the packet, for the activity message:
+ * a wake that went nowhere useful is otherwise indistinguishable from one that
+ * worked, since nothing ever answers a magic packet.
+ */
+async function sendMagicPacket(mac, broadcast) {
+  const packet = magicPacket(mac);
+  const explicit = broadcast && broadcast !== DEFAULT_BROADCAST;
+  const destinations = explicit
+    ? [{ from: undefined, to: broadcast }]
+    : localBroadcastTargets();
+
+  if (destinations.length === 0) {
+    throw new Error('no local network interface to broadcast on');
+  }
+
+  const sent = [];
+  const failed = [];
+  for (const { from, to } of destinations) {
+    try {
+      await sendPacket(packet, from, to);
+      sent.push(to);
+    } catch (err) {
+      failed.push(`${to} (${err.message})`);
+    }
+  }
+
+  if (sent.length === 0) throw new Error(failed.join(', '));
+  return sent;
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Polls the target's own connectivity test until it answers or the budget runs
+ *  out. Failures along the way are expected — a booting host refuses
+ *  connections — so only the deadline is fatal. */
+async function waitUntilReachable(kind, config, secrets, waitSeconds) {
+  const deadline = Date.now() + waitSeconds * 1000;
+  for (;;) {
+    const result = kind === 'ssh' ? await testSsh(config, secrets) : await testWinrm(config, secrets);
+    if (result.ok) return result;
+    const left = deadline - Date.now();
+    if (left <= 0) return result;
+    await delay(Math.min(REACHABILITY_POLL_MS, left));
+  }
+}
+
+/** The restore step's HTTP request authenticates on its own — restore_* config
+ *  and its own stored secrets — because the service being resumed need not be
+ *  the host that was shut down. */
+function restoreAuthHeaders(config, secrets) {
+  return httpAuthHeaders(
+    {
+      auth_scheme: config.restore_auth_scheme,
+      header_name: config.restore_header_name,
+      username: config.restore_username
+    },
+    { token: secrets.restore_token, password: secrets.restore_password }
+  );
+}
+
+/**
+ * Wakes the target through a relay: a machine already on its network runs the
+ * relay's own command with {mac} substituted, so the broadcast originates
+ * somewhere it can actually reach the target.
+ *
+ * `relay` is resolved by the caller (connectors.js does not read the database),
+ * shaped { name, kind, config, secrets, wake_command }.
+ */
+async function wakeViaRelay(relay, mac, timeoutMs) {
+  const command = relay.wake_command.replaceAll('{mac}', mac);
+  const result = relay.kind === 'ssh'
+    ? await execSsh(relay.config, relay.secrets, command, timeoutMs, 'relay wake command')
+    : await execWinrm(relay.config, relay.secrets, command, timeoutMs, 'relay wake command');
+  return result.ok
+    ? { ok: true, message: `relay "${relay.name}" sent Wake-on-LAN for ${mac}` }
+    : { ok: false, message: `relay "${relay.name}" failed to wake ${mac}: ${result.message}` };
+}
+
+async function restoreSequence(kind, config, secrets, timeoutMs, relay = null) {
+  const action = config.restore_action ?? 'none';
+  if (!config.wol_mac && action === 'none') {
+    return { ok: false, message: 'no restore configured for this target' };
+  }
+
+  const done = [];
+  if (config.wol_mac) {
+    if (config.wake_mode === 'relay') {
+      // A relay that was deleted after the target was configured: say so rather
+      // than quietly skipping the wake and waiting out the whole timeout.
+      if (!relay) {
+        return { ok: false, message: 'this target wakes through a relay, but that relay no longer exists' };
+      }
+      const woke = await wakeViaRelay(relay, config.wol_mac, timeoutMs);
+      if (!woke.ok) return woke;
+      done.push(woke.message);
+    } else {
+      try {
+        const sentTo = await sendMagicPacket(config.wol_mac, config.wol_broadcast);
+        done.push(`sent Wake-on-LAN for ${config.wol_mac} via ${sentTo.join(', ')}`);
+      } catch (err) {
+        return { ok: false, message: `Wake-on-LAN failed: ${err.message}` };
+      }
+    }
+  }
+
+  const proto = kind === 'ssh' ? 'SSH' : 'WinRM';
+  const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
+  const reachable = await waitUntilReachable(kind, config, secrets, waitSeconds);
+  if (!reachable.ok) {
+    done.push(`${proto} did not answer within ${waitSeconds}s (${reachable.message})`);
+    return { ok: false, message: done.join('; ') };
+  }
+  done.push(`${proto} answered`);
+
+  if (action === 'none') return { ok: true, message: done.join('; ') };
+
+  const result = action === 'command'
+    ? (kind === 'ssh'
+        ? await execSsh(config, secrets, config.restore_command, timeoutMs, 'restore command')
+        : await execWinrm(config, secrets, config.restore_command, timeoutMs, 'restore command'))
+    : await sendHttp(config.restore_url, config.restore_method ?? 'POST', config.restore_body,
+        restoreAuthHeaders(config, secrets), timeoutMs);
+
+  done.push(result.message);
+  return { ok: result.ok, message: done.join('; ') };
 }
 
 // ---------------- Kubernetes ----------------
