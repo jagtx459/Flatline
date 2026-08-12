@@ -13,10 +13,11 @@ import { winrmExec } from './winrm.js';
  *   - runStep()     — the real thing, used by the shutdown watcher on trigger.
  *   - restoreStep() — brings a target back after a runStep(). For ssh/winrm
  *     that is the restore sequence: wake the host, wait for it to answer, then
- *     run the final step its owner configured. For k8s/http it stays a single
- *     undo (uncordon everything, or replay a configured restore request).
- *     There's no stored snapshot of prior state anywhere — a restore is only
- *     as good as what the target owner configured.
+ *     run the final step its owner configured. k8s has its own sequence: wait
+ *     for the API server to answer, then uncordon and optionally restart
+ *     Deployments (or replay a configured restore request). For http it stays a
+ *     single undo. There's no stored snapshot of prior state anywhere — a
+ *     restore is only as good as what the target owner configured.
  *
  * The 'winrm' kind runs commands on a Windows host over WinRM (NTLMv2, see
  * winrm.js): the config identifies the machine and login, and the command
@@ -58,8 +59,8 @@ export async function runStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT
 }
 
 /**
- * Brings a target back after a runStep() — the ssh/winrm restore sequence, a
- * configured restore request (http), or the k8s drain/custom handling below.
+ * Brings a target back after a runStep() — the ssh/winrm restore sequence, the
+ * k8s one, or a configured restore request (http).
  *
  * `relay` is only used by the ssh/winrm sequence, and only when the target is
  * set to wake through one. It is passed in already resolved and decrypted,
@@ -340,12 +341,13 @@ async function sendMagicPacket(mac, broadcast) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Polls the target's own connectivity test until it answers or the budget runs
- *  out. Failures along the way are expected — a booting host refuses
- *  connections — so only the deadline is fatal. */
+ *  out. Failures along the way are expected — a booting host, or a cluster whose
+ *  control plane is still coming up, refuses connections — so only the deadline
+ *  is fatal. */
 async function waitUntilReachable(kind, config, secrets, waitSeconds) {
   const deadline = Date.now() + waitSeconds * 1000;
   for (;;) {
-    const result = kind === 'ssh' ? await testSsh(config, secrets) : await testWinrm(config, secrets);
+    const result = await testTarget(kind, config, secrets);
     if (result.ok) return result;
     const left = deadline - Date.now();
     if (left <= 0) return result;
@@ -569,40 +571,180 @@ async function runK8s(config, secrets, timeoutMs) {
   }
 }
 
+/**
+ * The k8s restore sequence: wait for the API server to answer, then undo the
+ * trigger action in the order a cluster actually needs it — make the nodes
+ * schedulable, apply the target's own undo, then push the workloads.
+ *
+ * A drained cluster always uncordons: that is the mirror image of its trigger.
+ * A 'custom' target chooses, because Flatline never cordoned anything on its
+ * behalf — but scaling a Deployment back up achieves nothing while every node
+ * is still unschedulable, so it is offered and on by default.
+ *
+ * The wait is what makes the rest safe to run unattended: auto-restore starts
+ * the moment the Flatline group reports healthy, which is normally before the
+ * control plane has finished coming up.
+ */
 async function restoreK8s(config, secrets, timeoutMs) {
+  const uncordoning = config.action !== 'custom' || !!config.restore_uncordon;
+  const undoing = !!config.restore_path;
+  if (!uncordoning && !undoing && !config.restore_restart_deployments) {
+    return { ok: false, message: 'no restore configured for this target' };
+  }
+
+  // Resolved before the wait, not after: a missing token or an unparseable
+  // kubeconfig is not something five minutes of polling is going to fix, and
+  // the wait would otherwise bury the real reason behind a timeout message.
+  let conn;
   try {
-    const conn = resolveK8sConnection(config, secrets);
-    return config.action === 'custom'
-      ? await runCustomK8sRestore(conn, config, timeoutMs)
-      : await uncordonAllNodes(conn, timeoutMs);
+    conn = resolveK8sConnection(config, secrets);
+  } catch (err) {
+    return { ok: false, message: describeFetchError(err) };
+  }
+
+  const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
+  const reachable = await waitUntilReachable('k8s', config, secrets, waitSeconds);
+  if (!reachable.ok) {
+    return { ok: false, message: `API server did not answer within ${waitSeconds}s (${reachable.message})` };
+  }
+
+  const steps = [];
+  if (uncordoning) steps.push(() => uncordonAllNodes(conn, timeoutMs));
+  if (undoing) steps.push(() => runK8sRestoreRequest(conn, config, timeoutMs));
+  if (config.restore_restart_deployments) steps.push(() => restartAllDeployments(conn, timeoutMs));
+
+  // Each part stops the ones behind it: there is no point scaling back up onto
+  // nodes that would not take the pods, nor restarting what never came up.
+  const done = ['API server answered'];
+  try {
+    for (const step of steps) {
+      const result = await step();
+      done.push(result.message);
+      if (!result.ok) return { ok: false, message: done.join('; ') };
+    }
+    return { ok: true, message: done.join('; ') };
   } catch (err) {
     return { ok: false, message: describeFetchError(err) };
   }
 }
 
+/**
+ * The 'drain' action, in three parts: record what was running, cordon every node
+ * and evict its pods, then hold the step open until the cluster is actually
+ * empty.
+ *
+ * The hold is the point. Issuing an eviction only asks; the pod goes when its
+ * container has finished shutting down, and a stage that moves on the moment the
+ * requests are sent will cut power to a node with pods still writing. The
+ * step's own "give up after" is the budget for all of it (see waitUntilDrained).
+ */
 async function cordonAndDrainAllNodes(conn, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+
   const nodesRes = await k8sRequest(conn, 'api/v1/nodes', { timeoutMs });
   if (!nodesRes.ok) return { ok: false, message: `listing nodes failed: ${nodesRes.status}` };
   const nodes = (await nodesRes.json()).items ?? [];
   if (nodes.length === 0) return { ok: false, message: 'no nodes found' };
 
-  const results = [];
+  // Taken before anything is touched: once the pods are gone this is the only
+  // record of what the cluster was running when the power went.
+  const done = [await snapshotSummary(conn, nodes.length, timeoutMs)];
+
+  let cordonFailed = false;
   for (const node of nodes) {
     const name = node.metadata.name;
     try {
       await patchNodeSchedulable(conn, name, true, timeoutMs);
       const evicted = await evictNodePods(conn, name, timeoutMs);
-      results.push(`${name}: cordoned, ${evicted} pod(s) evicted`);
+      done.push(`${name}: cordoned, ${evicted} pod(s) evicted`);
     } catch (err) {
-      results.push(`${name}: FAILED (${describeFetchError(err)})`);
+      done.push(`${name}: FAILED (${describeFetchError(err)})`);
+      cordonFailed = true;
     }
   }
-  return { ok: !results.some((r) => r.includes('FAILED')), message: results.join('; ') };
+
+  const drained = await waitUntilDrained(conn, deadline);
+  done.push(drained.message);
+  return { ok: !cordonFailed && drained.ok, message: done.join('; ') };
 }
 
-/** Undo for the 'drain' action — there's no snapshot of which nodes were
- *  cordoned, so this just uncordons every node in the cluster. Evicted pods
- *  come back on their own once their controllers can reschedule them. */
+/** Counted for the snapshot line. Namespaces first so the line reads outside-in. */
+const SNAPSHOT_RESOURCES = [
+  { path: 'api/v1/namespaces', label: 'ns' },
+  { path: 'apis/apps/v1/deployments', label: 'deploy' },
+  { path: 'apis/apps/v1/statefulsets', label: 'sts' },
+  { path: 'apis/apps/v1/daemonsets', label: 'ds' }
+];
+
+/**
+ * What the cluster was running, as one line for the event feed. A count that
+ * can't be fetched shows as '?' rather than failing the drain: this is a record
+ * of what happened, not a gate on it happening.
+ */
+async function snapshotSummary(conn, nodeCount, timeoutMs) {
+  const counts = [];
+  for (const { path, label } of SNAPSHOT_RESOURCES) {
+    try {
+      const res = await k8sRequest(conn, path, { timeoutMs });
+      counts.push(`${res.ok ? ((await res.json()).items ?? []).length : '?'} ${label}`);
+    } catch {
+      counts.push(`? ${label}`);
+    }
+  }
+
+  let pods = '? pods';
+  try {
+    const all = await listScheduledPods(conn, timeoutMs);
+    pods = `${all.length} pods (${all.filter(isEvictable).length} evictable)`;
+  } catch { /* leave it unknown */ }
+
+  return `snapshot: ${counts.join(', ')}, ${pods} on ${nodeCount} node(s)`;
+}
+
+const DRAIN_POLL_MS = 5000;
+
+/**
+ * Holds until nothing evictable is left running, re-issuing evictions each pass.
+ * The re-issue is what `kubectl drain` does too: a pod held back by a disruption
+ * budget is refused with a 429 and only goes once the budget allows it, so
+ * asking once and waiting would stall until the deadline for no reason.
+ *
+ * Returns rather than throws on the deadline — a cluster that would not empty is
+ * a failed step, but the caller still wants the snapshot and cordon lines that
+ * came before it.
+ */
+async function waitUntilDrained(conn, deadline) {
+  const started = Date.now();
+  const elapsed = () => Math.round((Date.now() - started) / 1000);
+
+  for (;;) {
+    // Never let one request outlive the budget it is timed against — but keep a
+    // floor, so the last check reports what is still running rather than a
+    // timeout of its own.
+    const left = deadline - Date.now();
+    let remaining;
+    try {
+      remaining = (await listScheduledPods(conn, Math.max(left, TEST_TIMEOUT_MS))).filter(isEvictable);
+    } catch (err) {
+      return { ok: false, message: `could not confirm the drain after ${elapsed()}s: ${describeFetchError(err)}` };
+    }
+
+    if (remaining.length === 0) return { ok: true, message: `drained after ${elapsed()}s` };
+    if (left <= 0) {
+      const names = remaining.slice(0, 5).map((p) => `${p.metadata.namespace}/${p.metadata.name}`);
+      const more = remaining.length > names.length ? `, +${remaining.length - names.length} more` : '';
+      return { ok: false, message: `NOT drained after ${elapsed()}s — ${remaining.length} pod(s) still running: ${names.join(', ')}${more}` };
+    }
+
+    await evictPods(conn, remaining, Math.max(left, TEST_TIMEOUT_MS));
+    await delay(Math.min(DRAIN_POLL_MS, Math.max(deadline - Date.now(), 0)));
+  }
+}
+
+/** Undo for the 'drain' action. Nothing records which nodes were cordoned
+ *  beforehand — the drain's snapshot covers workloads, not node state — so this
+ *  uncordons every node in the cluster. Evicted pods come back on their own once
+ *  their controllers can reschedule them. */
 async function uncordonAllNodes(conn, timeoutMs) {
   const nodesRes = await k8sRequest(conn, 'api/v1/nodes', { timeoutMs });
   if (!nodesRes.ok) return { ok: false, message: `listing nodes failed: ${nodesRes.status}` };
@@ -622,6 +764,55 @@ async function uncordonAllNodes(conn, timeoutMs) {
   return { ok: !results.some((r) => r.includes('FAILED')), message: results.join('; ') };
 }
 
+/** Namespaces left out of the rollout restart: CoreDNS and the control-plane
+ *  addons come back on their own, and rolling them while the cluster is still
+ *  settling only makes it wobble again. */
+const RESTART_SKIP_NAMESPACES = ['kube-system'];
+
+/**
+ * The optional second half of the 'drain' undo: `kubectl rollout restart
+ * deployment` across the cluster. Stamping the pod template with a fresh
+ * restartedAt annotation is exactly what kubectl does — it's the annotation
+ * changing, not its value, that makes the Deployment roll its pods.
+ *
+ * Uncordoning alone is enough for pods that were merely evicted; this is for
+ * the ones that came back wedged (a half-finished rollout, CrashLoopBackOff
+ * against a dependency that was itself down).
+ */
+async function restartAllDeployments(conn, timeoutMs) {
+  const res = await k8sRequest(conn, 'apis/apps/v1/deployments', { timeoutMs });
+  if (!res.ok) return { ok: false, message: `listing deployments failed: ${res.status}` };
+  const deployments = ((await res.json()).items ?? [])
+    .filter((d) => !RESTART_SKIP_NAMESPACES.includes(d.metadata.namespace));
+  if (deployments.length === 0) return { ok: true, message: 'no deployments to restart' };
+
+  // One stamp for the whole pass, so the restart reads as a single event.
+  const body = JSON.stringify({
+    spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } }
+  });
+
+  const failed = [];
+  for (const { metadata } of deployments) {
+    const path = `apis/apps/v1/namespaces/${encodeURIComponent(metadata.namespace)}/deployments/${encodeURIComponent(metadata.name)}`;
+    try {
+      const patch = await k8sRequest(conn, path, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/merge-patch+json' },
+        body,
+        timeoutMs
+      });
+      if (!patch.ok) failed.push(`${metadata.namespace}/${metadata.name} (${patch.status})`);
+    } catch (err) {
+      failed.push(`${metadata.namespace}/${metadata.name} (${describeFetchError(err)})`);
+    }
+  }
+
+  const restarted = deployments.length - failed.length;
+  return failed.length === 0
+    ? { ok: true, message: `restarted ${restarted} deployment(s)` }
+    : { ok: false, message: `restarted ${restarted}/${deployments.length} deployment(s), FAILED: ${failed.join(', ')}` };
+}
+
 async function patchNodeSchedulable(conn, name, unschedulable, timeoutMs) {
   const res = await k8sRequest(conn, `api/v1/nodes/${encodeURIComponent(name)}`, {
     method: 'PATCH',
@@ -632,17 +823,18 @@ async function patchNodeSchedulable(conn, name, unschedulable, timeoutMs) {
   if (!res.ok) throw new Error(`${unschedulable ? 'cordon' : 'uncordon'} failed: ${res.status}`);
 }
 
-/** 'custom' action — an arbitrary raw Kubernetes API request the target
- *  owner defines directly (method + path + optional JSON body), with an
- *  optional mirrored restore request to undo it. This is the escape hatch
- *  for anything beyond the built-in 'drain' action (e.g. scaling a specific
- *  Deployment to 0, and back). */
+/** 'custom' action — an arbitrary raw Kubernetes API request the target owner
+ *  defines directly (method + path + optional JSON body). This is the escape
+ *  hatch for anything beyond the built-in 'drain' action (e.g. scaling a
+ *  specific Deployment to 0). */
 async function runCustomK8sCommand(conn, config, timeoutMs) {
   return execK8sCommand(conn, config.command_method, config.command_path, config.command_body, timeoutMs, 'command');
 }
 
-async function runCustomK8sRestore(conn, config, timeoutMs) {
-  if (!config.restore_path) return { ok: false, message: 'no restore command configured for this target' };
+/** The mirror of the above on the way back — but offered whatever the trigger
+ *  action was, since a drained cluster can need a request of its own too. Only
+ *  reached when a path is configured (see restoreK8s). */
+async function runK8sRestoreRequest(conn, config, timeoutMs) {
   return execK8sCommand(conn, config.restore_method, config.restore_path, config.restore_body, timeoutMs, 'restore command');
 }
 
@@ -657,18 +849,44 @@ async function execK8sCommand(conn, method, path, body, timeoutMs, label) {
   return { ok: res.ok, message: `${m} ${path} -> ${res.status}${!res.ok ? suffix : ''}` };
 }
 
-/** Evicts non-DaemonSet pods scheduled on the node; a 404 (already gone) counts as success. */
-async function evictNodePods(conn, nodeName, timeoutMs) {
-  const podsRes = await k8sRequest(conn,
-    `api/v1/pods?fieldSelector=${encodeURIComponent(`spec.nodeName=${nodeName}`)}`,
-    { timeoutMs });
-  if (!podsRes.ok) throw new Error(`listing pods failed: ${podsRes.status}`);
-  const pods = (await podsRes.json()).items ?? [];
+/**
+ * Whether a drain is responsible for this pod — and so whether the drain is
+ * finished when it is still running. Three kinds of pod are never evictable, and
+ * waiting on any of them would mean waiting forever:
+ *
+ *   - DaemonSet pods, which the DaemonSet controller puts straight back;
+ *   - static / mirror pods (the control plane's own), owned by the kubelet
+ *     rather than the API server — modern clusters mark them with an owning
+ *     Node, older ones only with the mirror annotation, so both are checked;
+ *   - pods that have already finished, e.g. completed Jobs, which linger in the
+ *     pod list without running anything.
+ *
+ * Exported for tests: it is a pure predicate, and getting it wrong means either
+ * a drain that never completes or one that reports success with pods still up.
+ */
+export function isEvictable(pod) {
+  const owners = pod.metadata.ownerReferences ?? [];
+  if (owners.some((o) => o.kind === 'DaemonSet' || o.kind === 'Node')) return false;
+  if (pod.metadata.annotations?.['kubernetes.io/config.mirror']) return false;
+  return pod.status?.phase !== 'Succeeded' && pod.status?.phase !== 'Failed';
+}
 
+/** Every pod placed on a node, optionally just one node's. Pods with no node
+ *  are left out: after a cordon a replacement may sit Pending indefinitely, and
+ *  a drain neither can nor should wait for one. */
+async function listScheduledPods(conn, timeoutMs, nodeName = null) {
+  const query = nodeName ? `?fieldSelector=${encodeURIComponent(`spec.nodeName=${nodeName}`)}` : '';
+  const res = await k8sRequest(conn, `api/v1/pods${query}`, { timeoutMs });
+  if (!res.ok) throw new Error(`listing pods failed: ${res.status}`);
+  return ((await res.json()).items ?? []).filter((p) => p.spec?.nodeName);
+}
+
+/** Asks each pod to go; a 404 (already gone) counts as success. Returns how many
+ *  were accepted — a refusal (e.g. 429 from a disruption budget) is not an error
+ *  here, it is a pod the next pass asks about again. */
+async function evictPods(conn, pods, timeoutMs) {
   let evicted = 0;
   for (const pod of pods) {
-    const isDaemonSet = (pod.metadata.ownerReferences ?? []).some((o) => o.kind === 'DaemonSet');
-    if (isDaemonSet) continue;
     const ns = pod.metadata.namespace;
     const podName = pod.metadata.name;
     const res = await k8sRequest(conn, `api/v1/namespaces/${ns}/pods/${podName}/eviction`, {
@@ -679,5 +897,11 @@ async function evictNodePods(conn, nodeName, timeoutMs) {
     if (res.ok || res.status === 404) evicted += 1;
   }
   return evicted;
+}
+
+/** Evicts the pods a drain is responsible for on one node. */
+async function evictNodePods(conn, nodeName, timeoutMs) {
+  const pods = (await listScheduledPods(conn, timeoutMs, nodeName)).filter(isEvictable);
+  return evictPods(conn, pods, timeoutMs);
 }
 

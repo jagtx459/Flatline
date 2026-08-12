@@ -15,12 +15,12 @@ import { recordTargetActivity } from './targetHealth.js';
  *
  * Ordering here only decides who is asked first. What actually holds a machine
  * behind the one it depends on is each target's own restore sequence, which
- * waits for the host to answer before running its final step (see
- * connectors.js restoreSequence).
+ * waits for the host — or, for k8s, the cluster's API server — to answer before
+ * running its final step (see connectors.js restoreSequence / restoreK8s).
  */
 
-/** Kinds whose restore is the wake -> wait -> final step sequence. */
-const SEQUENCE_KINDS = ['ssh', 'winrm'];
+/** Kinds that offer an auto-restore tick box, and so can take part here. */
+const AUTO_RESTORE_KINDS = ['ssh', 'winrm', 'k8s'];
 
 /** Group ids with an auto-restore in flight — a restore outlasts the 5s
  *  watcher tick by minutes, and a group that flaps must not start a second. */
@@ -64,7 +64,7 @@ function restoreBatches(actionGroup) {
       if (step.target_id == null) continue; // a wait on the way down — nothing to undo
       const target = store.getActionTarget(step.target_id);
       if (!target?.enabled) continue;
-      if (!SEQUENCE_KINDS.includes(target.kind)) continue;
+      if (!AUTO_RESTORE_KINDS.includes(target.kind)) continue;
       const config = parseConfig(target);
       if (!config.auto_restore) continue;
       batch.push({ target, config });
