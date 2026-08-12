@@ -15,12 +15,13 @@ import { recordTargetActivity } from './targetHealth.js';
  *
  * Ordering here only decides who is asked first. What actually holds a machine
  * behind the one it depends on is each target's own restore sequence, which
- * waits for the host — or, for k8s, the cluster's API server — to answer before
- * running its final step (see connectors.js restoreSequence / restoreK8s).
+ * waits for the host — or, for k8s, the cluster's API server, or for an http
+ * target that logs in, its login endpoint — to answer before running its final
+ * step (see connectors.js restoreSequence / restoreK8s / restoreHttp).
  */
 
 /** Kinds that offer an auto-restore tick box, and so can take part here. */
-const AUTO_RESTORE_KINDS = ['ssh', 'winrm', 'k8s'];
+const AUTO_RESTORE_KINDS = ['ssh', 'winrm', 'k8s', 'http'];
 
 /** Group ids with an auto-restore in flight — a restore outlasts the 5s
  *  watcher tick by minutes, and a group that flaps must not start a second. */

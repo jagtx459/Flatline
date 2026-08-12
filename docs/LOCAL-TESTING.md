@@ -69,6 +69,7 @@ The rest cover what each page configures:
 | `config-security.test.js` | Config | Key rotation and its crash recovery, the optional login and its rate limit, the Host allowlist |
 | `config-transfer.test.js` | Config | Export, import, reset, and backup restore |
 | `notify.test.js` | Notifications | Channel config validation |
+| `http-login.test.js` | Actions | The HTTP target's **login** auth scheme: reading the token from a body path / response header / cookie, the session cookie (jarred or built from the body), credential escaping, the safe Test, the restore poll, redirect following, and the per-target TLS policy |
 
 The endpoints file takes ~15s: the poller's floor is one check every 5s, so
 watching a threshold actually trip cannot be hurried.
@@ -94,6 +95,16 @@ The mock target routes: `/up` (200), `/down` (500), `/slow?ms=N` (200 after N
 ms), `/hang` (never answers, for watching a step hit its limit), and
 `/scenario` (follows the outage cycle below).
 
+For the HTTP target's **login** auth scheme there is a second set, standing in for
+an API whose writes are behind a CSRF token:
+
+| Route | What it does |
+| --- | --- |
+| `/login` | Checks credentials (`flatline` / `s3cr3t`, exported as `MOCK_LOGIN`) taken from a JSON body, a form body or Basic auth. Hands the token back three ways at once — `data.csrf_token` in the body, an `x-csrf-token` header, and a `csrf_token` cookie — so every extraction mode has something real to read. Also returns the session as both `data.ticket` and a `session` cookie, so the "build the cookie yourself" case has a body field to build from. |
+| `/login-after?ms=N` | 503 until N ms after startup, then behaves like `/login` — a service still coming up, for the restore poll to wait on. |
+| `/login-echo` | Accepts anything and echoes the credentials it parsed as `seen`, so a test can prove a password containing quotes or ampersands survived the body template. |
+| `/protected` | 200 only for a request carrying both the token header and a matching session cookie; the 401 body says which half was missing. |
+
 ### The outage cycle (`--tests` only)
 
 `npm run dev:tests` runs a scripted outage on a loop, so endpoints are seen
@@ -117,6 +128,7 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 | UPS management (HTTP `/scenario`) | **follows the outage cycle** under `--tests`; healthy without it |
 | Lab API (HTTP `/scenario`) | **follows the outage cycle** under `--tests`; healthy without it |
 | NAS web UI (HTTP `/up`) | stays up |
+| Action target "Hypervisor API (mock login)" | An HTTP target on the **login** auth scheme, pointed at `/login` + `/protected`. Test connection logs in only; Run does the login then the real request; Restore waits on the login first, so the 202-and-poll path is visible with nothing to set up. Auto-restore is on. |
 | Flatline group "Power loss" | ALL mode, 1 min grace. Both members follow the cycle, so it arms only during the outage |
 | Flatline group "Lab services" | ANY mode, 1 min grace. The always-up NAS never trips it; Lab API does |
 | Action group "Graceful shutdown" | 3 stages, first one ~6s, long enough to pause and cancel. 15s and 10s gaps between stages; stage 2 is split by a 20s wait, so the cluster is told only after the Windows host has had time to go down |

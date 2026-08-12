@@ -1,4 +1,5 @@
 import dgram from 'node:dgram';
+import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
 import { Client as SshClient } from 'ssh2';
@@ -8,15 +9,18 @@ import { winrmExec } from './winrm.js';
 /**
  * Executes (or connectivity-tests) action targets. Three entry points:
  *   - testTarget()  — safe: proves credentials/reachability, never runs the
- *     target's configured command/action (except HTTP, whose entire purpose
- *     IS a specific request — there's no separate no-op to send instead).
+ *     target's configured command/action. The exception is an HTTP target using
+ *     one of the static auth schemes, whose entire purpose IS a specific request
+ *     — there's no separate no-op to send instead. One that logs in does have
+ *     one: the login itself.
  *   - runStep()     — the real thing, used by the shutdown watcher on trigger.
  *   - restoreStep() — brings a target back after a runStep(). For ssh/winrm
  *     that is the restore sequence: wake the host, wait for it to answer, then
  *     run the final step its owner configured. k8s has its own sequence: wait
  *     for the API server to answer, then uncordon and optionally restart
- *     Deployments (or replay a configured restore request). For http it stays a
- *     single undo. There's no stored snapshot of prior state anywhere — a
+ *     Deployments (or replay a configured restore request). For http it is the
+ *     configured undo request, preceded by a wait for the login to answer when
+ *     the target has one. There's no stored snapshot of prior state anywhere — a
  *     restore is only as good as what the target owner configured.
  *
  * The 'winrm' kind runs commands on a Windows host over WinRM (NTLMv2, see
@@ -42,7 +46,7 @@ export async function testTarget(kind, config, secrets) {
   switch (kind) {
     case 'ssh': return testSsh(config, secrets);
     case 'k8s': return testK8s(config, secrets);
-    case 'http': return runHttp(config, secrets, TEST_TIMEOUT_MS);
+    case 'http': return testHttp(config, secrets);
     case 'winrm': return testWinrm(config, secrets);
     default: return { ok: false, message: `unknown kind '${kind}'` };
   }
@@ -193,10 +197,100 @@ async function runWinrm(config, secrets, timeoutMs) {
 }
 
 // ---------------- HTTP ----------------
+// Requests go through node:http / node:https directly rather than fetch, so each
+// target can carry its own TLS policy. That is a per-target fact, not a global
+// one: the same service reached by hostname through a reverse proxy presents a
+// trusted certificate, while on a bare IP it serves its own self-signed one.
 
-/** Auth headers are shared between the trigger request and the optional
- *  restore request — they're the same target/credentials, just a different
- *  method/url/body. */
+const MAX_REDIRECTS = 5;
+
+/** A target's TLS policy: verify against the system store (the default), verify
+ *  against a supplied CA, or don't verify at all. */
+function httpTls(config) {
+  return { ca: config.ca_cert || undefined, rejectUnauthorized: !config.insecure_tls };
+}
+
+/** Same scheme, host and port — the test for whether a redirect may keep
+ *  carrying the request's credentials. */
+function sameOrigin(a, b) {
+  return a.protocol === b.protocol && a.host === b.host;
+}
+
+/**
+ * One HTTP(S) request, resolving to { ok, status, headers, text }.
+ *
+ * Redirects are followed because fetch — which this replaced — did so by
+ * default, and an appliance that upgrades http to https is common enough that
+ * not following them would break working targets. Credentials are dropped when
+ * a redirect crosses to another origin, which is also what fetch does: the
+ * headers here carry passwords and session tokens, and the whole point of
+ * following a redirect automatically is that nobody vetted where it goes.
+ */
+function httpRequest(rawUrl, { method = 'GET', headers = {}, body, timeoutMs, tls = {}, redirectsLeft = MAX_REDIRECTS } = {}) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      reject(new Error(`invalid URL "${rawUrl}"`));
+      return;
+    }
+
+    const transport = url.protocol === 'https:' ? https : http;
+    const req = transport.request(url, {
+      method,
+      headers: { accept: '*/*', 'user-agent': 'flatline', ...headers },
+      ca: tls.ca,
+      rejectUnauthorized: tls.rejectUnauthorized !== false,
+      timeout: timeoutMs
+    }, (res) => {
+      const status = res.statusCode ?? 0;
+      if (res.headers.location && status >= 300 && status < 400) {
+        res.resume(); // drain the body we're not going to read
+        // A redirect we stopped following is a failure, not a 302 to report as
+        // the outcome — otherwise a target stuck in a redirect loop would count
+        // as a shutdown that worked.
+        if (redirectsLeft <= 0) {
+          reject(new Error(`too many redirects (over ${MAX_REDIRECTS})`));
+          return;
+        }
+        let next;
+        try {
+          next = new URL(res.headers.location, url);
+        } catch {
+          reject(new Error(`server redirected to an invalid URL "${res.headers.location}"`));
+          return;
+        }
+        // 303 — and, by long-standing convention, 301/302 — turn the follow-up
+        // into a bodyless GET; 307/308 repeat the request as it was.
+        const rewrite = status === 303 || ((status === 301 || status === 302) && method !== 'GET' && method !== 'HEAD');
+        const forwarded = sameOrigin(url, next) ? headers : {};
+        resolve(httpRequest(next.href, {
+          method: rewrite ? 'GET' : method,
+          headers: forwarded,
+          body: rewrite ? undefined : body,
+          timeoutMs,
+          tls,
+          redirectsLeft: redirectsLeft - 1
+        }));
+        return;
+      }
+
+      let data = '';
+      res.on('data', (d) => { data += d; });
+      res.on('end', () => resolve({ ok: status < 400, status, headers: res.headers, text: data }));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+/** Auth headers for the static schemes, shared between the trigger request and
+ *  the optional restore request — they're the same target/credentials, just a
+ *  different method/url/body. The 'login' scheme is resolved per request
+ *  instead, by performLogin(). */
 function httpAuthHeaders(config, secrets) {
   const headers = { 'user-agent': 'flatline' };
   if (config.auth_scheme === 'bearer' && secrets.token) {
@@ -209,13 +303,14 @@ function httpAuthHeaders(config, secrets) {
   return headers;
 }
 
-async function sendHttp(url, method, body, headers, timeoutMs) {
+async function sendHttp(url, method, body, headers, timeoutMs, tls) {
   headers = body ? { ...headers, 'content-type': 'application/json' } : headers;
   try {
-    const res = await fetch(url, { method, headers, body: body || undefined, signal: AbortSignal.timeout(timeoutMs) });
-    const text = await res.text().catch(() => '');
-    const ok = res.status < 400;
-    return { ok, message: `${method} ${url} -> ${res.status}${!ok && text ? `: ${text.slice(0, 300)}` : ''}` };
+    const res = await httpRequest(url, { method, headers, body: body || undefined, timeoutMs, tls });
+    return {
+      ok: res.ok,
+      message: `${method} ${url} -> ${res.status}${!res.ok && res.text ? `: ${res.text.slice(0, 300)}` : ''}`
+    };
   } catch (err) {
     return { ok: false, message: describeFetchError(err) };
   }
@@ -223,14 +318,222 @@ async function sendHttp(url, method, body, headers, timeoutMs) {
 
 async function runHttp(config, secrets, timeoutMs) {
   if (!config.url) return { ok: false, message: 'no URL configured' };
-  return sendHttp(config.url, config.method ?? 'POST', config.body, httpAuthHeaders(config, secrets), timeoutMs);
+  const auth = await resolveHttpAuth(config, secrets, timeoutMs);
+  if (!auth.ok) return auth;
+  const sent = await sendHttp(config.url, config.method ?? 'POST', config.body, auth.headers, timeoutMs, httpTls(config));
+  // The login is worth reporting even when it worked: "authenticated, then got a
+  // 403" and "could not authenticate" are different problems.
+  return auth.message ? { ok: sent.ok, message: `${auth.message}; ${sent.message}` } : sent;
 }
 
-/** Undoes a prior runHttp() via the target's optional restore request —
- *  same auth as the trigger request, different method/url/body. */
+/**
+ * Connectivity test for an http target. With the 'login' scheme there is at last
+ * something safe to test: logging in proves the credentials and the token
+ * extraction without sending the target's real request. The static schemes have
+ * no such no-op, so their test stays what it has always been — the real request.
+ */
+async function testHttp(config, secrets) {
+  if (config.auth_scheme !== 'login') return runHttp(config, secrets, TEST_TIMEOUT_MS);
+  const login = await performLogin(config, secrets, TEST_TIMEOUT_MS);
+  return login.ok
+    ? { ok: true, message: `${login.message} — the trigger request was not sent` }
+    : login;
+}
+
+// ---- the 'login' auth scheme ----
+// A first request trades credentials for a token, which then rides on the real
+// one. This is how an API that protects writes with a CSRF token works: the
+// token is minted per session, so it cannot be stored in the target's config
+// the way a static API key can.
+//
+// Where the token comes back, and what has to be sent alongside it, differs per
+// service, so all of it is configured rather than assumed: the token is read
+// from the response body, a response header, or a cookie, and the session it
+// belongs to travels either in the cookies the login set, or in a cookie built
+// from a field in the login's response body — some services set no cookie at all
+// and expect the client to assemble one.
+
+const RESTORE_LOGIN_POLL_MS = 10_000;
+
+/** Walks a dot path (`data.csrf_token`) through parsed JSON. Numeric segments
+ *  index arrays, so `tokens.0.value` works too. */
+function jsonPath(value, path) {
+  return String(path).split('.').reduce((node, key) => (node == null ? undefined : node[key]), value);
+}
+
+/** name -> value for every cookie a response set. */
+function responseCookies(res) {
+  const jar = new Map();
+  for (const line of res.headers['set-cookie'] ?? []) {
+    const pair = line.split(';')[0];
+    const eq = pair.indexOf('=');
+    if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+  }
+  return jar;
+}
+
+/**
+ * Substitutes the credentials into the login body template, escaped for that
+ * body's own syntax. Without the escaping a password containing a quote or an
+ * ampersand would not merely fail — it would change the shape of the request it
+ * was pasted into.
+ */
+function fillLoginBody(template, config, secrets) {
+  const escape = config.login_content_type === 'form'
+    ? (v) => encodeURIComponent(v)
+    : (v) => JSON.stringify(String(v)).slice(1, -1);
+  return template
+    .replaceAll('{username}', escape(config.login_username ?? ''))
+    .replaceAll('{password}', escape(secrets.login_password ?? ''));
+}
+
+/** Names where the token was looked for, for the message when it isn't there. */
+function describeTokenSource(config) {
+  switch (config.token_source) {
+    case 'header': return `no "${config.token_response_header}" header in the response`;
+    case 'cookie': return `the response set no "${config.token_cookie}" cookie`;
+    default: return `nothing at "${config.token_json_path}" in the response body`;
+  }
+}
+
+/**
+ * Logs in and returns the headers the real request needs, as
+ * { ok, message, headers }. Called fresh for every request rather than cached:
+ * a restore runs long after the trigger it undoes — hours, in an overnight
+ * outage — and a session token from then would have expired.
+ */
+async function performLogin(config, secrets, timeoutMs) {
+  if (!config.login_url) return { ok: false, message: 'no login URL configured' };
+
+  const method = config.login_method ?? 'POST';
+  const headers = {};
+  // Credentials go in the body by default, but plenty of token endpoints are a
+  // bare GET behind Basic auth instead.
+  if (config.login_auth === 'basic') {
+    const pair = `${config.login_username ?? ''}:${secrets.login_password ?? ''}`;
+    headers.authorization = `Basic ${Buffer.from(pair).toString('base64')}`;
+  }
+  const body = config.login_body ? fillLoginBody(config.login_body, config, secrets) : undefined;
+  if (body) {
+    headers['content-type'] = config.login_content_type === 'form'
+      ? 'application/x-www-form-urlencoded'
+      : 'application/json';
+  }
+
+  let res;
+  try {
+    res = await httpRequest(config.login_url, { method, headers, body, timeoutMs, tls: httpTls(config) });
+  } catch (err) {
+    return { ok: false, message: `login ${method} ${config.login_url} failed: ${describeFetchError(err)}` };
+  }
+  if (!res.ok) {
+    return {
+      ok: false,
+      message: `login ${method} ${config.login_url} -> ${res.status}${res.text ? `: ${res.text.slice(0, 200)}` : ''}`
+    };
+  }
+
+  // Parsed at most once, and only if something actually reads the body.
+  let parsed;
+  const json = () => {
+    if (parsed === undefined) { try { parsed = JSON.parse(res.text); } catch { parsed = null; } }
+    return parsed;
+  };
+
+  const cookies = responseCookies(res);
+  let token = config.token_source === 'header' ? res.headers[String(config.token_response_header).toLowerCase()]
+    : config.token_source === 'cookie' ? cookies.get(config.token_cookie)
+      : jsonPath(json(), config.token_json_path ?? '');
+  if (Array.isArray(token)) token = token[0]; // a header sent more than once
+  if (token == null || token === '') {
+    return { ok: false, message: `logged in at ${config.login_url}, but ${describeTokenSource(config)}` };
+  }
+
+  // The session alongside the token: built from the response body when the
+  // service expects the client to assemble the cookie itself, plus whatever it
+  // set for us.
+  const jar = [];
+  if (config.session_cookie_name && config.session_cookie_json_path) {
+    const value = jsonPath(json(), config.session_cookie_json_path);
+    if (value == null || value === '') {
+      return {
+        ok: false,
+        message: `logged in at ${config.login_url}, but nothing at "${config.session_cookie_json_path}" `
+          + `in the response body to build the "${config.session_cookie_name}" cookie from`
+      };
+    }
+    jar.push(`${config.session_cookie_name}=${value}`);
+  }
+  if (config.send_cookies) {
+    for (const [name, value] of cookies) {
+      if (!jar.some((pair) => pair.startsWith(`${name}=`))) jar.push(`${name}=${value}`);
+    }
+  }
+
+  const authHeaders = { [config.token_header]: String(token) };
+  if (jar.length) authHeaders.cookie = jar.join('; ');
+  return { ok: true, message: `authenticated at ${config.login_url}`, headers: authHeaders };
+}
+
+/** The headers one request needs: the static scheme's, or a fresh login's. */
+async function resolveHttpAuth(config, secrets, timeoutMs) {
+  if (config.auth_scheme !== 'login') return { ok: true, headers: httpAuthHeaders(config, secrets) };
+  return performLogin(config, secrets, timeoutMs);
+}
+
+/** Polls performLogin() until it answers or the budget runs out. Failures along
+ *  the way are expected — a service that has just come back refuses connections
+ *  for a while — so only the deadline is fatal. The sibling of
+ *  waitUntilReachable(), which does the same job for the other kinds. */
+async function waitForLogin(config, secrets, timeoutMs, waitSeconds) {
+  const deadline = Date.now() + waitSeconds * 1000;
+  for (;;) {
+    const login = await performLogin(config, secrets, Math.min(timeoutMs, TEST_TIMEOUT_MS * 2));
+    if (login.ok) return login;
+    const left = deadline - Date.now();
+    if (left <= 0) return login;
+    await delay(Math.min(RESTORE_LOGIN_POLL_MS, left));
+  }
+}
+
+/**
+ * Undoes a prior runHttp() via the target's optional restore request — same
+ * target and credentials, a different method/url/body.
+ *
+ * A target that logs in opens with a wait, like the other kinds' restores do:
+ * auto-restore fires the moment the Flatline group reports healthy, which for a
+ * service that has only just been powered back on is too early. A login attempt
+ * is the one probe that is safe to repeat — unlike the restore request, which
+ * need not be idempotent, and unlike the trigger request, which is the very
+ * thing being undone. The static schemes have no such probe, so they send their
+ * request once, as they always have.
+ */
 async function restoreHttp(config, secrets, timeoutMs) {
   if (!config.restore_url) return { ok: false, message: 'no restore request configured for this target' };
-  return sendHttp(config.restore_url, config.restore_method ?? 'POST', config.restore_body, httpAuthHeaders(config, secrets), timeoutMs);
+
+  const done = [];
+  let headers;
+  if (config.auth_scheme === 'login') {
+    const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
+    const login = await waitForLogin(config, secrets, timeoutMs, waitSeconds);
+    if (!login.ok) {
+      return {
+        ok: false,
+        message: waitSeconds > 0
+          ? `the login did not answer within ${waitSeconds}s (${login.message})`
+          : login.message
+      };
+    }
+    done.push(login.message);
+    headers = login.headers;
+  } else {
+    headers = httpAuthHeaders(config, secrets);
+  }
+
+  const sent = await sendHttp(config.restore_url, config.restore_method ?? 'POST', config.restore_body,
+    headers, timeoutMs, httpTls(config));
+  done.push(sent.message);
+  return { ok: sent.ok, message: done.join('; ') };
 }
 
 // ---------------- Restore sequence (ssh / winrm) ----------------
@@ -446,8 +749,11 @@ async function restoreSequence(kind, config, secrets, timeoutMs, relay = null) {
 // through node:https directly (not fetch) so client-cert/CA options work
 // with no extra dependency.
 
+/** The readable half of a connection error. Named for fetch, which the HTTP and
+ *  Kubernetes paths both used to use; both now speak node:http/https, whose
+ *  errors carry their reason in `message` directly — `cause` is kept because a
+ *  wrapped error still reads better unwrapped. */
 function describeFetchError(err) {
-  if (err.name === 'TimeoutError') return 'timeout';
   return err.cause?.message ?? err.message;
 }
 

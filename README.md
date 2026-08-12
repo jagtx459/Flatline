@@ -40,6 +40,42 @@ A small self-hosted system monitor that pings or probes endpoints for availabili
 
 <div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/actions.png?raw=true" alt="icon" width="340" height="400"></div>
 
+### Action target kinds
+
+| Kind | What it does on trigger |
+| --- | --- |
+| **SSH** | Signs in and runs a command. Password or private key. |
+| **WinRM** | Runs a command on a Windows host via remote PowerShell (NTLM). |
+| **Kubernetes** | Cordons and drains every node — holding the step open until the cluster is actually empty — or sends a raw API request you define. Bearer token or kubeconfig. |
+| **HTTP(S)** | Sends one request you define. For webhooks, or a service with its own shutdown API. |
+
+Each kind also has a **Restore** section that undoes what it did once the outage
+is over, either from the target's Restore button or on its own when the Flatline
+group recovers. SSH and WinRM can send a Wake-on-LAN packet (directly or through
+a relay already on the target's network), wait for the host to answer, then run a
+final step.
+
+#### HTTP targets behind a login (2-Step auth)
+
+Some APIs won't accept a static key: you have to authenticate first and use the
+CSRF token that comes back. Pick the **2-Step auth** scheme and Flatline will sign
+in ahead of each request, read the token out of the response, and send it on.
+Because every service does this differently, all of it is configurable — the token
+can be read from a path in the JSON body, a response header, or a cookie, and the
+session it belongs to travels either in the cookies the login set or in one built
+from a field in the response body. The form has worked examples for two common
+shapes — UniFi OS, which is confirmed working, and Proxmox VE.
+
+The login happens fresh every time, including on restore, since a token minted
+during the outage would have expired by the time the service is back. It also
+gives these targets something the others lack: a **safe Test connection**, which
+proves the credentials without firing the real request.
+
+TLS verification is set per target, because it is really a per-URL fact — the same
+service reached through a reverse proxy presents a trusted certificate, while on a
+bare IP it is usually the appliance's own self-signed one. Supply its CA, or
+accept an untrusted certificate outright.
+
 ## Notifications
 
 Flatline supports a few, but more planned in future releases, notification platforms for event triggers with basic template support for messages. Currently supported platforms are:
