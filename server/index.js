@@ -236,10 +236,16 @@ const KIND_CONFIG_FIELDS = {
   ssh:  ['host', 'port', 'username', 'auth_method', 'command', ...RESTORE_SEQUENCE_FIELDS],
   winrm: ['host', 'port', 'domain', 'username', 'command', ...RESTORE_SEQUENCE_FIELDS],
   k8s:  ['api_url', 'auth_method', 'action', 'command_method', 'command_path', 'command_body',
+         'auto_restore', 'restore_wait_seconds', 'restore_uncordon', 'restore_restart_deployments',
          'restore_method', 'restore_path', 'restore_body'],
   http: ['url', 'method', 'auth_scheme', 'header_name', 'username', 'body',
          'restore_url', 'restore_method', 'restore_body']
 };
+
+// Kinds whose restore is a sequence that opens by waiting — for a host to boot,
+// or a cluster's API server to answer. Minutes, not seconds, so the manual
+// Restore route answers 202 and leaves them running.
+const SEQUENCE_RESTORE_KINDS = ['ssh', 'winrm', 'k8s'];
 
 const K8S_ACTIONS = ['drain', 'custom'];
 const K8S_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
@@ -390,12 +396,24 @@ function parseInfraConfig(kind, raw) {
       }
       if (cfg.action && !K8S_ACTIONS.includes(cfg.action)) return "action must be 'drain' or 'custom'";
       cfg.action ??= 'drain';
+
+      // The restore sequence: wait for the API server, then undo the action.
+      cfg.auto_restore = src.auto_restore ? 1 : 0;
+      cfg.restore_wait_seconds = intInRange(src.restore_wait_seconds, 0, MAX_RESTORE_WAIT_SECONDS, 300);
+      cfg.restore_restart_deployments = src.restore_restart_deployments ? 1 : 0;
+
+      // The restore request is offered whatever the trigger action was: a
+      // drained cluster can need one of its own on the way back.
+      if (cfg.restore_method && !K8S_METHODS.includes(cfg.restore_method)) return `restore method must be one of ${K8S_METHODS.join('/')}`;
+      if (cfg.restore_path) cfg.restore_method ??= 'PATCH';
+
       if (cfg.action === 'custom') {
         if (!cfg.command_path) return 'command path is required for a custom action';
         if (cfg.command_method && !K8S_METHODS.includes(cfg.command_method)) return `command method must be one of ${K8S_METHODS.join('/')}`;
         cfg.command_method ??= 'PATCH';
-        if (cfg.restore_method && !K8S_METHODS.includes(cfg.restore_method)) return `restore method must be one of ${K8S_METHODS.join('/')}`;
-        if (cfg.restore_path) cfg.restore_method ??= 'PATCH';
+        cfg.restore_uncordon = src.restore_uncordon ? 1 : 0;
+      } else {
+        delete cfg.restore_uncordon; // a drained cluster always uncordons — it is the mirror image
       }
       break;
     }
@@ -905,12 +923,13 @@ async function handleApi(req, res, url) {
   }
 
   // POST /api/actions/targets/:id/restore — brings a target back: the ssh/winrm
-  // restore sequence, or a single configured undo for k8s/http.
+  // or k8s restore sequence, or a single configured undo for http.
   //
-  // The ssh/winrm sequence waits for a host to boot, which can take minutes, so
-  // it is started and left to run rather than held open: the response says it
-  // began, and the outcome lands in the target's last activity and the event
-  // feed, both of which the actions page is already polling.
+  // Every sequence starts by waiting — for a host to boot, or for a cluster's
+  // API server to answer — which can take minutes, so those are started and left
+  // to run rather than held open: the response says it began, and the outcome
+  // lands in the target's last activity and the event feed, both of which the
+  // actions page is already polling.
   if (parts[1] === 'actions' && parts[2] === 'targets' && parts.length === 5 && parts[4] === 'restore' && method === 'POST') {
     const id = Number(parts[3]);
     const target = Number.isInteger(id) ? store.getActionTarget(id) : undefined;
@@ -929,7 +948,7 @@ async function handleApi(req, res, url) {
       });
     };
 
-    if (target.kind === 'ssh' || target.kind === 'winrm') {
+    if (SEQUENCE_RESTORE_KINDS.includes(target.kind)) {
       void restoreStep(target.kind, config, secrets, undefined, resolveWakeRelay(config))
         .catch((err) => ({ ok: false, message: err.message }))
         .then(record);

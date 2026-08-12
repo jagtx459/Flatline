@@ -18,10 +18,9 @@ const KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'Kubernetes', http: 'HTTP
 const K8S_ACTION_LABELS = { drain: 'cordon + drain all nodes', custom: 'custom command' };
 
 // Shown in the Restore confirm dialog for the kinds whose undo is a single
-// fixed thing. ssh/winrm describe their own sequence instead — see restoreSteps().
+// fixed thing. The others describe their own sequence instead — see restoreSteps().
 const RESTORE_HINTS = {
-  http: 'This sends the configured restore request.',
-  k8s: 'For "cordon + drain" this uncordons every node. For a custom command, it runs the configured restore request.'
+  http: 'This sends the configured restore request.'
 };
 
 // Maps a kind's secret field -> form input name.
@@ -35,6 +34,9 @@ const SECRET_INPUTS = {
 
 /** Kinds whose Restore is the wake -> wait -> final step sequence. */
 const RESTORE_SEQUENCE_KINDS = ['ssh', 'winrm'];
+/** Kinds with a collapsible Restore panel in the form — k8s has one too, but
+ *  its sequence is its own (wait for the API server, then undo). */
+const RESTORE_PANEL_KINDS = [...RESTORE_SEQUENCE_KINDS, 'k8s'];
 const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
 const DEFAULT_RESTORE_WAIT = 300;
 
@@ -63,7 +65,7 @@ const targetFormSection = initCollapsible('actions:target-form',
   document.getElementById('target-form-header'), document.getElementById('target-form-body'));
 // The Restore panel is the longest part of the form and most targets never
 // change it after setup, so each kind's folds away on its own.
-for (const kind of RESTORE_SEQUENCE_KINDS) {
+for (const kind of RESTORE_PANEL_KINDS) {
   initCollapsible(`actions:restore-${kind}`,
     document.getElementById(`${kind}-restore-header`), document.getElementById(`${kind}-restore-body`));
 }
@@ -342,6 +344,10 @@ function collectConfig(kind) {
       command_method: field('k8s_command_method').value,
       command_path: field('k8s_command_path').value,
       command_body: field('k8s_command_body').value,
+      auto_restore: field('k8s_auto_restore').checked,
+      restore_wait_seconds: Number(field('k8s_restore_wait_seconds').value) || 0,
+      restore_uncordon: field('k8s_restore_uncordon').checked,
+      restore_restart_deployments: field('k8s_restore_restart_deployments').checked,
       restore_method: field('k8s_restore_method').value,
       restore_path: field('k8s_restore_path').value,
       restore_body: field('k8s_restore_body').value
@@ -416,6 +422,10 @@ function fillTargetForm(t) {
       field('k8s_command_method').value = c.command_method ?? 'PATCH';
       field('k8s_command_path').value = c.command_path ?? '';
       field('k8s_command_body').value = c.command_body ?? '';
+      field('k8s_auto_restore').checked = !!c.auto_restore;
+      field('k8s_restore_wait_seconds').value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
+      field('k8s_restore_uncordon').checked = !!c.restore_uncordon;
+      field('k8s_restore_restart_deployments').checked = !!c.restore_restart_deployments;
       field('k8s_restore_method').value = c.restore_method ?? 'PATCH';
       field('k8s_restore_path').value = c.restore_path ?? '';
       field('k8s_restore_body').value = c.restore_body ?? '';
@@ -550,10 +560,11 @@ function targetActivityText(t) {
 /**
  * The target's restore sequence spelled out, one sentence per step — shown in
  * the Restore button's tooltip and in its confirm dialog, which describe the
- * same thing. ssh/winrm build it from their wake -> wait -> final step config;
- * the other kinds have a single fixed undo (see RESTORE_HINTS).
+ * same thing. ssh/winrm build it from their wake -> wait -> final step config,
+ * k8s from its own; http has a single fixed undo (see RESTORE_HINTS).
  */
 function restoreSteps(t) {
+  if (t.kind === 'k8s') return k8sRestoreSteps(t.config);
   if (!RESTORE_SEQUENCE_KINDS.includes(t.kind)) {
     return RESTORE_HINTS[t.kind] ? [RESTORE_HINTS[t.kind]] : [];
   }
@@ -572,10 +583,23 @@ function restoreSteps(t) {
   return steps;
 }
 
+function k8sRestoreSteps(c) {
+  const steps = [`1. Wait up to ${c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT}s for the API server to answer.`];
+  if (c.action !== 'custom' || c.restore_uncordon) steps.push(`${steps.length + 1}. Uncordon every node.`);
+  if (c.restore_path) steps.push(`${steps.length + 1}. Then send ${c.restore_method ?? 'PATCH'} ${c.restore_path}`);
+  if (c.restore_restart_deployments) steps.push(`${steps.length + 1}. Restart every Deployment outside kube-system.`);
+  return steps;
+}
+
 /** Whether the target has enough configured for Restore to do anything. */
 function hasRestore(t) {
   const c = t.config;
-  if (t.kind === 'k8s') return true;
+  // A drained cluster always has an undo (uncordon); a custom command has one
+  // only if its owner asked for something — the reversing request, or either of
+  // the cluster-wide steps.
+  if (t.kind === 'k8s') {
+    return c.action !== 'custom' || !!(c.restore_uncordon || c.restore_path || c.restore_restart_deployments);
+  }
   if (t.kind === 'http') return !!c.restore_url;
   return !!(c.wol_mac
     || (c.restore_action === 'command' && c.restore_command)

@@ -140,7 +140,7 @@ sudo chmod 440 /etc/sudoers.d/flatline
           </div>
           <div class="restore-panel">
             <div class="card-header" id="ssh-restore-header">
-              <p class="restore-title">Restore</p>
+              <p class="restore-title">Wake-On-Lan Restore</p>
               <span class="chevron">▸</span>
             </div>
             <div class="card-body" id="ssh-restore-body">
@@ -307,7 +307,7 @@ Restart-Service WinRM</pre>
           </label>
           <div class="restore-panel">
             <div class="card-header" id="winrm-restore-header">
-              <p class="restore-title">◀ Restore</p>
+              <p class="restore-title">Wake-On-Lan Restore</p>
               <span class="chevron">▸</span>
             </div>
             <div class="card-body" id="winrm-restore-body">
@@ -464,6 +464,16 @@ Restart-Service WinRM</pre>
             </label>
           </div>
 
+          <p class="hint-row" data-k8s-action="drain" style="margin-top:10px">Records what the cluster was
+            running (namespaces, Deployments, StatefulSets, DaemonSets, pods) into the event feed, then
+            cordons every node and evicts its pods, then <strong>holds the step open until the cluster is
+            actually empty</strong>, re-checking every 5s. An eviction only asks — the pod goes when it has
+            finished shutting down — so without the hold the next stage could cut power to a node with pods
+            still writing. DaemonSet pods, static control-plane pods and finished Jobs are never evicted and
+            don't hold it up. The step's own <strong>give up after</strong> seconds (set where you add this
+            target to an action group) is the budget for all of it; raise it from the default 60s if your
+            workloads take a while to stop.</p>
+
           <div data-k8s-action="custom" style="margin-top:10px">
             <p class="hint-row">A raw Kubernetes API request: method + path (relative to the API server
               URL above) + optional JSON body. E.g. to scale a Deployment to 0:
@@ -483,22 +493,99 @@ Restart-Service WinRM</pre>
             <label class="field" style="margin-top:10px"><span class="cap">Body (JSON, optional)</span>
               <textarea name="k8s_command_body" rows="3" spellcheck="false"
                 placeholder='{"spec":{"replicas":0}}'></textarea></label>
+          </div>
 
-            <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the command above (e.g. scale back up). Leave blank if there's nothing to undo.</p>
-            <div class="grid">
-              <label class="field"><span class="cap">Restore method</span>
-                <select name="k8s_restore_method">
-                  <option>GET</option><option>POST</option><option>PUT</option>
-                  <option selected>PATCH</option><option>DELETE</option>
-                </select>
-              </label>
-              <label class="field"><span class="cap">Restore API path (optional)</span>
-                <input type="text" name="k8s_restore_path" maxlength="2000"
-                  placeholder="same path, to undo the command above"></label>
+          <div class="restore-panel">
+            <div class="card-header" id="k8s-restore-header">
+              <p class="restore-title">Cluster Restore</p>
+              <span class="chevron">▸</span>
             </div>
-            <label class="field" style="margin-top:10px"><span class="cap">Restore body (JSON, optional)</span>
-              <textarea name="k8s_restore_body" rows="3" spellcheck="false"
-                placeholder='{"spec":{"replicas":3}}'></textarea></label>
+            <div class="card-body" id="k8s-restore-body">
+              <p class="hint-row">Brings the cluster back after the outage: wait for the API server to
+                answer, then undo the action above. The target's <strong>Restore</strong> button runs this
+                same sequence on demand, whether or not auto-restore is on.</p>
+              <label class="check">
+                <input type="checkbox" name="k8s_auto_restore">
+                <span>Auto-restore when the Flatline group recovers</span>
+              </label>
+              <p class="hint-row" style="margin:6px 0 0">Runs on its own once the Flatline group that
+                triggered the shutdown reports healthy again. Targets restore in the reverse of the order
+                they were shut down in, so only the ones ticked here come back automatically.</p>
+
+              <div class="restore-step">
+                <span class="restore-num">1</span>
+                <div class="restore-body">
+                  <div class="restore-inline">
+                    <span>Wait up to</span>
+                    <input type="number" name="k8s_restore_wait_seconds" min="0" max="3600" value="300">
+                    <span>seconds for the API server to answer, then give up.</span>
+                  </div>
+                  <p class="hint-row" style="margin:6px 0 0">Auto-restore starts the moment the Flatline
+                    group reports healthy, which is usually before the control plane has finished coming
+                    up. Nothing below runs until the cluster answers.</p>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <span class="restore-num">2</span>
+                <div class="restore-body">
+                  <p class="hint-row" data-k8s-action="drain"><strong>Uncordon every node</strong>, so the
+                    scheduler can place pods again — the mirror image of the cordon + drain above. Nothing
+                    records which nodes were cordoned before the outage, so every node in the cluster is
+                    uncordoned.</p>
+
+                  <label class="check" data-k8s-action="custom">
+                    <input type="checkbox" name="k8s_restore_uncordon" checked>
+                    <span>Uncordon every node first</span>
+                  </label>
+                  <p class="hint-row" data-k8s-action="custom" style="margin:6px 0 0">Flatline did not cordon
+                    anything on a custom target's behalf, so this is your call — but scaling workloads back up
+                    achieves nothing while the nodes are unschedulable, so leave it on unless something else
+                    manages the cordons. Every node in the cluster is uncordoned; nothing records which ones
+                    were cordoned before.</p>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <span class="restore-num">3</span>
+                <div class="restore-body">
+                  <p class="hint-row">One raw Kubernetes API request, the same shape as a custom trigger
+                    command. Use it to undo a custom command (e.g. scale back up), or for anything a drained
+                    cluster needs on the way back that uncordoning doesn't cover. Leave the path blank to
+                    skip this step.</p>
+                  <div class="grid">
+                    <label class="field"><span class="cap">Restore method</span>
+                      <select name="k8s_restore_method">
+                        <option>GET</option><option>POST</option><option>PUT</option>
+                        <option selected>PATCH</option><option>DELETE</option>
+                      </select>
+                    </label>
+                    <label class="field"><span class="cap">Restore API path (optional)</span>
+                      <input type="text" name="k8s_restore_path" maxlength="2000"
+                        placeholder="same path, to undo the command above"></label>
+                  </div>
+                  <label class="field" style="margin-top:10px"><span class="cap">Restore body (JSON, optional)</span>
+                    <textarea name="k8s_restore_body" rows="3" spellcheck="false"
+                      placeholder='{"spec":{"replicas":3}}'></textarea></label>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <span class="restore-num">4</span>
+                <div class="restore-body">
+                  <label class="check">
+                    <input type="checkbox" name="k8s_restore_restart_deployments" checked>
+                    <span>Restart every Deployment</span>
+                  </label>
+                  <p class="hint-row" style="margin:6px 0 0">The same thing as
+                    <code>kubectl rollout restart deployment</code>, in every namespace except
+                    <code>kube-system</code> (CoreDNS and the control-plane addons come back on their own).
+                    Evicted pods reschedule without this once nodes are schedulable again — it's for the
+                    ones that come back wedged, e.g. a half-finished rollout or a
+                    <code>CrashLoopBackOff</code> against a dependency that was itself down.</p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
