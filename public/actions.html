@@ -610,6 +610,7 @@ Restart-Service WinRM</pre>
                 <option value="bearer">Bearer / JWT</option>
                 <option value="header">Custom header token</option>
                 <option value="basic">Basic auth</option>
+                <option value="login">2-Step auth</option>
               </select>
             </label>
             <label class="field" data-http="header"><span class="cap">Header name</span>
@@ -627,19 +628,197 @@ Restart-Service WinRM</pre>
             <textarea name="http_body" rows="3" spellcheck="false" placeholder='{"action":"shutdown"}'></textarea>
           </label>
 
-          <p class="hint-row" style="margin-top:10px">Run from the target's Restore button to undo the request above. Uses the same auth as the trigger request. Leave blank if there's nothing to undo.</p>
-          <div class="grid">
-            <label class="field"><span class="cap">Restore method</span>
-              <select name="http_restore_method">
-                <option>GET</option><option selected>POST</option><option>PUT</option><option>DELETE</option>
-              </select>
+          <!-- "2-Step auth" — stored as auth_scheme 'login', since what it does is
+               log in: a first request trades credentials for a per-session token,
+               which the real request above then carries. -->
+          <div data-http="login" class="login-block" style="margin-top:12px">
+            <p class="hint-row">For an API that will not accept a static key: Flatline
+              <strong>signs in first</strong>, reads a token out of that response, and sends it on the
+              request above. This happens fresh every time, including on restore — a token minted during
+              the outage would have expired by the time the service is back.</p>
+
+            <details class="setup-help">
+              <summary>Worked examples</summary>
+              <div class="help-body">
+                <p>Two common shapes. Yours may differ — check what your API's login endpoint actually
+                  returns, with <code>curl -i</code>, and fill in the fields to match.</p>
+                <p><strong>Token in the response body, and a session cookie you have to build
+                  yourself</strong> (Proxmox VE):</p>
+                <pre>Login URL      https://host:8006/api2/json/access/ticket
+Credentials    in the request body, form-encoded
+Login body     username={username}&amp;password={password}
+Username       root@pam
+Token from     the response body, at  data.CSRFPreventionToken
+Send token in  CSRFPreventionToken
+Cookie name    PVEAuthCookie
+Cookie value   from the response body, at  data.ticket</pre>
+                <p><strong>Token in a response header, session cookie set for you</strong> (UniFi OS):</p>
+                <pre>Login URL      https://host/api/auth/login
+Credentials    in the request body, JSON
+Login body     {"username":"{username}","password":"{password}"}
+Token from     the response header  X-CSRF-Token
+Send token in  X-CSRF-Token
+Cookies        leave "send the cookies the login set" ticked</pre>
+              </div>
+            </details>
+
+            <div class="grid">
+              <label class="field" style="grid-column: span 2"><span class="cap">Login URL</span>
+                <input type="text" name="http_login_url" maxlength="2000" placeholder="https://host/api/login"></label>
+              <label class="field"><span class="cap">Login method</span>
+                <select name="http_login_method">
+                  <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
+                </select>
+              </label>
+              <label class="field"><span class="cap">Send credentials</span>
+                <select name="http_login_auth">
+                  <option value="body">In the request body</option>
+                  <option value="basic">As Basic auth</option>
+                </select>
+              </label>
+              <label class="field"><span class="cap">Body format</span>
+                <select name="http_login_content_type">
+                  <option value="json">JSON</option>
+                  <option value="form">Form-encoded</option>
+                </select>
+              </label>
+              <label class="field"><span class="cap">Username</span>
+                <input type="text" name="http_login_username" maxlength="2000" autocomplete="off"
+                  placeholder="admin"></label>
+              <label class="field secret" data-secret="login_password"><span class="cap">Password / API key
+                  <span class="secret-state"></span></span>
+                <input type="password" name="http_login_password" autocomplete="new-password"></label>
+            </div>
+            <label class="field" style="margin-top:10px"><span class="cap">Login request body</span>
+              <textarea name="http_login_body" rows="2" spellcheck="false"
+                placeholder='{"username":"{username}","password":"{password}"}'></textarea>
+              <span class="hint-row" style="margin:6px 0 0"><code>{username}</code> and
+                <code>{password}</code> are replaced with the credentials above, escaped for the body
+                format — so a password containing a quote or an <code>&amp;</code> is safe. Required when
+                the credentials go in the body; optional, and usually blank, for Basic auth.</span>
             </label>
-            <label class="field" style="grid-column: span 2"><span class="cap">Restore URL (optional)</span>
-              <input type="text" name="http_restore_url" maxlength="2000" placeholder="https://host/api/cancel-shutdown"></label>
+
+            <p class="hint-row" style="margin-top:12px"><strong>Where the token comes back.</strong>
+              Services differ, so say which one yours uses.</p>
+            <div class="grid">
+              <label class="field"><span class="cap">Read the token from</span>
+                <select name="http_token_source" data-token-source-select>
+                  <option value="json">The response body (JSON)</option>
+                  <option value="header">A response header</option>
+                  <option value="cookie">A cookie the login set</option>
+                </select>
+              </label>
+              <label class="field" data-token-source="json"><span class="cap">Path in the body</span>
+                <input type="text" name="http_token_json_path" maxlength="2000" placeholder="data.csrf_token"></label>
+              <label class="field" data-token-source="header"><span class="cap">Response header name</span>
+                <input type="text" name="http_token_response_header" maxlength="2000" placeholder="X-CSRF-Token"></label>
+              <label class="field" data-token-source="cookie"><span class="cap">Cookie name</span>
+                <input type="text" name="http_token_cookie" maxlength="2000" placeholder="csrf_token"></label>
+              <label class="field"><span class="cap">Send the token in this header</span>
+                <input type="text" name="http_token_header" maxlength="2000" placeholder="X-CSRF-Token"></label>
+            </div>
+            <p class="hint-row" style="margin:6px 0 0">A dotted path walks into the response body, so
+              <code>data.csrf_token</code> reads <code>{"data":{"csrf_token":"…"}}</code>. Numbers index
+              arrays: <code>tokens.0.value</code>.</p>
+
+            <p class="hint-row" style="margin-top:12px"><strong>The session the token belongs to.</strong>
+              A CSRF token is usually only accepted alongside the session it was minted for.</p>
+            <label class="check">
+              <input type="checkbox" name="http_send_cookies" checked>
+              <span>Send the cookies the login set back on every request</span>
+            </label>
+            <p class="hint-row" style="margin:6px 0 0">Leave this on unless you know the service sets no
+              cookies. Harmless when it doesn't.</p>
+            <div class="grid" style="margin-top:10px">
+              <label class="field"><span class="cap">Also build a cookie named (optional)</span>
+                <input type="text" name="http_session_cookie_name" maxlength="2000" placeholder="PVEAuthCookie"></label>
+              <label class="field"><span class="cap">…from this path in the response body</span>
+                <input type="text" name="http_session_cookie_json_path" maxlength="2000" placeholder="data.ticket"></label>
+            </div>
+            <p class="hint-row" style="margin:6px 0 0">Only needed when the service returns its session in
+              the response body and expects the client to assemble the cookie — it never sends a
+              <code>Set-Cookie</code> of its own. Fill in both fields or neither.</p>
           </div>
-          <label class="field" style="margin-top:10px"><span class="cap">Restore request body (optional)</span>
-            <textarea name="http_restore_body" rows="3" spellcheck="false" placeholder='{"action":"cancel"}'></textarea>
+
+          <!-- TLS: a per-target choice, because it is a per-URL fact. -->
+          <p class="hint-row" style="margin-top:12px"><strong>Certificates.</strong> Only applies to
+            <code>https://</code> URLs.</p>
+          <label class="check">
+            <input type="checkbox" name="http_insecure_tls">
+            <span>Accept a self-signed or otherwise untrusted certificate</span>
           </label>
+          <p class="hint-row" style="margin:6px 0 0">The same service can need this or not depending on how
+            you reach it: through a reverse proxy on a real hostname the certificate is trusted, but on a
+            bare IP it is usually the appliance's own self-signed one. Ticking this stops Flatline checking
+            who it is talking to, so prefer supplying the CA below where you can.</p>
+          <label class="field" style="margin-top:10px"><span class="cap">CA certificate (PEM, optional)</span>
+            <textarea name="http_ca_cert" rows="3" spellcheck="false"
+              placeholder="-----BEGIN CERTIFICATE-----&#10;..."></textarea>
+            <span class="hint-row" style="margin:6px 0 0">Verify against this CA instead of the system
+              store — for a private CA, or the appliance's own certificate pasted in. Leave blank to use
+              the system store.</span>
+          </label>
+
+          <div class="restore-panel">
+            <div class="card-header" id="http-restore-header">
+              <p class="restore-title">Restore</p>
+              <span class="chevron">▸</span>
+            </div>
+            <div class="card-body" id="http-restore-body">
+              <p class="hint-row">Undoes the trigger request — the target's <strong>Restore</strong> button
+                sends this, whether or not auto-restore is on. Same URL host, credentials and certificate
+                settings as above; only the method, path and body differ. Leave the URL blank if there is
+                nothing to undo.</p>
+              <label class="check">
+                <input type="checkbox" name="http_auto_restore">
+                <span>Auto-restore when the Flatline group recovers</span>
+              </label>
+              <p class="hint-row" style="margin:6px 0 0">Runs on its own once the Flatline group that
+                triggered the shutdown reports healthy again. Targets restore in the reverse of the order
+                they were shut down in, so only the ones ticked here come back automatically.</p>
+
+              <div class="restore-step" data-http="login">
+                <span class="restore-num">1</span>
+                <div class="restore-body">
+                  <div class="restore-inline">
+                    <span>Wait up to</span>
+                    <input type="number" name="http_restore_wait_seconds" min="0" max="3600" value="300">
+                    <span>seconds for the login to answer, then give up.</span>
+                  </div>
+                  <p class="hint-row" style="margin:6px 0 0">Auto-restore starts the moment the Flatline
+                    group reports healthy, which for a service that has only just been powered back on is
+                    too early. Flatline retries the <strong>login</strong> until it succeeds — the one
+                    request that is safe to repeat — and only then sends the request below. Set 0 to send it
+                    immediately.</p>
+                </div>
+              </div>
+
+              <div class="restore-step">
+                <!-- Numbered for whichever steps are actually showing: the wait
+                     above only exists for a target that logs in. -->
+                <span class="restore-num" data-http="login">2</span>
+                <span class="restore-num" data-http="none bearer header basic">1</span>
+                <div class="restore-body">
+                  <p class="hint-row" data-http="none bearer header basic">Sent once, immediately. The
+                    static auth schemes have no request that is safe to retry, so there is nothing to wait
+                    on — pick <strong>2-Step auth</strong> above if this service needs one.</p>
+                  <div class="grid">
+                    <label class="field"><span class="cap">Restore method</span>
+                      <select name="http_restore_method">
+                        <option>GET</option><option selected>POST</option><option>PUT</option><option>DELETE</option>
+                      </select>
+                    </label>
+                    <label class="field" style="grid-column: span 2"><span class="cap">Restore URL (optional)</span>
+                      <input type="text" name="http_restore_url" maxlength="2000"
+                        placeholder="https://host/api/cancel-shutdown"></label>
+                  </div>
+                  <label class="field" style="margin-top:10px"><span class="cap">Restore request body (optional)</span>
+                    <textarea name="http_restore_body" rows="3" spellcheck="false" placeholder='{"action":"cancel"}'></textarea>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div style="margin-top:12px">

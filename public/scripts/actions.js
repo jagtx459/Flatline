@@ -17,26 +17,21 @@ let relays = [];
 const KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'Kubernetes', http: 'HTTP(S)' };
 const K8S_ACTION_LABELS = { drain: 'cordon + drain all nodes', custom: 'custom command' };
 
-// Shown in the Restore confirm dialog for the kinds whose undo is a single
-// fixed thing. The others describe their own sequence instead — see restoreSteps().
-const RESTORE_HINTS = {
-  http: 'This sends the configured restore request.'
-};
-
 // Maps a kind's secret field -> form input name.
 const SECRET_INPUTS = {
   ssh:  { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase', sudo_password: 'ssh_sudo_password',
           restore_token: 'ssh_restore_token', restore_password: 'ssh_restore_password' },
   winrm: { password: 'winrm_password', restore_token: 'winrm_restore_token', restore_password: 'winrm_restore_password' },
   k8s:  { token: 'k8s_token', kubeconfig: 'k8s_kubeconfig' },
-  http: { token: 'http_token', password: 'http_password' }
+  http: { token: 'http_token', password: 'http_password', login_password: 'http_login_password' }
 };
 
 /** Kinds whose Restore is the wake -> wait -> final step sequence. */
 const RESTORE_SEQUENCE_KINDS = ['ssh', 'winrm'];
-/** Kinds with a collapsible Restore panel in the form — k8s has one too, but
- *  its sequence is its own (wait for the API server, then undo). */
-const RESTORE_PANEL_KINDS = [...RESTORE_SEQUENCE_KINDS, 'k8s'];
+/** Kinds with a collapsible Restore panel in the form. k8s and http each have
+ *  one too, but their sequences are their own — k8s waits for the API server
+ *  then undoes; http waits for its login (when it has one) then sends the undo. */
+const RESTORE_PANEL_KINDS = [...RESTORE_SEQUENCE_KINDS, 'k8s', 'http'];
 const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
 const DEFAULT_RESTORE_WAIT = 300;
 
@@ -201,6 +196,16 @@ function syncHttpAuthFields() {
     const schemes = node.dataset.http.split(' ');
     node.style.display = schemes.includes(scheme) ? '' : 'none';
   }
+  syncHttpTokenFields();
+}
+
+/** Inside the login block, the one field that names where the token is — a path
+ *  into the body, a response header, or a cookie. */
+function syncHttpTokenFields() {
+  const source = field('http_token_source').value;
+  for (const node of $form.querySelectorAll('[data-token-source]')) {
+    node.style.display = node.dataset.tokenSource === source ? '' : 'none';
+  }
 }
 
 function syncSshAuthFields() {
@@ -226,6 +231,7 @@ function syncK8sActionFields() {
 
 $kind.addEventListener('change', syncKindSections);
 $httpScheme.addEventListener('change', syncHttpAuthFields);
+$form.querySelector('[data-token-source-select]').addEventListener('change', syncHttpTokenFields);
 $sshAuthMethod.addEventListener('change', syncSshAuthFields);
 $k8sAuthMethod.addEventListener('change', syncK8sAuthFields);
 $k8sAction.addEventListener('change', syncK8sActionFields);
@@ -359,6 +365,24 @@ function collectConfig(kind) {
       header_name: field('http_header_name').value,
       username: field('http_username').value,
       body: field('http_body').value,
+      login_url: field('http_login_url').value,
+      login_method: field('http_login_method').value,
+      login_auth: field('http_login_auth').value,
+      login_content_type: field('http_login_content_type').value,
+      login_body: field('http_login_body').value,
+      login_username: field('http_login_username').value,
+      token_source: field('http_token_source').value,
+      token_json_path: field('http_token_json_path').value,
+      token_response_header: field('http_token_response_header').value,
+      token_cookie: field('http_token_cookie').value,
+      token_header: field('http_token_header').value,
+      session_cookie_name: field('http_session_cookie_name').value,
+      session_cookie_json_path: field('http_session_cookie_json_path').value,
+      send_cookies: field('http_send_cookies').checked,
+      insecure_tls: field('http_insecure_tls').checked,
+      ca_cert: field('http_ca_cert').value,
+      auto_restore: field('http_auto_restore').checked,
+      restore_wait_seconds: Number(field('http_restore_wait_seconds').value) || 0,
       restore_url: field('http_restore_url').value,
       restore_method: field('http_restore_method').value,
       restore_body: field('http_restore_body').value
@@ -437,6 +461,26 @@ function fillTargetForm(t) {
       field('http_header_name').value = c.header_name ?? '';
       field('http_username').value = c.username ?? '';
       field('http_body').value = c.body ?? '';
+      field('http_login_url').value = c.login_url ?? '';
+      field('http_login_method').value = c.login_method ?? 'POST';
+      field('http_login_auth').value = c.login_auth ?? 'body';
+      field('http_login_content_type').value = c.login_content_type ?? 'json';
+      field('http_login_body').value = c.login_body ?? '';
+      field('http_login_username').value = c.login_username ?? '';
+      field('http_token_source').value = c.token_source ?? 'json';
+      field('http_token_json_path').value = c.token_json_path ?? '';
+      field('http_token_response_header').value = c.token_response_header ?? '';
+      field('http_token_cookie').value = c.token_cookie ?? '';
+      field('http_token_header').value = c.token_header ?? '';
+      field('http_session_cookie_name').value = c.session_cookie_name ?? '';
+      field('http_session_cookie_json_path').value = c.session_cookie_json_path ?? '';
+      // Ticked by default for a new target, so an existing one that has never
+      // been saved with the field must fall back to on, not off.
+      field('http_send_cookies').checked = c.send_cookies ?? true;
+      field('http_insecure_tls').checked = !!c.insecure_tls;
+      field('http_ca_cert').value = c.ca_cert ?? '';
+      field('http_auto_restore').checked = !!c.auto_restore;
+      field('http_restore_wait_seconds').value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
       field('http_restore_url').value = c.restore_url ?? '';
       field('http_restore_method').value = c.restore_method ?? 'POST';
       field('http_restore_body').value = c.restore_body ?? '';
@@ -493,7 +537,10 @@ $formTest.addEventListener('click', () => {
   void (async () => {
     const kind = $kind.value;
     $formTestResult.className = 'note';
-    $formTestResult.textContent = kind === 'http' ? 'Sending test request…' : 'Testing…';
+    // A login-scheme http target has a safe test — the login itself. Every other
+    // http target's test IS its real request, so say so before it goes.
+    $formTestResult.textContent = kind !== 'http' ? 'Testing…'
+      : $httpScheme.value === 'login' ? 'Logging in…' : 'Sending test request…';
     $formError.textContent = '';
     try {
       const result = await testActionTarget({
@@ -560,14 +607,13 @@ function targetActivityText(t) {
 /**
  * The target's restore sequence spelled out, one sentence per step — shown in
  * the Restore button's tooltip and in its confirm dialog, which describe the
- * same thing. ssh/winrm build it from their wake -> wait -> final step config,
- * k8s from its own; http has a single fixed undo (see RESTORE_HINTS).
+ * same thing. Each kind builds it from its own config: ssh/winrm from
+ * wake -> wait -> final step, k8s and http from theirs.
  */
 function restoreSteps(t) {
   if (t.kind === 'k8s') return k8sRestoreSteps(t.config);
-  if (!RESTORE_SEQUENCE_KINDS.includes(t.kind)) {
-    return RESTORE_HINTS[t.kind] ? [RESTORE_HINTS[t.kind]] : [];
-  }
+  if (t.kind === 'http') return httpRestoreSteps(t.config);
+  if (!RESTORE_SEQUENCE_KINDS.includes(t.kind)) return [];
   const c = t.config;
   const proto = PROTO_LABELS[t.kind];
   const steps = [];
@@ -580,6 +626,17 @@ function restoreSteps(t) {
   steps.push(`${steps.length + 1}. Wait up to ${c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT}s for ${proto} to answer.`);
   if (c.restore_action === 'command') steps.push(`${steps.length + 1}. Then run over ${proto}: ${c.restore_command}`);
   else if (c.restore_action === 'http') steps.push(`${steps.length + 1}. Then send ${c.restore_method ?? 'POST'} ${c.restore_url}`);
+  return steps;
+}
+
+/** http's restore: the undo request, preceded by a wait for the login to answer
+ *  when the target has one to wait on. */
+function httpRestoreSteps(c) {
+  const steps = [];
+  if (c.auth_scheme === 'login' && (c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT) > 0) {
+    steps.push(`1. Wait up to ${c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT}s for ${c.login_url} to accept the login.`);
+  }
+  steps.push(`${steps.length + 1}. Send ${c.restore_method ?? 'POST'} ${c.restore_url}`);
   return steps;
 }
 

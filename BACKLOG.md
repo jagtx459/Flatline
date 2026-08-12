@@ -19,6 +19,20 @@ Known gaps deliberately left for later. Each entry: **what**, **why deferred**, 
 - `runAutoRestore()` — the reverse walk (action groups, stages, then steps back to front),
   that only targets with `auto_restore` set take part, that a target reused across stages
   restores once, and that the `inFlight` guard stops a flapping group starting a second pass.
+  Now also that `http` takes part at all: it was added to `AUTO_RESTORE_KINDS` alongside the
+  login auth scheme, and nothing exercises that one-word change — covering it needs the whole
+  harness this entry is about (a db, a Flatline group, an action group with stages).
+- **The http `login` auth scheme's config validation** — `parseHttpLogin()` in `server/index.js`:
+  the login URL/method rules, `login_auth: 'basic'` requiring a username while `'body'` requires
+  a body template, each `token_source` requiring its own locator, `HEADER_NAME_RE` rejecting a
+  CRLF-bearing header name, the session cookie needing both halves or neither, the PEM check on
+  `ca_cert`, and the login fields being dropped when the scheme is switched away. The *behaviour*
+  is covered in `tests/http-login.test.js`; only the validation is uncovered, for the same reason
+  as the rest of this entry — `parseInfraConfig` and its helpers are private to `index.js`, which
+  binds a port at import time, so there is no seam to drive them through. Verified by hand
+  against a running server for now. Unblocking it means either exporting the parsers or moving
+  them to a module of their own (`server/targetConfig.js`), which is worth doing once the schema
+  settles.
 - Migration 7 — a legacy target with a bare `restore_command` comes out as
   `restore_action: 'command'` with auto-restore off.
 - **k8s drain and restore** — `restoreK8s()`'s order (fail fast on an unusable kubeconfig, then
@@ -39,7 +53,10 @@ Known gaps deliberately left for later. Each entry: **what**, **why deferred**, 
   1. **A TLS stub** — extend `dev/mock-targets.js` with an HTTPS listener serving canned
      `api/v1/nodes`, `api/v1/pods` and `apis/apps/v1/*` responses, reached with a kubeconfig
      carrying `insecure-skip-tls-verify: true`. Needs a self-signed cert generated at test
-     startup. Fast and hermetic, but it only ever returns what the fixture says, so it cannot
+     startup — `tests/http-login.test.js`'s `TLS verification` block now does exactly that and
+     can be lifted wholesale, including the minimal `openssl.cnf` that works around system
+     configs whose `v3_ca` section rejects `-addext`, and the clean skip when openssl is
+     unusable. Fast and hermetic, but it only ever returns what the fixture says, so it cannot
      catch a wrong assumption about how a real cluster behaves.
   2. **Make `k8sRequest` injectable** — pass it in, so the sequences can be driven with a plain
      function. Cheapest of all and no certs, but tests then prove the ordering logic only.
@@ -76,15 +93,18 @@ cases additionally need a decision on which of the three test doubles above to b
 `/api/relays` routes), `server/migrations.js` (versions 7 and 8), `public/actions.html` +
 `public/scripts/actions.js` (the restore panel), `public/config.html` +
 `public/scripts/config.js` (the Relays tab), `dev/mock-targets.js` (where a TLS stub would go).
-Existing suites to extend:
+`server/index.js`'s `parseHttpLogin` and the http branch of `parseInfraConfig` for the login
+scheme. Existing suites to extend:
 `tests/action-config.test.js`, `tests/action-runs.test.js`, `tests/outage-lifecycle.test.js`,
-`tests/config-transfer.test.js`.
+`tests/config-transfer.test.js`, `tests/http-login.test.js`.
 
 ## Manual restore reports only that it started
 
 **What.** `POST /api/actions/targets/:id/restore` answers `202 { started: true }` for ssh/winrm
-and k8s and leaves the sequence running, because waiting for a host to boot — or for a cluster's
-API server to answer — can take minutes. The browser learns the outcome only from the target's
+and k8s — and now for an http target on the login scheme with a non-zero wait, see
+`isSequenceRestore()` — and leaves the sequence running, because waiting for a host to boot, for
+a cluster's API server to answer, or for a service to start accepting logins can take minutes.
+The browser learns the outcome only from the target's
 "Last activity" on the next 20s poll — there is no live progress for the wake / wait / final
 step, and nothing to cancel a wait in flight.
 
