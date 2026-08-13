@@ -1,7 +1,7 @@
 import * as store from './db.js';
 import { decryptSecrets } from './secrets.js';
 import { restoreStep } from './connectors.js';
-import { recordTargetActivity } from './targetHealth.js';
+import { recordTargetActivity, beginRestore, endRestore } from './targetHealth.js';
 
 /**
  * Brings targets back once a Flatline group that had already triggered its
@@ -117,11 +117,18 @@ export async function runAutoRestore(group) {
 async function restoreOne(group, target, config) {
   const secrets = decryptSecrets(target.secret_enc);
 
+  // Registered the same way a manual restore is, so the Actions page shows what
+  // this one is doing too — and so the manual Restore button knows not to start
+  // a second pass over a target that is already coming back.
+  const onPhase = beginRestore(target.id);
+
   let result;
   try {
-    result = await restoreStep(target.kind, config, secrets, undefined, resolveWakeRelay(config));
+    result = await restoreStep(target.kind, config, secrets, undefined, resolveWakeRelay(config), onPhase);
   } catch (err) {
     result = { ok: false, message: err.message };
+  } finally {
+    endRestore(target.id);
   }
 
   recordTargetActivity(target.id, result, 'restore');

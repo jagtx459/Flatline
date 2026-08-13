@@ -248,6 +248,14 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
 .pill.unknown { color: var(--text-muted); }
 .pill.disabled .dot { background: var(--baseline); }
 .pill.disabled { color: var(--text-muted); }
+/* In progress — a restore holding while a host boots. Pulsed, because unlike
+   the states above this one is expected to change on its own. */
+.pill.working .dot { background: var(--status-warning); animation: pill-pulse 1.6s ease-in-out infinite; }
+.pill.working { color: var(--text-secondary); }
+@keyframes pill-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .pill.working .dot { animation: none; }
+}
 
 /* ---- endpoint card ---- */
 .endpoint-card .head {
@@ -474,6 +482,21 @@ table.endpoints tr:last-child td { border-bottom: none; }
 table.endpoints .mono { font-variant-numeric: tabular-nums; }
 table.endpoints .target-cell { color: var(--text-secondary); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Last activity while a restore is running. The phase wraps under the pill
+   rather than being cut off — it is the only sign anything is happening. */
+.restoring-cell { overflow: hidden; }
+/* The pill and the time wrap as units — the column is narrow, but "3m 46s"
+   must never be broken in half, nor spill over the buttons beside it. */
+.restoring-cell .elapsed { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.restoring-cell .time { white-space: nowrap; font-weight: 650; font-size: 12px; }
+.restoring-cell .phase {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
 
 /* Action targets table: fixed column widths so 8 columns of dense content
    never force the table wider than the card (no horizontal scrollbar). */

@@ -79,6 +79,10 @@ export function runActionTarget(id) {
 export function restoreActionTarget(id) {
   return request(`/api/actions/targets/${id}/restore`, { method: 'POST' });
 }
+/** Which part of its restore sequence a target is on, while one is running. */
+export function getRestoreStatus(id) {
+  return request(`/api/actions/targets/${id}/restore`);
+}
 
 // action groups
 export function listActionGroups() {
