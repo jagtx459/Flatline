@@ -2,7 +2,7 @@
 
 Every action target can carry a **Restore** procedure: what Flatline does to
 bring that target back after its trigger action ran. It is configured in the
-collapsible *Restore* panel at the bottom of each kind's section on the Actions
+collapsible *Restore* panel at the bottom of each target type's section on the Actions
 page, and stored in the same config blob as the rest of the target.
 
 There is **no snapshot of prior state anywhere**. A restore is only as good as
@@ -29,7 +29,7 @@ watcher has every other group to keep evaluating.
 A target takes part in auto-restore only when all of these hold
 ([autoRestore.js:60](../server/autoRestore.js#L60)):
 
-- its kind is `ssh`, `winrm`, `k8s` or `http` (all four, currently),
+- its type is `ssh`, `winrm`, `k8s` or `http` (all four, currently),
 - the target is **enabled**,
 - `auto_restore` is ticked on the target,
 - it is a step in an **enabled** action group assigned to the recovered Flatline group.
@@ -211,8 +211,8 @@ step does:
 - the target's **Last activity**, with trigger `restore`;
 - an event, `action_step_ok` or `action_step_failed`, which notification channels
   subscribe to as **Action step OK** / **Action step FAILED**. The message reads
-  `Auto-restore after "<group>" recovered -> <target> (<kind>): …` or
-  `Manual restore: <target> (<kind>): …`.
+  `Auto-restore after "<group>" recovered -> <target> (<type>): …` or
+  `Manual restore: <target> (<type>): …`.
 
 The message accumulates one clause per part of the sequence, so a failure says
 how far it got. For example, `sent Wake-on-LAN for AA:…:FF via 10.1.20.255; SSH did not
