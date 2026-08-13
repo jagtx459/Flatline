@@ -84,8 +84,7 @@ docker pull ghcr.io/jagtx459/flatline:latest
 # or Docker Hub
 docker pull jagtx459/flatline:latest
 
-docker run -d --name flatline -p 3131:3131 -v flatline-data:/data \
-  --sysctl net.ipv4.ping_group_range="0 2147483647" \
+docker run -d --name flatline -p 3131:3131 -v flatline-data:/data \  
   ghcr.io/jagtx459/flatline:latest
 ```
 
@@ -121,7 +120,7 @@ npm run dev:tests  # demo with planned looping events
 
 ## Additional run dev flags
 ```sh
-npm run dev -- --reset  # reset dev database to factory default
+npm run dev -- --reset  # reset dev database to factory default (cannot use with --reseed or --test flags)
 npm run dev -- --reseed # seeds dev database with mock endpoints, targets, and groups
 npm run dev -- --tests  # same as npm run dev:tests
 ```
