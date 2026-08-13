@@ -3,6 +3,7 @@
 | Command | What it is |
 | --- | --- |
 | `npm run tests` | The checker. Asserts specific outcomes against the app and the run engine, and fails on error. Touches nothing in the `data` directory. Every run of `tests` uses its own throwaway database. |
+| `npm run tests:k8s` | The same, plus the Kubernetes cases against a real throwaway cluster in Docker. Opt-in: it costs a minute or two and needs Docker running. |
 | `npm run dev` | A live instance on demo data, everything healthy, for clicking around. |
 | `npm run dev:tests` | The same instance, with the scripted outage driving it on a loop so groups arm, fire, and recover while you watch. |
 
@@ -11,12 +12,17 @@ working in the UI.
 
 ### Passing flags
 
-`dev/start.js` takes `--tests` and `--reseed` (wipe and re-seed the demo data).
-The simplest way to combine them is to skip npm and call the script:
+`dev/start.js` takes `--tests`, `--reseed` (wipe and re-seed the demo data), and
+`--reset` (wipe it to a factory state and seed nothing). The simplest way to
+combine them is to skip npm and call the script:
 
 ```sh
 node dev/start.js --tests --reseed
 ```
+
+`--reset` is the opposite of seeding, so it combines with neither of the others
+— passing it alongside `--reseed` or `--tests` is refused before anything is
+touched.
 
 ## npm run tests
 
@@ -69,9 +75,68 @@ The rest cover what each page configures:
 | `config-security.test.js` | Config | Key rotation and its crash recovery, the optional login and its rate limit, the Host allowlist |
 | `config-transfer.test.js` | Config | Export, import, reset, and backup restore |
 | `notify.test.js` | Notifications | Channel config validation |
+| `http-login.test.js` | Actions | The HTTP target's **login** auth scheme: reading the token from a body path / response header / cookie, the session cookie (jarred or built from the body), credential escaping, the safe Test, the restore poll, redirect following, and the per-target TLS policy |
+| `target-config.test.js` | Actions | What `server/targetConfig.js` will accept: the restore sequence (MAC normalisation, relay rules, the wait clamp, each restore action's requirements), the login scheme's validation, the k8s and http branches, and the relay CIDR / wake command |
+| `restore-sequence.test.js` | Actions | The ssh/winrm restore end to end against a real SSH server: wake → wait → final step order, a host that answers only on a later poll, the elapsed budget in the failure, the restore step authenticating from its own credentials rather than the host login, and waking through a relay |
+| `wake-on-lan.test.js` | Actions | The magic packet's bytes, and the fan-out over every non-internal IPv4 interface |
+| `auto-restore.test.js` | Actions | Who comes back after a group recovers, and in what order: the reverse walk, who takes part, a target reused across stages restoring once, and the guard against a flapping group starting a second pass |
+| `k8s-sequences.test.js` | Actions | The drain and its restore against a TLS API server that applies what it is sent: cordon, eviction re-issue, the deadline, step order on the way back, and the rollout restart |
+| `k8s-cluster.test.js` | Actions | The same, against a **real** cluster — opt-in, see below |
+| `migrations.test.js` | — | What an upgrade does to existing data (migration 7's restore sequence, migration 8's relays table) |
 
 The endpoints file takes ~15s: the poller's floor is one check every 5s, so
 watching a threshold actually trip cannot be hurried.
+
+The mocks these run against live in `dev/`: `mock-targets.js` (HTTP),
+`mock-ssh.js` (an in-process SSH server that records the commands it was asked
+to run), and `mock-k8s.js` (a TLS API server holding real cluster state).
+
+### The real-cluster cases
+
+```sh
+npm run tests:k8s          # or: npm run tests -- --k8s
+```
+
+`tests/k8s-cluster.test.js` stands up a single-node k3s cluster as a plain
+Docker container, runs the drain and its restore against it, and tears it down.
+Docker is the only thing that has to be installed — no k3d, kind or kubectl on
+the host.
+
+### Which Kubernetes version
+
+One line in [`dev/k3s-cluster.js`](../dev/k3s-cluster.js) decides it, and the
+same one is used by `npm run dev`:
+
+```js
+export const K3S_TAG = 'v1.35.7-k3s1';
+```
+
+Change it to any tag from [rancher/k3s on Docker
+Hub](https://hub.docker.com/r/rancher/k3s/tags) to check the drain against a
+different Kubernetes version — nothing else here is tied to one. The image is
+pulled on first use and cached, so switching costs one download.
+
+Pinning is what makes a run reproducible, but the pin is worth revisiting every
+so often: left alone it turns into "the drain works on a Kubernetes nobody runs
+any more". The `-k3sN` suffix is k3s's own build number for that Kubernetes
+release, not part of the Kubernetes version.
+
+It is opt-in because it costs a minute or two and depends on the developer's
+machine, so it is never part of the default run or of CI. Without the flag it
+reports as skipped; with the flag and no Docker it skips with the reason.
+
+It exists for the things `mock-k8s.js` cannot fake: an eviction completing only
+once the container has shut down, a PodDisruptionBudget refusing one with a 429,
+DaemonSet pods being recreated the moment they go, replacement pods piling up
+unscheduled behind a cordon, and a `restartedAt` stamp genuinely rolling a
+Deployment.
+
+One case is worth knowing about because it looks like a bug and isn't: on a
+**single-node** cluster a budget demanding an available pod can never be
+satisfied, since the replacement cannot be scheduled while the node is cordoned.
+Kubernetes refuses every eviction, and `kubectl drain` hangs on it too. The suite
+covers that as its own case — the drain is expected to give up at its deadline
+and name the pod it was waiting on.
 
 ## npm run dev
 
@@ -80,6 +145,7 @@ npm run dev                         # healthy instance to click around in
 npm run dev:tests                   # ...plus the scripted outage on a loop
 node dev/start.js --reseed          # either form, on fresh demo data
 node dev/start.js --tests --reseed
+node dev/start.js --reset           # empty it instead: no demo data, no cluster
 ```
 
 This starts mock targets on `127.0.0.1:3198`, seeds demo data (only when the
@@ -90,9 +156,39 @@ directory is never touched.
 Without `--tests` every endpoint reports healthy and stays that way, so nothing
 arms underneath you while you're editing a form or trying the Run now button.
 
+### The real Kubernetes target
+
+Whenever the dev instance seeds — `--reseed`, or the first run against an empty
+database — it checks whether Docker is running. If it is, it brings up a k3s
+cluster (`flatline-dev-k3s`, API on `127.0.0.1:16444`) with a two-replica
+Deployment and a DaemonSet on it, and seeds a **k3s cluster (real, in Docker)**
+action target against it. Run really cordons and drains that cluster; Restore
+really uncordons it and rolls the Deployment.
+
+It is a different container and port from the one the tests use, so
+`npm run tests:k8s` can never destroy the cluster your dev instance is pointed
+at, or the other way round. It is kept between restarts — a second `--reseed`
+reuses it in seconds rather than rebuilding it — and `--reset` removes it.
+
+Without Docker none of this happens: the target is simply not seeded, the reason
+is printed, and everything else is exactly as it was. The target is deliberately
+not part of any action group, so the outage scenario never drains a cluster
+behind your back.
+
 The mock target routes: `/up` (200), `/down` (500), `/slow?ms=N` (200 after N
 ms), `/hang` (never answers, for watching a step hit its limit), and
 `/scenario` (follows the outage cycle below).
+
+For the HTTP target's **login** auth scheme there is a second set, standing in for
+an API whose writes are behind a CSRF token:
+
+| Route | What it does |
+| --- | --- |
+| `/login` | Checks credentials (`flatline` / `s3cr3t`, exported as `MOCK_LOGIN`) taken from a JSON body, a form body or Basic auth. Hands the token back three ways at once — `data.csrf_token` in the body, an `x-csrf-token` header, and a `csrf_token` cookie — so every extraction mode has something real to read. Also returns the session as both `data.ticket` and a `session` cookie, so the "build the cookie yourself" case has a body field to build from. |
+| `/login-after?ms=N` | 503 until N ms after startup, then behaves like `/login` — a service still coming up, for the restore poll to wait on. |
+| `/login-echo` | Accepts anything and echoes the credentials it parsed as `seen`, so a test can prove a password containing quotes or ampersands survived the body template. |
+| `/protected` | 200 only for a request carrying both the token header and a matching session cookie; the 401 body says which half was missing. |
+| `/needs-auth?header=H&value=V` | 200 only when header `H` is exactly `V`, so a test can prove *which* credential a request carried. |
 
 ### The outage cycle (`--tests` only)
 
@@ -117,6 +213,8 @@ the seeded 10s interval, thresholds of 2, and 1 minute grace.
 | UPS management (HTTP `/scenario`) | **follows the outage cycle** under `--tests`; healthy without it |
 | Lab API (HTTP `/scenario`) | **follows the outage cycle** under `--tests`; healthy without it |
 | NAS web UI (HTTP `/up`) | stays up |
+| Action target "Hypervisor API (mock login)" | An HTTP target on the **login** auth scheme, pointed at `/login` + `/protected`. Test connection logs in only; Run does the login then the real request; Restore waits on the login first, so the 202-and-poll path is visible with nothing to set up. Auto-restore is on. |
+| Action target "k3s cluster (real, in Docker)" | Only when Docker is running. A **real** Kubernetes target on the dev k3s cluster: Run cordons and drains it, Restore uncordons and rolls the Deployment back out. In no action group — you run it by hand. |
 | Flatline group "Power loss" | ALL mode, 1 min grace. Both members follow the cycle, so it arms only during the outage |
 | Flatline group "Lab services" | ANY mode, 1 min grace. The always-up NAS never trips it; Lab API does |
 | Action group "Graceful shutdown" | 3 stages, first one ~6s, long enough to pause and cancel. 15s and 10s gaps between stages; stage 2 is split by a 20s wait, so the cluster is told only after the Windows host has had time to go down |
@@ -198,6 +296,11 @@ own waits allow — that is a regression in `server/actionRuns.js`.
       The new order survives save + reload, and changes what actually runs when.
 - [ ] The group table's Stages column reads `1. a + b, wait 20s, c  →(15s)→  2. d`
       — `+` runs together, `,` follows a wait, `→` separates stages.
+- [ ] Restore an ssh target pointed at a host that is off: Last activity turns
+      into a pulsing `restoring` pill with the elapsed time and the phase
+      underneath, the phase changes as the sequence moves on, and the button
+      reads "Restoring…" and is disabled. When it finishes the cell goes back to
+      a timestamped `(restore)` line and the button comes back.
 
 **Notifications**
 

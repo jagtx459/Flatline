@@ -79,6 +79,10 @@ export function runActionTarget(id) {
 export function restoreActionTarget(id) {
   return request(`/api/actions/targets/${id}/restore`, { method: 'POST' });
 }
+/** Which part of its restore sequence a target is on, while one is running. */
+export function getRestoreStatus(id) {
+  return request(`/api/actions/targets/${id}/restore`);
+}
 
 // action groups
 export function listActionGroups() {
@@ -208,4 +212,21 @@ export function deleteNotificationChannel(id) {
 }
 export function testNotificationChannel(input) {
   return request('/api/notifications/test', { method: 'POST', body: JSON.stringify(input) });
+}
+
+// wake-on-lan relays
+export function listRelays() {
+  return request('/api/relays');
+}
+export function createRelay(input) {
+  return request('/api/relays', { method: 'POST', body: JSON.stringify(input) });
+}
+export function updateRelay(id, input) {
+  return request(`/api/relays/${id}`, { method: 'PUT', body: JSON.stringify(input) });
+}
+export function deleteRelay(id) {
+  return request(`/api/relays/${id}`, { method: 'DELETE' });
+}
+export function testRelay(input) {
+  return request('/api/relays/test', { method: 'POST', body: JSON.stringify(input) });
 }

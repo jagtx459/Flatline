@@ -1,4 +1,6 @@
 import * as store from '../server/db.js';
+import { encryptSecrets } from '../server/secrets.js';
+import { MOCK_LOGIN } from './mock-targets.js';
 
 /**
  * Fills a dev database with demo data that reaches the mock targets, so every
@@ -6,10 +8,15 @@ import * as store from '../server/db.js';
  * group that actually arms, and action groups whose runs take long enough to
  * pause and cancel.
  *
+ * `kubeconfig` is the one thing here that isn't a mock: when the dev instance
+ * has a k3s cluster to hand (see dev/start.js), a Kubernetes target is seeded
+ * against it, so Run really cordons and drains a cluster and Restore really
+ * brings it back. Left out, the seed is exactly what it always was.
+ *
  * Import this only after FLATLINE_DATA_DIR is set — db.js opens its file at
  * import time. See dev/start.js.
  */
-export function seedDemoData(mockPort) {
+export function seedDemoData(mockPort, { kubeconfig = null } = {}) {
   const mock = (route) => `http://127.0.0.1:${mockPort}${route}`;
   store.resetAll();
 
@@ -44,13 +51,49 @@ export function seedDemoData(mockPort) {
     secret_enc: null, enabled
   });
 
+  // An API behind a login that mints a CSRF token — the mock's /login and
+  // /protected routes. Its restore waits on the login rather than the undo
+  // request, so the wait is visible on screen with nothing else to set up.
+  const loginTarget = store.createActionTarget({
+    name: 'Hypervisor API (mock login)', kind: 'http',
+    config: JSON.stringify({
+      url: mock('/protected'), method: 'POST', auth_scheme: 'login',
+      login_url: mock('/login'), login_method: 'POST', login_auth: 'body', login_content_type: 'json',
+      login_body: '{"username":"{username}","password":"{password}"}', login_username: MOCK_LOGIN.username,
+      token_source: 'json', token_json_path: 'data.csrf_token', token_header: 'X-CSRF-Token',
+      session_cookie_name: 'session', session_cookie_json_path: 'data.ticket', send_cookies: 1,
+      insecure_tls: 0, auto_restore: 1, restore_wait_seconds: 60,
+      restore_url: mock('/protected'), restore_method: 'POST'
+    }),
+    secret_enc: encryptSecrets({ login_password: MOCK_LOGIN.password }),
+    enabled: 1
+  });
+
   const targets = {
     k8s: httpTarget('k8s cluster (mock)', '/slow?ms=6000'),
     nas: httpTarget('NAS (mock)', '/slow?ms=3000'),
     windows: httpTarget('Windows host (mock)', '/up'),
     flaky: httpTarget('Flaky service (mock)', '/down'),
-    paused: httpTarget('Retired host (mock)', '/up', 0)
+    paused: httpTarget('Retired host (mock)', '/up', 0),
+    login: loginTarget
   };
+
+  // The real one, when there is a cluster to point it at. Deliberately not put
+  // in an action group: draining a cluster on every loop of the outage scenario
+  // would be a surprise. It sits on the Actions page for Run and Restore, which
+  // is where you would exercise it by hand.
+  if (kubeconfig) {
+    targets.k3s = store.createActionTarget({
+      name: 'k3s cluster (real, in Docker)', kind: 'k8s',
+      config: JSON.stringify({
+        auth_method: 'kubeconfig', action: 'drain',
+        auto_restore: 1, restore_wait_seconds: 60,
+        restore_restart_deployments: 1
+      }),
+      secret_enc: encryptSecrets({ kubeconfig }),
+      enabled: 1
+    });
+  }
 
   const actionGroups = {
     // Slow first stage on purpose: long enough to watch, pause, and cancel.

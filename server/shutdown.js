@@ -1,11 +1,14 @@
 import * as store from './db.js';
 import { startActionGroupRun } from './actionRuns.js';
+import { runAutoRestore } from './autoRestore.js';
 
 /**
  * Watches each enabled Flatline group. A group "fails" when its endpoints are
  * down per the group's mode ('all' = every endpoint down, 'any' = at least
  * one). A failed group arms its own countdown; if it stays failed past the
- * group's grace period, its assigned action groups trigger.
+ * group's grace period, its assigned action groups trigger. A group that
+ * recovers after triggering hands off to autoRestore.js to bring back the
+ * targets that asked for it.
  *
  * Executing those action groups is actionRuns.js's job — this file only
  * decides when they start.
@@ -81,6 +84,14 @@ function evaluate() {
           message: `Group "${g.name}" recovered ${wasTriggered ? 'after actions triggered' : 'before grace period elapsed'}`
         });
         console.log(`[watcher] "${g.name}" disarmed — group recovered`);
+
+        // Only worth undoing if the actions actually ran. Deliberately not
+        // awaited: a restore waits minutes for hosts to boot, and the watcher
+        // has every other group to keep evaluating meanwhile.
+        if (wasTriggered) {
+          runAutoRestore(g).catch((err) =>
+            console.error(`[restore] "${g.name}" auto-restore failed unexpectedly:`, err));
+        }
       }
       continue;
     }

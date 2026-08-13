@@ -37,6 +37,14 @@
       </div>
     </header>
 
+    <div class="tabs" role="tablist" id="config-tabs">
+      <button type="button" role="tab" data-tab="general" aria-selected="true">General</button>
+      <button type="button" role="tab" data-tab="notifications" aria-selected="false">Notifications</button>
+      <button type="button" role="tab" data-tab="relays" aria-selected="false">WoL Relays</button>
+    </div>
+
+    <div data-panel="notifications" hidden>
+
     <div class="card">
       <h2>Notification channels</h2>
       <div id="channel-table"></div>
@@ -182,7 +190,8 @@
         </div>
         <p class="hint-row">Placeholders: <code>{event}</code> label, <code>{kind}</code> raw event key,
           <code>{endpoint}</code> endpoint name, <code>{message}</code> details, <code>{time}</code>,
-          <code>{state}</code>. Leave blank for the defaults.</p>
+          <code>{state}</code>, <code>{url}</code> a link back to this Flatline (set the
+          <a href="#general" id="baseurl-jump">site URL</a> under General). Leave blank for the defaults.</p>
 
         <div style="margin-top:12px">
           <label class="check">
@@ -203,6 +212,10 @@
       </form>
       </div>
     </div>
+
+    </div><!-- /notifications panel -->
+
+    <div data-panel="general">
 
     <div class="card">
       <h2>General</h2>
@@ -256,6 +269,8 @@
 
     <div class="card">
       <h2>Site access</h2>
+
+      <h3 style="margin-top:4px">Password</h3>
       <p class="note" id="auth-status">Loading…</p>
 
       <form id="password-form" method="post" style="margin-top:12px">
@@ -274,10 +289,33 @@
         </div>
       </form>
 
-      <form id="hosts-form" method="post" style="margin-top:16px">
+      <h3 style="margin-top:20px">Site URL</h3>
+      <p class="hint-row">The address this Flatline is reached at. Notifications use it to include a
+        <code>{url}</code> link back to the dashboard, so an alert read on your phone can be clicked
+        through. Leave it blank and notifications carry no link — Flatline cannot guess an address that
+        works from wherever the alert is read.</p>
+      <p class="note" id="baseurl-status">Loading…</p>
+      <form id="baseurl-form" method="post" style="margin-top:12px">
+        <div class="grid">
+          <label class="field" style="grid-column: span 2">
+            <span class="cap">Base URL</span>
+            <input type="text" name="base_url" maxlength="2000" autocomplete="off" spellcheck="false"
+              placeholder="http://flatline.lan:3131">
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="baseurl-save">Save site URL</button>
+          <span class="dirty-note" id="baseurl-dirty"></span>
+          <span class="note" id="baseurl-note"></span>
+          <span class="error" id="baseurl-error"></span>
+        </div>
+      </form>
+
+      <h3 style="margin-top:20px">Allowed hostnames</h3>
+      <form id="hosts-form" method="post" style="margin-top:12px">
         <div class="grid">
           <label class="field" style="grid-column: span 3">
-            <span class="cap">Allowed hostnames (comma-separated, IPs and localhost will always work)</span>
+            <span class="cap">Comma-separated — IPs and localhost will always work</span>
             <input type="text" name="allowed_hosts" maxlength="2000" autocomplete="off" spellcheck="false"
               placeholder="flatline.lan, monitor.home.lan">
           </label>
@@ -321,6 +359,174 @@
       <p class="hint-row">This will reset <strong>all</strong> endpoints, groups, actions,
         channels, history, removes the site password, and clears settings. Only the encryption key is kept.</p>
     </div>
+
+    </div><!-- /general panel -->
+
+    <div data-panel="relays" hidden>
+
+    <div class="card">
+      <h2>Wake-on-LAN relays</h2>
+      <div id="relay-table"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header" id="relay-form-header">
+        <h2 id="relay-form-title">Add relay</h2>
+        <span class="chevron">▸</span>
+      </div>
+      <div class="card-body" id="relay-form-body">
+      <p class="hint-row">A magic packet is a broadcast, and <strong>broadcasts do not cross routers</strong>.
+        Flatline can only wake a machine on a network it is itself attached to. A relay is a machine that
+        already sits on the target's network — a NAS, a hypervisor, a Pi — which Flatline signs in to and asks
+        to send the packet locally. Set one up per network you need to wake into, then pick it on the action
+        target's Restore step. Credentials are encrypted at rest and never sent back to the browser; leave a
+        credential blank when editing to keep the stored value.</p>
+
+      <form id="relay-form" method="post">
+        <div class="grid">
+          <label class="field">
+            <span class="cap">Name</span>
+            <input type="text" name="name" required maxlength="100" placeholder="VLAN 20 NAS">
+          </label>
+          <label class="field">
+            <span class="cap">Connection type</span>
+            <select name="kind" id="r-kind">
+              <option value="ssh">SSH</option>
+              <option value="winrm">WinRM (Windows)</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- SSH relay -->
+        <div class="relay-section" data-relay-kind="ssh">
+          <div class="grid">
+            <label class="field"><span class="cap">Host</span>
+              <input type="text" name="ssh_host" maxlength="2000" placeholder="10.1.20.10"></label>
+            <label class="field"><span class="cap">Port</span>
+              <input type="number" name="ssh_port" min="1" max="65535" value="22"></label>
+            <label class="field"><span class="cap">Authentication</span>
+              <select name="ssh_auth_method">
+                <option value="password">Password</option>
+                <option value="key">Private key</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid" style="margin-top:10px; grid-template-columns: repeat(2, minmax(0, 380px))">
+            <label class="field"><span class="cap">Username</span>
+              <input type="text" name="ssh_username" maxlength="2000" autocomplete="off"></label>
+            <label class="field secret" data-secret="password" data-relay-ssh-auth="password">
+              <span class="cap">Password <span class="secret-state"></span></span>
+              <input type="password" name="ssh_password" autocomplete="new-password"></label>
+            <label class="field secret" data-secret="passphrase" data-relay-ssh-auth="key">
+              <span class="cap">Key passphrase (optional) <span class="secret-state"></span></span>
+              <input type="password" name="ssh_passphrase" autocomplete="new-password"></label>
+          </div>
+          <label class="field secret" data-secret="private_key" data-relay-ssh-auth="key" style="margin-top:10px">
+            <span class="cap">Private key (PEM) <span class="secret-state"></span></span>
+            <textarea name="ssh_private_key" rows="4" spellcheck="false"
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+            <button type="button" class="btn ghost small" id="relay-key-upload-btn"
+              style="align-self:flex-start; margin-top:8px">Upload from file</button>
+            <input type="file" id="relay-key-upload" hidden>
+          </label>
+          <div class="grid" style="margin-top:10px; grid-template-columns: minmax(0, 380px)">
+            <label class="field secret" data-secret="sudo_password">
+              <span class="cap">Sudo password (optional) <span class="secret-state"></span></span>
+              <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
+          </div>
+        </div>
+
+        <!-- WinRM relay -->
+        <div class="relay-section" data-relay-kind="winrm">
+          <p class="hint-row">Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>);
+            the default port is 5985.</p>
+          <div class="grid">
+            <label class="field"><span class="cap">Host</span>
+              <input type="text" name="winrm_host" maxlength="2000" placeholder="10.1.20.11"></label>
+            <label class="field"><span class="cap">WinRM port</span>
+              <input type="number" name="winrm_port" min="1" max="65535" value="5985"></label>
+            <label class="field"><span class="cap">Domain (optional)</span>
+              <input type="text" name="winrm_domain" maxlength="2000"></label>
+          </div>
+          <div class="grid">
+            <label class="field"><span class="cap">Username</span>
+              <input type="text" name="winrm_username" maxlength="2000" autocomplete="off"></label>
+            <label class="field secret" data-secret="password">
+              <span class="cap">Password <span class="secret-state"></span></span>
+              <input type="password" name="winrm_password" autocomplete="new-password"></label>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:12px; grid-template-columns: minmax(0, 380px)">
+          <label class="field">
+            <span class="cap">Network this relay can reach (CIDR)</span>
+            <input type="text" name="network" maxlength="43" placeholder="10.1.20.0/24">
+            <span class="hint-row" style="margin:6px 0 0">The broadcast domain the relay sits in. Flatline
+              checks a target's address against this and warns you if you pick a relay that cannot reach
+              it — a magic packet sent to the wrong network fails silently, because nothing ever answers
+              one.</span>
+          </label>
+        </div>
+
+        <label class="field" style="margin-top:12px">
+          <span class="cap">Wake command — <code>{mac}</code> is replaced with the target's MAC address</span>
+          <input type="text" name="wake_command" maxlength="10000" placeholder="wakeonlan {mac}">
+          <span class="hint-row" style="margin:6px 0 0">One relay serves every machine on its network: the
+            command lives here, the MAC lives on each action target.
+            <button type="button" class="link-btn" id="relay-cmd-reset">reset to the default for this type</button></span>
+        </label>
+
+        <details class="setup-help" style="margin-top:12px">
+          <summary>Installing a wake tool on the relay</summary>
+          <div class="help-body">
+            <p><strong>Windows relays need nothing installed</strong> — the default command uses PowerShell,
+              which is always present. On Linux the tool is not installed by default, and the package name and
+              command differ by distribution:</p>
+            <pre># Debian / Ubuntu
+sudo apt install wakeonlan          ->  wakeonlan {mac}
+
+# Fedora
+sudo dnf install wol                ->  wol {mac}
+
+# RHEL / Rocky / AlmaLinux (wol comes from EPEL)
+sudo dnf install epel-release
+sudo dnf install wol                ->  wol {mac}
+
+# Alpine
+sudo apk add wakeonlan              ->  wakeonlan {mac}</pre>
+            <p>Whichever you install, put the matching command in the field above. If you cannot install
+              anything, this one-liner uses only core Perl, which is present on essentially every Linux
+              (guaranteed on Debian/Ubuntu, where <code>perl-base</code> is an essential package):</p>
+            <pre>perl -e 'use Socket; socket(S,PF_INET,SOCK_DGRAM,getprotobyname("udp"));
+setsockopt(S,SOL_SOCKET,SO_BROADCAST,1);
+$m = "{mac}"; $m =~ s/[:-]//g;
+send(S, "\xff" x 6 . pack("H*",$m) x 16, 0, sockaddr_in(9, inet_aton("255.255.255.255")));'</pre>
+            <p>Test the connection below before saving — that proves the login works. It does not send a
+              packet, since that would actually power a machine on.</p>
+          </div>
+        </details>
+
+        <div style="margin-top:12px">
+          <label class="check">
+            <input type="checkbox" name="enabled" checked>
+            <span>Enabled</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn" id="relay-submit">Add relay</button>
+          <button type="button" class="btn ghost" id="relay-test">Test connection</button>
+          <button class="btn ghost" id="relay-cancel" style="display:none">Cancel</button>
+          <button type="button" class="btn ghost" id="relay-reset">Reset</button>
+          <span class="dirty-note" id="relay-dirty"></span>
+          <span class="note" id="relay-save-note"></span>
+          <span class="note" id="relay-test-result"></span>
+          <span class="error" id="relay-error"></span>
+        </div>
+      </form>
+      </div>
+    </div>
+
+    </div><!-- /relays panel -->
   </div>
 
   <script type="module" src="/scripts/config.js"></script>

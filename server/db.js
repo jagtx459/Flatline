@@ -448,12 +448,45 @@ export function deleteNotificationChannel(id) {
   db.prepare('DELETE FROM notification_channels WHERE id = ?').run(id);
 }
 
+// ---- wake-on-lan relays ----
+// A machine on the target's LAN that Flatline asks to broadcast a magic packet
+// on its behalf. Credentials live in secret_enc exactly as an action target's
+// do, so key rotation picks them up via ENCRYPTED_TABLES below.
+
+export function listRelays() {
+  return db.prepare('SELECT * FROM relays ORDER BY id').all();
+}
+
+export function getRelay(id) {
+  return db.prepare('SELECT * FROM relays WHERE id = ?').get(id);
+}
+
+export function createRelay(r) {
+  const res = db.prepare(`
+    INSERT INTO relays (name, kind, config, secret_enc, wake_command, network, enabled, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(r.name, r.kind, r.config, r.secret_enc, r.wake_command, r.network, r.enabled, Date.now());
+  return getRelay(Number(res.lastInsertRowid));
+}
+
+export function updateRelay(id, r) {
+  db.prepare(`
+    UPDATE relays SET name = ?, kind = ?, config = ?, secret_enc = ?, wake_command = ?, network = ?, enabled = ?
+    WHERE id = ?
+  `).run(r.name, r.kind, r.config, r.secret_enc, r.wake_command, r.network, r.enabled, id);
+  return getRelay(id);
+}
+
+export function deleteRelay(id) {
+  db.prepare('DELETE FROM relays WHERE id = ?').run(id);
+}
+
 // ---- encryption-key rotation support ----
 // Every row in every table that stores an encrypted blob. Key rotation
 // decrypts all of these with the old key and rewrites them with the new one
 // in a single transaction (see the /api/config/key handlers in index.js).
 
-const ENCRYPTED_TABLES = ['action_targets', 'notification_channels'];
+const ENCRYPTED_TABLES = ['action_targets', 'notification_channels', 'relays'];
 
 export function allEncryptedRows() {
   const rows = [];
@@ -512,6 +545,7 @@ const CONFIG_TABLES = {
   endpoints: ['id', 'name', 'type', 'target', 'interval_seconds', 'timeout_ms',
               'down_threshold', 'up_threshold', 'expect_status', 'expect_json', 'enabled', 'created_at'],
   action_targets: ['id', 'name', 'kind', 'config', 'secret_enc', 'enabled', 'created_at'],
+  relays: ['id', 'name', 'kind', 'config', 'secret_enc', 'wake_command', 'network', 'enabled', 'created_at'],
   action_groups: ['id', 'name', 'on_failure', 'enabled', 'created_at'],
   action_group_stages: ['action_group_id', 'stage', 'pass_rule', 'on_failure', 'wait_seconds'],
   action_group_members: ['action_group_id', 'target_id', 'position', 'timeout_seconds', 'stage', 'wait_seconds'],
@@ -523,7 +557,7 @@ const CONFIG_TABLES = {
 
 // Parents before children, so foreign keys resolve as rows go in.
 const INSERT_ORDER = [
-  'endpoints', 'action_targets', 'action_groups', 'action_group_stages', 'action_group_members',
+  'endpoints', 'action_targets', 'relays', 'action_groups', 'action_group_stages', 'action_group_members',
   'flatline_groups', 'flatline_group_endpoints', 'flatline_group_actions', 'notification_channels'
 ];
 

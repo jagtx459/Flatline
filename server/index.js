@@ -17,14 +17,23 @@ import {
   markInterruptedRuns, publicRun
 } from './actionRuns.js';
 import { runCheck } from './checks.js';
+import { intInRange, cleanString } from './inputs.js';
+import {
+  KIND_CONFIG_FIELDS, KIND_SECRET_FIELDS, MAX_SECRET_LEN,
+  RELAY_KINDS, RELAY_SECRET_FIELDS,
+  parseInfraConfig, parseRelayConfig, parseRelayNetwork, parseWakeCommand, isSequenceRestore
+} from './targetConfig.js';
 import { testTarget, runStep, restoreStep } from './connectors.js';
+import { resolveWakeRelay } from './autoRestore.js';
 import {
   startTargetHealthPoller, getTargetHealth, checkTargetNow,
-  getTargetActivity, recordTargetActivity, clearTargetActivity
+  getTargetActivity, recordTargetActivity, clearTargetActivity,
+  getRestoreProgress, beginRestore, endRestore, isRestoring
 } from './targetHealth.js';
 import {
   startNotifier, sendTest, parseChannelConfig, checkChannelSecrets,
-  NOTIFY_CONFIG_FIELDS, NOTIFY_SECRET_FIELDS, getChannelResult, clearChannelResult
+  NOTIFY_CONFIG_FIELDS, NOTIFY_SECRET_FIELDS, getChannelResult, clearChannelResult,
+  baseUrl, baseUrlSource
 } from './notify.js';
 import {
   HttpError, readJsonBody, hostAllowed, applySecurityHeaders,
@@ -91,18 +100,6 @@ function sendJson(res, status, body) {
 
 function sendError(res, status, message) {
   sendJson(res, status, { error: message });
-}
-
-function intInRange(v, min, max, fallback) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(n)));
-}
-
-function cleanString(v, maxLen) {
-  if (typeof v !== 'string') return '';
-  const s = v.trim();
-  return s.length > maxLen ? '' : s;
 }
 
 /** Runs a write and converts UNIQUE-constraint violations into a 400. */
@@ -220,127 +217,6 @@ function parseFlatlineGroupInput(body) {
   };
 }
 
-// Non-secret config fields allowed per target kind. Anything not listed here
-// is dropped, so secret material can never sneak into the plaintext column.
-const KIND_CONFIG_FIELDS = {
-  ssh:  ['host', 'port', 'username', 'auth_method', 'command', 'restore_command'],
-  winrm: ['host', 'port', 'domain', 'username', 'command', 'restore_command'],
-  k8s:  ['api_url', 'auth_method', 'action', 'command_method', 'command_path', 'command_body',
-         'restore_method', 'restore_path', 'restore_body'],
-  http: ['url', 'method', 'auth_scheme', 'header_name', 'username', 'body',
-         'restore_url', 'restore_method', 'restore_body']
-};
-
-const K8S_ACTIONS = ['drain', 'custom'];
-const K8S_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
-
-// Secret fields allowed per kind — stored only in the encrypted blob.
-// ssh's sudo_password is optional: only needed when the command uses
-// `sudo -S` and the host isn't set up with passwordless sudo (preferred).
-const KIND_SECRET_FIELDS = {
-  ssh:  ['password', 'private_key', 'passphrase', 'sudo_password'],
-  winrm: ['password'],
-  k8s:  ['token', 'kubeconfig'],
-  http: ['token', 'password']
-};
-
-const MAX_SECRET_LEN = 262_144; // room for kubeconfigs / private keys
-
-function parseInfraConfig(kind, raw) {
-  const src = typeof raw === 'object' && raw !== null ? raw : {};
-  const cfg = {};
-  for (const field of KIND_CONFIG_FIELDS[kind]) {
-    const v = src[field];
-    if (v === undefined || v === null || v === '') continue;
-    cfg[field] = cleanString(String(v), ['body', 'command', 'command_body', 'restore_body', 'restore_command'].includes(field) ? 10_000 : 2000);
-  }
-
-  switch (kind) {
-    case 'ssh': {
-      if (!cfg.host) return 'host is required';
-      if (!cfg.username) return 'username is required';
-      cfg.port = intInRange(src.port, 1, 65_535, 22);
-      if (cfg.auth_method && !['password', 'key'].includes(cfg.auth_method)) return "auth_method must be 'password' or 'key'";
-      cfg.auth_method ??= 'password';
-      break;
-    }
-    case 'winrm': {
-      if (!cfg.host) return 'host is required';
-      if (!cfg.username) return 'username is required';
-      cfg.port = intInRange(src.port, 1, 65_535, 5985);
-      break;
-    }
-    case 'k8s': {
-      if (cfg.auth_method && !['token', 'kubeconfig'].includes(cfg.auth_method)) return "auth_method must be 'token' or 'kubeconfig'";
-      cfg.auth_method ??= 'token';
-      // With a kubeconfig, the server URL comes from the kubeconfig itself —
-      // api_url is only required for plain bearer-token auth; for kubeconfig
-      // auth it's an optional override (e.g. reaching the cluster via a
-      // different network path than what's baked into the file).
-      if (cfg.api_url) {
-        try {
-          const u = new URL(cfg.api_url);
-          if (u.protocol !== 'https:' && u.protocol !== 'http:') return 'api_url must be http(s)';
-        } catch {
-          return 'api_url must be a valid URL';
-        }
-      } else if (cfg.auth_method === 'token') {
-        return 'api_url is required';
-      }
-      if (cfg.action && !K8S_ACTIONS.includes(cfg.action)) return "action must be 'drain' or 'custom'";
-      cfg.action ??= 'drain';
-      if (cfg.action === 'custom') {
-        if (!cfg.command_path) return 'command path is required for a custom action';
-        if (cfg.command_method && !K8S_METHODS.includes(cfg.command_method)) return `command method must be one of ${K8S_METHODS.join('/')}`;
-        cfg.command_method ??= 'PATCH';
-        if (cfg.restore_method && !K8S_METHODS.includes(cfg.restore_method)) return `restore method must be one of ${K8S_METHODS.join('/')}`;
-        if (cfg.restore_path) cfg.restore_method ??= 'PATCH';
-      }
-      break;
-    }
-    case 'http': {
-      if (!cfg.url) return 'url is required';
-      try {
-        const u = new URL(cfg.url);
-        if (u.protocol !== 'https:' && u.protocol !== 'http:') return 'url must be http(s)';
-      } catch {
-        return 'url must be a valid URL';
-      }
-      if (cfg.method && !['GET', 'POST', 'PUT', 'DELETE'].includes(cfg.method)) return 'method must be GET/POST/PUT/DELETE';
-      cfg.method ??= 'POST';
-      if (cfg.auth_scheme && !['none', 'bearer', 'basic', 'header'].includes(cfg.auth_scheme)) {
-        return "auth_scheme must be 'none', 'bearer', 'basic', or 'header'";
-      }
-      cfg.auth_scheme ??= 'none';
-      if (cfg.auth_scheme === 'header') {
-        if (!cfg.header_name) return 'header_name is required for the custom-header scheme';
-        // RFC 7230 token — anything else could smuggle CR/LF into the request.
-        if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(cfg.header_name)) {
-          return 'header_name contains invalid characters';
-        }
-      }
-      if (cfg.auth_scheme === 'basic') {
-        if (!cfg.username) return 'username is required for basic auth';
-        if (/[\r\n:]/.test(cfg.username)) return 'username contains invalid characters';
-      }
-      if (cfg.restore_url) {
-        try {
-          const u = new URL(cfg.restore_url);
-          if (u.protocol !== 'https:' && u.protocol !== 'http:') return 'restore URL must be http(s)';
-        } catch {
-          return 'restore URL must be a valid URL';
-        }
-        if (cfg.restore_method && !['GET', 'POST', 'PUT', 'DELETE'].includes(cfg.restore_method)) {
-          return 'restore method must be GET/POST/PUT/DELETE';
-        }
-        cfg.restore_method ??= 'POST';
-      }
-      break;
-    }
-  }
-  return cfg;
-}
-
 /**
  * Merges submitted secret fields over the existing stored ones.
  * Per field: non-empty string replaces, null clears, absent/empty keeps —
@@ -392,7 +268,23 @@ function publicTarget(t) {
     enabled: t.enabled,
     created_at: t.created_at,
     health: getTargetHealth(t.id),
-    last_activity: getTargetActivity(t.id)
+    last_activity: getTargetActivity(t.id),
+    restore_progress: getRestoreProgress(t.id)
+  };
+}
+
+/** Strips secret material before a relay leaves the process. */
+function publicRelay(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    kind: r.kind,
+    config: JSON.parse(r.config),
+    wake_command: r.wake_command,
+    network: r.network,
+    secret_fields: secretKeys(r.secret_enc),
+    enabled: r.enabled,
+    created_at: r.created_at
   };
 }
 
@@ -404,11 +296,16 @@ const DASHBOARD_RUNS = 10;
 
 // Settings keys the API may expose — auth_password_hash must never leave the
 // process, even hashed.
-const PUBLIC_SETTINGS = ['grace_minutes', 'retention_days', 'allowed_hosts'];
+const PUBLIC_SETTINGS = ['grace_minutes', 'retention_days', 'allowed_hosts', 'base_url'];
 
 function publicSettings() {
   const all = store.getSettings();
-  return Object.fromEntries(PUBLIC_SETTINGS.filter((k) => k in all).map((k) => [k, all[k]]));
+  const out = Object.fromEntries(PUBLIC_SETTINGS.filter((k) => k in all).map((k) => [k, all[k]]));
+  // The env var wins over the stored value, so report both what applies and
+  // where it came from — the config page shows the field read-only for 'env'.
+  out.base_url_source = baseUrlSource();
+  out.base_url = baseUrl();
+  return out;
 }
 
 /**
@@ -694,24 +591,56 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // POST /api/actions/targets/:id/restore — undoes a prior run, where that's
-  // meaningful (currently k8s only — see connectors.js restoreStep()).
+  // POST /api/actions/targets/:id/restore — brings a target back: the ssh/winrm
+  // or k8s restore sequence, or the configured undo request for http.
+  //
+  // A sequence starts by waiting — for a host to boot, for a cluster's API
+  // server to answer, or for an http target's login to — which can take minutes,
+  // so those are started and left
+  // to run rather than held open: the response says it began, and the outcome
+  // lands in the target's last activity and the event feed, both of which the
+  // actions page is already polling. While it runs, GET on the same path reports
+  // which part of the sequence it is on.
+  if (parts[1] === 'actions' && parts[2] === 'targets' && parts.length === 5 && parts[4] === 'restore' && method === 'GET') {
+    const id = Number(parts[3]);
+    if (!Number.isInteger(id) || !store.getActionTarget(id)) { sendError(res, 404, 'target not found'); return; }
+    sendJson(res, 200, { running: isRestoring(id), progress: getRestoreProgress(id), last_activity: getTargetActivity(id) });
+    return;
+  }
+
   if (parts[1] === 'actions' && parts[2] === 'targets' && parts.length === 5 && parts[4] === 'restore' && method === 'POST') {
     const id = Number(parts[3]);
     const target = Number.isInteger(id) ? store.getActionTarget(id) : undefined;
     if (!target) { sendError(res, 404, 'target not found'); return; }
+    if (isRestoring(id)) { sendError(res, 409, 'a restore is already running for this target'); return; }
 
     let config;
     try { config = JSON.parse(target.config); } catch { config = {}; }
     const secrets = decryptSecrets(target.secret_enc);
-    const result = await restoreStep(target.kind, config, secrets);
-    recordTargetActivity(id, result, 'restore');
 
-    store.recordEvent({
-      ts: Date.now(),
-      kind: result.ok ? 'action_step_ok' : 'action_step_failed',
-      message: `Manual restore: ${target.name} (${target.kind}): ${result.message}`
-    });
+    const record = (result) => {
+      recordTargetActivity(id, result, 'restore');
+      store.recordEvent({
+        ts: Date.now(),
+        kind: result.ok ? 'action_step_ok' : 'action_step_failed',
+        message: `Manual restore: ${target.name} (${target.kind}): ${result.message}`
+      });
+    };
+
+    if (isSequenceRestore(target.kind, config)) {
+      const onPhase = beginRestore(id);
+      void restoreStep(target.kind, config, secrets, undefined, resolveWakeRelay(config), onPhase)
+        .catch((err) => ({ ok: false, message: err.message }))
+        .then((result) => { endRestore(id); record(result); });
+      sendJson(res, 202, {
+        ok: true, started: true,
+        message: `Restore sequence started for ${target.name}. It can take a few minutes — its progress shows on this target's row.`
+      });
+      return;
+    }
+
+    const result = await restoreStep(target.kind, config, secrets);
+    record(result);
     sendJson(res, 200, result);
     return;
   }
@@ -834,6 +763,100 @@ async function handleApi(req, res, url) {
       }
       if (method === 'DELETE') {
         store.deleteActionGroup(id);
+        sendJson(res, 200, { deleted: id });
+        return;
+      }
+    }
+  }
+
+  // POST /api/relays/test — prove a relay's credentials/reachability. The same
+  // safe connectivity check the action targets use; it never runs the wake
+  // command, which would actually power a machine on.
+  if (url.pathname === '/api/relays/test' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const kind = body?.kind;
+    if (!RELAY_KINDS.includes(kind)) { sendError(res, 400, "kind must be 'ssh' or 'winrm'"); return; }
+    const cfg = parseRelayConfig(kind, body.config);
+    if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
+
+    // A saved relay keeps its stored credentials when the form leaves them
+    // blank; an unsaved draft can only use what was submitted.
+    const id = Number(body.id);
+    let secrets;
+    if (Number.isInteger(id)) {
+      const existing = store.getRelay(id);
+      if (!existing) { sendError(res, 404, 'relay not found'); return; }
+      const merged = mergeSecrets(RELAY_SECRET_FIELDS[kind], kind === existing.kind ? existing.secret_enc : null, body.secrets);
+      if (typeof merged === 'string' && !merged.startsWith('v1:')) { sendError(res, 400, merged); return; }
+      secrets = decryptSecrets(merged);
+    } else {
+      secrets = pickSecrets(RELAY_SECRET_FIELDS[kind], body.secrets);
+      if (typeof secrets === 'string') { sendError(res, 400, secrets); return; }
+    }
+
+    sendJson(res, 200, await testTarget(kind, cfg, secrets));
+    return;
+  }
+
+  // /api/relays and /api/relays/:id
+  if (parts[1] === 'relays') {
+    if (method === 'GET' && parts.length === 2) {
+      sendJson(res, 200, store.listRelays().map(publicRelay));
+      return;
+    }
+    if (method === 'POST' && parts.length === 2) {
+      const body = await readJsonBody(req);
+      const name = cleanString(body?.name, 100);
+      if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
+      const kind = body?.kind;
+      if (!RELAY_KINDS.includes(kind)) { sendError(res, 400, "kind must be 'ssh' or 'winrm'"); return; }
+      const cfg = parseRelayConfig(kind, body.config);
+      if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
+      const wake = parseWakeCommand(body?.wake_command);
+      if (wake.error) { sendError(res, 400, wake.error); return; }
+      const net = parseRelayNetwork(body?.network);
+      if (net.error) { sendError(res, 400, net.error); return; }
+      const secretEnc = mergeSecrets(RELAY_SECRET_FIELDS[kind], null, body.secrets);
+      if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
+
+      const created = store.createRelay({
+        name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc, wake_command: wake.command,
+        network: net.network,
+        enabled: body.enabled === undefined || body.enabled ? 1 : 0
+      });
+      sendJson(res, 201, publicRelay(created));
+      return;
+    }
+    if (parts.length === 3) {
+      const id = Number(parts[2]);
+      const existing = Number.isInteger(id) ? store.getRelay(id) : undefined;
+      if (!existing) { sendError(res, 404, 'relay not found'); return; }
+
+      if (method === 'PUT') {
+        const body = await readJsonBody(req);
+        const name = cleanString(body?.name, 100);
+        if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
+        const kind = body?.kind;
+        if (!RELAY_KINDS.includes(kind)) { sendError(res, 400, "kind must be 'ssh' or 'winrm'"); return; }
+        const cfg = parseRelayConfig(kind, body.config);
+        if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
+        const wake = parseWakeCommand(body?.wake_command);
+        if (wake.error) { sendError(res, 400, wake.error); return; }
+        const net = parseRelayNetwork(body?.network);
+        if (net.error) { sendError(res, 400, net.error); return; }
+        // Changing kind invalidates the old secrets (different field set).
+        const baseEnc = kind === existing.kind ? existing.secret_enc : null;
+        const secretEnc = mergeSecrets(RELAY_SECRET_FIELDS[kind], baseEnc, body.secrets);
+        if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
+
+        sendJson(res, 200, publicRelay(store.updateRelay(id, {
+          name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc, wake_command: wake.command, network: net.network,
+          enabled: body.enabled === undefined || body.enabled ? 1 : 0
+        })));
+        return;
+      }
+      if (method === 'DELETE') {
+        store.deleteRelay(id);
         sendJson(res, 200, { deleted: id });
         return;
       }
@@ -1072,6 +1095,24 @@ async function handleApi(req, res, url) {
         const n = Number(body.retention_days);
         if (!Number.isFinite(n) || n < 1 || n > 14) { sendError(res, 400, 'retention_days must be 1-14'); return; }
         store.setSetting('retention_days', Math.round(n));
+      }
+      if (body.base_url !== undefined) {
+        if (baseUrlSource() === 'env') {
+          sendError(res, 400, 'the site URL is set via FLATLINE_BASE_URL — unset the environment variable instead');
+          return;
+        }
+        // Blank is allowed and means "no link in notifications".
+        const raw = cleanString(String(body.base_url), 2000);
+        if (raw) {
+          try {
+            const u = new URL(raw);
+            if (u.protocol !== 'https:' && u.protocol !== 'http:') { sendError(res, 400, 'site URL must be http(s)'); return; }
+          } catch {
+            sendError(res, 400, 'site URL must be a valid URL');
+            return;
+          }
+        }
+        store.setSetting('base_url', raw.replace(/\/+$/, ''));
       }
       if (body.allowed_hosts !== undefined) {
         if (allowedHostsSource() === 'env') {

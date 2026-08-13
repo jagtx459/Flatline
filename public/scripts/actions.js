@@ -1,36 +1,40 @@
 import {
   listActionTargets, createActionTarget, updateActionTarget, deleteActionTarget, testActionTarget, runActionTarget,
-  restoreActionTarget,
+  restoreActionTarget, getRestoreStatus,
   listActionGroups, createActionGroup, updateActionGroup, deleteActionGroup,
-  listGroups, updateGroup
+  listGroups, updateGroup, listRelays
 } from './api.js';
 import { el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth } from './header.js';
+import { hostInNetwork } from './net.js';
 
 initHeaderAuth();
 
 let targets = [];
 let igroups = [];
 let flatlineGroups = [];
+let relays = [];
 
 const KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'Kubernetes', http: 'HTTP(S)' };
 const K8S_ACTION_LABELS = { drain: 'cordon + drain all nodes', custom: 'custom command' };
 
-// Shown in the Restore confirm dialog — what "undo" actually means per kind.
-const RESTORE_HINTS = {
-  ssh: 'This runs the configured restore command over SSH.',
-  winrm: 'This runs the configured restore command over WinRM.',
-  http: 'This sends the configured restore request.',
-  k8s: 'For "cordon + drain" this uncordons every node. For a custom command, it runs the configured restore request.'
-};
-
 // Maps a kind's secret field -> form input name.
 const SECRET_INPUTS = {
-  ssh:  { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase', sudo_password: 'ssh_sudo_password' },
-  winrm: { password: 'winrm_password' },
+  ssh:  { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase', sudo_password: 'ssh_sudo_password',
+          restore_token: 'ssh_restore_token', restore_password: 'ssh_restore_password' },
+  winrm: { password: 'winrm_password', restore_token: 'winrm_restore_token', restore_password: 'winrm_restore_password' },
   k8s:  { token: 'k8s_token', kubeconfig: 'k8s_kubeconfig' },
-  http: { token: 'http_token', password: 'http_password' }
+  http: { token: 'http_token', password: 'http_password', login_password: 'http_login_password' }
 };
+
+/** Kinds whose Restore is the wake -> wait -> final step sequence. */
+const RESTORE_SEQUENCE_KINDS = ['ssh', 'winrm'];
+/** Kinds with a collapsible Restore panel in the form. k8s and http each have
+ *  one too, but their sequences are their own — k8s waits for the API server
+ *  then undoes; http waits for its login (when it has one) then sends the undo. */
+const RESTORE_PANEL_KINDS = [...RESTORE_SEQUENCE_KINDS, 'k8s', 'http'];
+const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
+const DEFAULT_RESTORE_WAIT = 300;
 
 function targetById(id) {
   return targets.find((t) => t.id === id);
@@ -55,6 +59,12 @@ const $k8sAuthMethod = $form.elements.namedItem('k8s_auth_method');
 const $k8sAction = $form.elements.namedItem('k8s_action');
 const targetFormSection = initCollapsible('actions:target-form',
   document.getElementById('target-form-header'), document.getElementById('target-form-body'));
+// The Restore panel is the longest part of the form and most targets never
+// change it after setup, so each kind's folds away on its own.
+for (const kind of RESTORE_PANEL_KINDS) {
+  initCollapsible(`actions:restore-${kind}`,
+    document.getElementById(`${kind}-restore-header`), document.getElementById(`${kind}-restore-body`));
+}
 const targetDirty = initDirtyNote($form, document.getElementById('target-dirty'), $formSaveNote);
 
 let editingTargetId = null;
@@ -74,7 +84,83 @@ function syncKindSections() {
   syncSshAuthFields();
   syncK8sAuthFields();
   syncK8sActionFields();
+  for (const k of RESTORE_SEQUENCE_KINDS) syncRestoreFields(k);
   $formTestResult.textContent = '';
+}
+
+/** The restore sequence's "Once it answers" choice, and — inside its HTTP
+ *  option — the fields that particular auth scheme needs. Also the wake step's
+ *  packet/relay choice. Scoped to one kind-section, because ssh and winrm each
+ *  carry their own copy of the block. */
+function syncRestoreFields(kind) {
+  const section = $form.querySelector(`.kind-section[data-kind="${kind}"]`);
+  const action = field(`${kind}_restore_action`).value;
+  for (const node of section.querySelectorAll('[data-restore-action]')) {
+    node.style.display = node.dataset.restoreAction === action ? '' : 'none';
+  }
+  const scheme = field(`${kind}_restore_auth_scheme`).value;
+  for (const node of section.querySelectorAll('[data-restore-auth]')) {
+    node.style.display = node.dataset.restoreAuth.split(' ').includes(scheme) ? '' : 'none';
+  }
+  const wakeMode = field(`${kind}_wake_mode`).value;
+  for (const node of section.querySelectorAll('[data-wake-mode]')) {
+    node.style.display = node.dataset.wakeMode === wakeMode ? '' : 'none';
+  }
+  renderRelayWarning(kind);
+}
+
+/**
+ * Warns when the chosen relay cannot reach the target's address. A magic packet
+ * sent to the wrong network fails silently — nothing ever answers one — so this
+ * is the only point at which the mistake is visible.
+ */
+function renderRelayWarning(kind) {
+  const note = $form.querySelector(`[data-relay-note="${kind}"]`);
+  clear(note);
+  note.className = 'hint-row';
+
+  const relayId = field(`${kind}_wake_relay_id`).value;
+  if (field(`${kind}_wake_mode`).value !== 'relay' || !relayId) return;
+
+  const relay = relays.find((r) => String(r.id) === relayId);
+  if (!relay) return;
+
+  const host = field(`${kind}_host`).value.trim();
+  const inside = hostInNetwork(host, relay.network);
+  if (inside === true) {
+    note.textContent = `✓ ${host} is inside this relay's network (${relay.network}).`;
+  } else if (inside === false) {
+    note.className = 'error';
+    note.textContent = `⚠ ${host} is not inside this relay's network (${relay.network}) — `
+      + 'a magic packet sent from there will not reach it. Pick a relay on the target\'s own network.';
+  } else if (host) {
+    note.textContent = `This relay reaches ${relay.network}. "${host}" is a name, not an address, `
+      + 'so Flatline cannot check it here — make sure it resolves inside that network.';
+  }
+}
+
+/** Fills both relay pickers. Kept as its own pass so the relay list can refresh
+ *  without disturbing an edit in progress — the current selection is restored
+ *  when the relay still exists, and a relay that has since been deleted stays
+ *  visible as a marked option rather than silently becoming "the first one". */
+function renderRelayOptions() {
+  for (const select of $form.querySelectorAll('[data-relay-picker]')) {
+    const chosen = select.value;
+    clear(select);
+    if (relays.length === 0) {
+      select.append(el('option', { value: '' }, 'no relays configured yet'));
+    } else {
+      select.append(el('option', { value: '' }, 'select a relay…'));
+      for (const r of relays) {
+        select.append(el('option', { value: String(r.id) },
+          `${r.name} (${KIND_LABELS[r.kind] ?? r.kind})${r.enabled ? '' : ' — disabled'}`));
+      }
+    }
+    if (chosen && !relays.some((r) => String(r.id) === chosen)) {
+      select.append(el('option', { value: chosen }, `deleted relay ${chosen}`));
+    }
+    select.value = chosen;
+  }
 }
 
 function syncHttpAuthFields() {
@@ -82,6 +168,16 @@ function syncHttpAuthFields() {
   for (const node of $form.querySelectorAll('[data-http]')) {
     const schemes = node.dataset.http.split(' ');
     node.style.display = schemes.includes(scheme) ? '' : 'none';
+  }
+  syncHttpTokenFields();
+}
+
+/** Inside the login block, the one field that names where the token is — a path
+ *  into the body, a response header, or a cookie. */
+function syncHttpTokenFields() {
+  const source = field('http_token_source').value;
+  for (const node of $form.querySelectorAll('[data-token-source]')) {
+    node.style.display = node.dataset.tokenSource === source ? '' : 'none';
   }
 }
 
@@ -108,9 +204,20 @@ function syncK8sActionFields() {
 
 $kind.addEventListener('change', syncKindSections);
 $httpScheme.addEventListener('change', syncHttpAuthFields);
+$form.querySelector('[data-token-source-select]').addEventListener('change', syncHttpTokenFields);
 $sshAuthMethod.addEventListener('change', syncSshAuthFields);
 $k8sAuthMethod.addEventListener('change', syncK8sAuthFields);
 $k8sAction.addEventListener('change', syncK8sActionFields);
+for (const sel of $form.querySelectorAll('[data-restore-action-select], [data-restore-auth-select], [data-wake-mode-select]')) {
+  const kind = sel.dataset.restoreActionSelect ?? sel.dataset.restoreAuthSelect ?? sel.dataset.wakeModeSelect;
+  sel.addEventListener('change', () => syncRestoreFields(kind));
+}
+// The relay-reach warning depends on both the chosen relay and the target's
+// own address, so it has to follow the host field too.
+for (const kind of RESTORE_SEQUENCE_KINDS) {
+  field(`${kind}_wake_relay_id`).addEventListener('change', () => renderRelayWarning(kind));
+  field(`${kind}_host`).addEventListener('input', () => renderRelayWarning(kind));
+}
 
 // The file inputs live inside $form, so their change events bubble up and mark
 // the form dirty via initDirtyNote — no explicit markDirty needed here.
@@ -153,6 +260,44 @@ function renderSecretStates(kind, storedFields) {
   }
 }
 
+/** The restore-sequence fields, identical for ssh and winrm — only the input
+ *  name prefix differs. */
+function collectRestore(kind) {
+  return {
+    auto_restore: field(`${kind}_auto_restore`).checked,
+    wol_mac: field(`${kind}_wol_mac`).value,
+    wake_mode: field(`${kind}_wake_mode`).value,
+    wake_relay_id: Number(field(`${kind}_wake_relay_id`).value) || null,
+    wol_broadcast: field(`${kind}_wol_broadcast`).value,
+    restore_wait_seconds: Number(field(`${kind}_restore_wait_seconds`).value) || 0,
+    restore_action: field(`${kind}_restore_action`).value,
+    restore_command: field(`${kind}_restore_command`).value,
+    restore_url: field(`${kind}_restore_url`).value,
+    restore_method: field(`${kind}_restore_method`).value,
+    restore_body: field(`${kind}_restore_body`).value,
+    restore_auth_scheme: field(`${kind}_restore_auth_scheme`).value,
+    restore_header_name: field(`${kind}_restore_header_name`).value,
+    restore_username: field(`${kind}_restore_username`).value
+  };
+}
+
+function fillRestore(kind, c) {
+  field(`${kind}_auto_restore`).checked = !!c.auto_restore;
+  field(`${kind}_wol_mac`).value = c.wol_mac ?? '';
+  field(`${kind}_wake_mode`).value = c.wake_mode ?? 'packet';
+  field(`${kind}_wake_relay_id`).value = c.wake_relay_id != null ? String(c.wake_relay_id) : '';
+  field(`${kind}_wol_broadcast`).value = c.wol_broadcast ?? '';
+  field(`${kind}_restore_wait_seconds`).value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
+  field(`${kind}_restore_action`).value = c.restore_action ?? 'none';
+  field(`${kind}_restore_command`).value = c.restore_command ?? '';
+  field(`${kind}_restore_url`).value = c.restore_url ?? '';
+  field(`${kind}_restore_method`).value = c.restore_method ?? 'POST';
+  field(`${kind}_restore_body`).value = c.restore_body ?? '';
+  field(`${kind}_restore_auth_scheme`).value = c.restore_auth_scheme ?? 'none';
+  field(`${kind}_restore_header_name`).value = c.restore_header_name ?? '';
+  field(`${kind}_restore_username`).value = c.restore_username ?? '';
+}
+
 function collectConfig(kind) {
   switch (kind) {
     case 'ssh': return {
@@ -161,7 +306,7 @@ function collectConfig(kind) {
       username: field('ssh_username').value,
       auth_method: field('ssh_auth_method').value,
       command: field('ssh_command').value,
-      restore_command: field('ssh_restore_command').value
+      ...collectRestore('ssh')
     };
     case 'winrm': return {
       host: field('winrm_host').value,
@@ -169,7 +314,7 @@ function collectConfig(kind) {
       domain: field('winrm_domain').value,
       username: field('winrm_username').value,
       command: field('winrm_command').value,
-      restore_command: field('winrm_restore_command').value
+      ...collectRestore('winrm')
     };
     case 'k8s': return {
       api_url: field('k8s_api_url').value,
@@ -178,6 +323,10 @@ function collectConfig(kind) {
       command_method: field('k8s_command_method').value,
       command_path: field('k8s_command_path').value,
       command_body: field('k8s_command_body').value,
+      auto_restore: field('k8s_auto_restore').checked,
+      restore_wait_seconds: Number(field('k8s_restore_wait_seconds').value) || 0,
+      restore_uncordon: field('k8s_restore_uncordon').checked,
+      restore_restart_deployments: field('k8s_restore_restart_deployments').checked,
       restore_method: field('k8s_restore_method').value,
       restore_path: field('k8s_restore_path').value,
       restore_body: field('k8s_restore_body').value
@@ -189,6 +338,24 @@ function collectConfig(kind) {
       header_name: field('http_header_name').value,
       username: field('http_username').value,
       body: field('http_body').value,
+      login_url: field('http_login_url').value,
+      login_method: field('http_login_method').value,
+      login_auth: field('http_login_auth').value,
+      login_content_type: field('http_login_content_type').value,
+      login_body: field('http_login_body').value,
+      login_username: field('http_login_username').value,
+      token_source: field('http_token_source').value,
+      token_json_path: field('http_token_json_path').value,
+      token_response_header: field('http_token_response_header').value,
+      token_cookie: field('http_token_cookie').value,
+      token_header: field('http_token_header').value,
+      session_cookie_name: field('http_session_cookie_name').value,
+      session_cookie_json_path: field('http_session_cookie_json_path').value,
+      send_cookies: field('http_send_cookies').checked,
+      insecure_tls: field('http_insecure_tls').checked,
+      ca_cert: field('http_ca_cert').value,
+      auto_restore: field('http_auto_restore').checked,
+      restore_wait_seconds: Number(field('http_restore_wait_seconds').value) || 0,
       restore_url: field('http_restore_url').value,
       restore_method: field('http_restore_method').value,
       restore_body: field('http_restore_body').value
@@ -235,7 +402,7 @@ function fillTargetForm(t) {
       field('ssh_username').value = c.username ?? '';
       field('ssh_auth_method').value = c.auth_method ?? 'password';
       field('ssh_command').value = c.command ?? '';
-      field('ssh_restore_command').value = c.restore_command ?? '';
+      fillRestore('ssh', c);
       break;
     case 'winrm':
       field('winrm_host').value = c.host ?? '';
@@ -243,7 +410,7 @@ function fillTargetForm(t) {
       field('winrm_domain').value = c.domain ?? '';
       field('winrm_username').value = c.username ?? '';
       field('winrm_command').value = c.command ?? '';
-      field('winrm_restore_command').value = c.restore_command ?? '';
+      fillRestore('winrm', c);
       break;
     case 'k8s':
       field('k8s_api_url').value = c.api_url ?? '';
@@ -252,6 +419,10 @@ function fillTargetForm(t) {
       field('k8s_command_method').value = c.command_method ?? 'PATCH';
       field('k8s_command_path').value = c.command_path ?? '';
       field('k8s_command_body').value = c.command_body ?? '';
+      field('k8s_auto_restore').checked = !!c.auto_restore;
+      field('k8s_restore_wait_seconds').value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
+      field('k8s_restore_uncordon').checked = !!c.restore_uncordon;
+      field('k8s_restore_restart_deployments').checked = !!c.restore_restart_deployments;
       field('k8s_restore_method').value = c.restore_method ?? 'PATCH';
       field('k8s_restore_path').value = c.restore_path ?? '';
       field('k8s_restore_body').value = c.restore_body ?? '';
@@ -263,6 +434,26 @@ function fillTargetForm(t) {
       field('http_header_name').value = c.header_name ?? '';
       field('http_username').value = c.username ?? '';
       field('http_body').value = c.body ?? '';
+      field('http_login_url').value = c.login_url ?? '';
+      field('http_login_method').value = c.login_method ?? 'POST';
+      field('http_login_auth').value = c.login_auth ?? 'body';
+      field('http_login_content_type').value = c.login_content_type ?? 'json';
+      field('http_login_body').value = c.login_body ?? '';
+      field('http_login_username').value = c.login_username ?? '';
+      field('http_token_source').value = c.token_source ?? 'json';
+      field('http_token_json_path').value = c.token_json_path ?? '';
+      field('http_token_response_header').value = c.token_response_header ?? '';
+      field('http_token_cookie').value = c.token_cookie ?? '';
+      field('http_token_header').value = c.token_header ?? '';
+      field('http_session_cookie_name').value = c.session_cookie_name ?? '';
+      field('http_session_cookie_json_path').value = c.session_cookie_json_path ?? '';
+      // Ticked by default for a new target, so an existing one that has never
+      // been saved with the field must fall back to on, not off.
+      field('http_send_cookies').checked = c.send_cookies ?? true;
+      field('http_insecure_tls').checked = !!c.insecure_tls;
+      field('http_ca_cert').value = c.ca_cert ?? '';
+      field('http_auto_restore').checked = !!c.auto_restore;
+      field('http_restore_wait_seconds').value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
       field('http_restore_url').value = c.restore_url ?? '';
       field('http_restore_method').value = c.restore_method ?? 'POST';
       field('http_restore_body').value = c.restore_body ?? '';
@@ -319,7 +510,10 @@ $formTest.addEventListener('click', () => {
   void (async () => {
     const kind = $kind.value;
     $formTestResult.className = 'note';
-    $formTestResult.textContent = kind === 'http' ? 'Sending test request…' : 'Testing…';
+    // A login-scheme http target has a safe test — the login itself. Every other
+    // http target's test IS its real request, so say so before it goes.
+    $formTestResult.textContent = kind !== 'http' ? 'Testing…'
+      : $httpScheme.value === 'login' ? 'Logging in…' : 'Sending test request…';
     $formError.textContent = '';
     try {
       const result = await testActionTarget({
@@ -383,6 +577,93 @@ function targetActivityText(t) {
   return `${fmtDateTime(t.last_activity.ts)} (${labels[t.last_activity.trigger] ?? t.last_activity.trigger})`;
 }
 
+/**
+ * The activity cell. A restore in flight replaces the last-activity line for as
+ * long as it runs: it opens by waiting minutes for a host to boot, and a row
+ * that showed only the previous run's timestamp gave no sign anything was
+ * happening at all.
+ */
+function targetActivityCell(t) {
+  const p = t.restore_progress;
+  if (!p) return el('td', { class: 'truncate' }, targetActivityText(t));
+
+  // Not truncated: the phase is the whole point of the cell while a restore is
+  // running, and this column is too narrow to hold it on one line. It wraps
+  // under the pill instead, and the row goes back to one line when it finishes.
+  const elapsed = Math.max(0, Math.round((Date.now() - p.startedAt) / 1000));
+  return el('td', { class: 'restoring-cell', title: `${p.phase} — ${elapsed}s elapsed` },
+    el('div', { class: 'elapsed' },
+      el('span', { class: 'pill working' }, el('span', { class: 'dot' }), 'restoring'),
+      el('span', { class: 'time' }, fmtElapsed(elapsed))),
+    el('div', { class: 'phase' }, p.phase));
+}
+
+/** Elapsed seconds as the shortest thing that reads right — a restore can run
+ *  for minutes, and "312s" is harder to glance at than "5m 12s". */
+function fmtElapsed(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/**
+ * The target's restore sequence spelled out, one sentence per step — shown in
+ * the Restore button's tooltip and in its confirm dialog, which describe the
+ * same thing. Each kind builds it from its own config: ssh/winrm from
+ * wake -> wait -> final step, k8s and http from theirs.
+ */
+function restoreSteps(t) {
+  if (t.kind === 'k8s') return k8sRestoreSteps(t.config);
+  if (t.kind === 'http') return httpRestoreSteps(t.config);
+  if (!RESTORE_SEQUENCE_KINDS.includes(t.kind)) return [];
+  const c = t.config;
+  const proto = PROTO_LABELS[t.kind];
+  const steps = [];
+  if (c.wol_mac) {
+    const relay = relays.find((r) => r.id === c.wake_relay_id);
+    steps.push(c.wake_mode === 'relay'
+      ? `1. Ask relay "${relay?.name ?? `#${c.wake_relay_id}`}" to wake ${c.wol_mac}.`
+      : `1. Wake ${c.wol_mac} with a magic packet to ${c.wol_broadcast || 'every attached network'}.`);
+  }
+  steps.push(`${steps.length + 1}. Wait up to ${c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT}s for ${proto} to answer.`);
+  if (c.restore_action === 'command') steps.push(`${steps.length + 1}. Then run over ${proto}: ${c.restore_command}`);
+  else if (c.restore_action === 'http') steps.push(`${steps.length + 1}. Then send ${c.restore_method ?? 'POST'} ${c.restore_url}`);
+  return steps;
+}
+
+/** http's restore: the undo request, preceded by a wait for the login to answer
+ *  when the target has one to wait on. */
+function httpRestoreSteps(c) {
+  const steps = [];
+  if (c.auth_scheme === 'login' && (c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT) > 0) {
+    steps.push(`1. Wait up to ${c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT}s for ${c.login_url} to accept the login.`);
+  }
+  steps.push(`${steps.length + 1}. Send ${c.restore_method ?? 'POST'} ${c.restore_url}`);
+  return steps;
+}
+
+function k8sRestoreSteps(c) {
+  const steps = [`1. Wait up to ${c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT}s for the API server to answer.`];
+  if (c.action !== 'custom' || c.restore_uncordon) steps.push(`${steps.length + 1}. Uncordon every node.`);
+  if (c.restore_path) steps.push(`${steps.length + 1}. Then send ${c.restore_method ?? 'PATCH'} ${c.restore_path}`);
+  if (c.restore_restart_deployments) steps.push(`${steps.length + 1}. Restart every Deployment outside kube-system.`);
+  return steps;
+}
+
+/** Whether the target has enough configured for Restore to do anything. */
+function hasRestore(t) {
+  const c = t.config;
+  // A drained cluster always has an undo (uncordon); a custom command has one
+  // only if its owner asked for something — the reversing request, or either of
+  // the cluster-wide steps.
+  if (t.kind === 'k8s') {
+    return c.action !== 'custom' || !!(c.restore_uncordon || c.restore_path || c.restore_restart_deployments);
+  }
+  if (t.kind === 'http') return !!c.restore_url;
+  return !!(c.wol_mac
+    || (c.restore_action === 'command' && c.restore_command)
+    || (c.restore_action === 'http' && c.restore_url));
+}
+
 function renderTargetTable() {
   clear($targetTable);
   if (targets.length === 0) {
@@ -437,27 +718,39 @@ function renderTargetTable() {
       })();
     });
 
-    const restoreBtn = el('button', { class: 'btn ghost small' }, 'Restore');
-    const hasRestore = t.kind === 'k8s'
-      || (t.kind === 'ssh' && !!t.config.restore_command)
-      || (t.kind === 'winrm' && !!t.config.restore_command)
-      || (t.kind === 'http' && !!t.config.restore_url);
-    if (!hasRestore) {
+    const restoreBtn = el('button', { class: 'btn ghost small' }, t.restore_progress ? 'Restoring…' : 'Restore');
+    if (t.restore_progress) {
+      // Already coming back — starting a second pass would send the restore
+      // request twice, and it need not be idempotent. The server refuses it
+      // too; this is so the button never offers it.
       restoreBtn.disabled = true;
-      restoreBtn.title = 'No restore command configured for this target — add one in the edit form';
+      restoreBtn.title = `Restore in progress: ${t.restore_progress.phase}`;
+    } else if (!hasRestore(t)) {
+      restoreBtn.disabled = true;
+      restoreBtn.title = 'No restore configured for this target — set one up in the edit form';
     } else {
+      const steps = restoreSteps(t);
+      restoreBtn.title = [
+        t.config.auto_restore ? 'Auto-restore is ON for this target.' : null,
+        ...steps
+      ].filter(Boolean).join('\n');
       restoreBtn.addEventListener('click', () => {
         void (async () => {
           const ok = await confirmDialog({
             title: 'Run restore now?',
-            body: [`This runs the restore/undo action for "${t.name}".`, RESTORE_HINTS[t.kind] ?? ''],
+            body: [`This runs the restore sequence for "${t.name}" immediately:`, ...steps],
             confirmText: 'Restore now'
           });
           if (!ok) return;
           restoreBtn.disabled = true;
           try {
             const result = await restoreActionTarget(t.id);
-            await alertDialog({ title: result.ok ? 'Restore completed' : 'Restore failed', body: result.message });
+            // The ssh/winrm sequence waits for the host to boot, so the server
+            // answers as soon as it starts — the outcome shows up in Last activity.
+            await alertDialog({
+              title: result.started ? 'Restore started' : result.ok ? 'Restore completed' : 'Restore failed',
+              body: result.message
+            });
           } catch (err) {
             await alertDialog({ title: 'Restore failed', body: err.message });
           } finally {
@@ -476,7 +769,7 @@ function renderTargetTable() {
       el('td', { class: 'target-cell', title: targetConnection(t) }, targetConnection(t)),
       el('td', { class: 'target-cell', title: targetAction(t) }, targetAction(t)),
       el('td', { class: 'truncate', title: credentials }, credentials),
-      el('td', { class: 'truncate' }, targetActivityText(t)),
+      targetActivityCell(t),
       el('td', { class: 'actions-cell' }, editBtn, delBtn, runBtn, restoreBtn)
     ));
   }
@@ -493,6 +786,10 @@ function renderTargetTable() {
     tbody
   );
   $targetTable.append(table);
+
+  // Whatever put a restore on screen — this page starting one, an auto-restore
+  // the watcher started, or another browser — keeps the phase line moving.
+  if (targets.some((t) => t.restore_progress)) scheduleRestorePoll();
 }
 
 // ---------- action groups (ordered stages of parallel steps) ----------
@@ -972,10 +1269,51 @@ function renderIgTable() {
   $igTable.append(table);
 }
 
+// ---------- live restore progress ----------
+// A restore opens by waiting minutes for a host to boot, so the 20s refresh
+// below is far too slow to read as progress. While one is running this polls
+// just the restore status and re-renders only the targets table — a full
+// refresh would rebuild the forms and the relay pickers every few seconds for
+// one line of text.
+
+const RESTORE_POLL_MS = 3000;
+let restoreTimer = null;
+
+function scheduleRestorePoll() {
+  if (restoreTimer !== null) return;
+  restoreTimer = setTimeout(() => void pollRestores(), RESTORE_POLL_MS);
+}
+
+async function pollRestores() {
+  restoreTimer = null;
+  const live = targets.filter((t) => t.restore_progress);
+  if (live.length === 0) return;
+
+  const statuses = await Promise.all(live.map((t) => getRestoreStatus(t.id).catch(() => null)));
+
+  let settled = false;
+  live.forEach((t, i) => {
+    const status = statuses[i];
+    if (!status) return; // a failed poll: leave the row as it was and try again
+    t.restore_progress = status.running ? status.progress : null;
+    if (!status.running) {
+      t.last_activity = status.last_activity;
+      settled = true;
+    }
+  });
+
+  renderTargetTable(); // schedules the next poll if anything is still running
+  // The last one finished: a full refresh picks up the health dot it moved.
+  if (settled && !targets.some((t) => t.restore_progress)) void refreshAll();
+}
+
 // ---------- boot ----------
 
 async function refreshAll() {
-  [targets, igroups, flatlineGroups] = await Promise.all([listActionTargets(), listActionGroups(), listGroups()]);
+  [targets, igroups, flatlineGroups, relays] = await Promise.all([
+    listActionTargets(), listActionGroups(), listGroups(), listRelays()
+  ]);
+  renderRelayOptions();
   renderTargetTable();
   renderIgTable();
   renderStages();
