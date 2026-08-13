@@ -31,50 +31,27 @@ A small self-hosted system monitor that pings or probes endpoints for availabili
 
 1. Each **Flatline Endpoint** is checked on its own interval using ICMP or HTTP(s).
 2. An endpoint flips DOWN after N consecutive failures and back UP after M consecutive successes.
-3. For an action to arm, endpoints must be placed in a **Flatline Group**. A group fails when configured failure conditions are met; for example either **all** of them or **any** one, per group.
+3. For an action to arm, endpoints must be placed in a **Flatline Group**. A group fails when configured failure conditions are met; either **all** of them or **any** one, per group.
 
 <div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/endpoints.png?raw=true" alt="icon" width="340" height="400"></div>
 
 4. A failing group will arm the grace period. If it recovers before the group's grace period elapses, it disarms; otherwise the group's assigned **Action Group** will run.
-5. **Action Groups** are created from **Action Targets** and run in the order you set. **Action Targets** are specific infrastructure for running script(s) against to, for example, shutdown or remove workloads in your environment.
+5. **Action Groups** are created from **Action Targets** and run stages/steps in the order you set. **Action Targets** are specific infrastructure for running script(s) against to, for example, shutdown or remove workloads in your environment.
 
 <div align="center"><img src="https://github.com/jagtx459/Flatline/blob/main/docs/screenshots/actions.png?raw=true" alt="icon" width="340" height="400"></div>
 
-### Action target kinds
+6. There are four different **Action Target** types. 
 
-| Kind | What it does on trigger |
-| --- | --- |
-| **SSH** | Signs in and runs a command. Password or private key. |
-| **WinRM** | Runs a command on a Windows host via remote PowerShell (NTLM). |
-| **Kubernetes** | Cordons and drains every node — holding the step open until the cluster is actually empty — or sends a raw API request you define. Bearer token or kubeconfig. |
-| **HTTP(S)** | Sends one request you define. For webhooks, or a service with its own shutdown API. |
+    | Type           | Details                                                                                         |
+    | -------------- | ----------------------------------------------------------------------------------------------- |
+    | **SSH**        | Password or private key                                                                         |
+    | **WinRM**      | Windows host via remote PowerShell (NTLM)                                                       |
+    | **Kubernetes** | Cordons and drains every node or raw API request with Bearer token or kubeconfig                |
+    | **HTTP(S)**    | REST API with no auth, Bearer/JWT, custom header token, Basic auth, or 2-step auth. Per-target TLS (accept self-signed, or verify against a supplied CA) |
 
-Each kind also has a **Restore** section that undoes what it did once the outage
-is over, either from the target's Restore button or on its own when the Flatline
-group recovers. SSH and WinRM can send a Wake-on-LAN packet (directly or through
-a relay already on the target's network), wait for the host to answer, then run a
-final step.
+    Each type also has an optional **Restore** procedure for when the **Action Target** and **Flatline Endpoint** are up. See [docs/RESTORATION.md](docs/RESTORATION.md) for more details.
 
-#### HTTP targets behind a login (2-Step auth)
-
-Some APIs won't accept a static key: you have to authenticate first and use the
-CSRF token that comes back. Pick the **2-Step auth** scheme and Flatline will sign
-in ahead of each request, read the token out of the response, and send it on.
-Because every service does this differently, all of it is configurable — the token
-can be read from a path in the JSON body, a response header, or a cookie, and the
-session it belongs to travels either in the cookies the login set or in one built
-from a field in the response body. The form has worked examples for two common
-shapes — UniFi OS, which is confirmed working, and Proxmox VE.
-
-The login happens fresh every time, including on restore, since a token minted
-during the outage would have expired by the time the service is back. It also
-gives these targets something the others lack: a **safe Test connection**, which
-proves the credentials without firing the real request.
-
-TLS verification is set per target, because it is really a per-URL fact — the same
-service reached through a reverse proxy presents a trusted certificate, while on a
-bare IP it is usually the appliance's own self-signed one. Supply its CA, or
-accept an untrusted certificate outright.
+    **kubeconfig auth supports a static token, client cert/key, or basic auth, but exec credential plugins (EKS/GKE) are not currently supported 
 
 ## Notifications
 
@@ -82,12 +59,14 @@ Flatline supports a few, but more planned in future releases, notification platf
 - Discord
 - Ntfy
 - Apprise
+- Webhooks
+- Email
 
 ## Security **Please Read!* *
 
 ****Again, Flatline is still a work in progress and intended for homelab use; do NOT expose to the internet!*** *
 
-- **Optional, but recommended login**: set a password on the `/config` page or via `FLATLINE_PASSWORD` (which overides when both are set). 
+- **Optional, but recommended login**: set a password on the `/config` page or via `FLATLINE_PASSWORD` (which overrides when both are set). 
 
 - **Non-root container**: the image runs as the unprivileged `node` user; only the `iputils` ping binary gets `cap_net_raw` so ICMP checks work without root.
 
@@ -105,8 +84,7 @@ docker pull ghcr.io/jagtx459/flatline:latest
 # or Docker Hub
 docker pull jagtx459/flatline:latest
 
-docker run -d --name flatline -p 3131:3131 -v flatline-data:/data \
-  --sysctl net.ipv4.ping_group_range="0 2147483647" \
+docker run -d --name flatline -p 3131:3131 -v flatline-data:/data \  
   ghcr.io/jagtx459/flatline:latest
 ```
 
@@ -118,10 +96,11 @@ Tags available on both registries: `latest`, the release version (e.g. `0.3.0`),
 docker compose up -d --build
 # or
 docker build -t flatline .
-docker run -d --name flatline -p 3131:3131 -v flatline-data:/data --sysctl net.ipv4.ping_group_range="0 2147483647" flatline
+docker run -d --name flatline -p 3131:3131 -v flatline-data:/data flatline
 ```
 
 Optional environment variables: 
+  - `FLATLINE_DATA_DIR` data directory location
   - `FLATLINE_PASSWORD` (require a login) 
   - `FLATLINE_SECRET_KEY` (credential encryption key; otherwise auto-generated in `/data`)
   - `FLATLINE_ALLOWED_HOSTS` (extra hostnames allowed in the `Host` header, e.g. `flatline.lan`)
@@ -135,13 +114,20 @@ npm install
 npm start          # http://localhost:3131 —> data stored in data/
 npm run tests      # scripted assertions against the app and action engine
 npm run tests:k8s  # ...plus the Kubernetes cases against a real cluster in Docker
-npm run dev        # seeded demo instance, everything healthy
-npm run dev:tests  # seeded demo with planned looping events
+npm run dev        # demo instance, everything healthy
+npm run dev:tests  # demo with planned looping events
 ```
 
-`dev` uses `data/dev` and mock targets, never your real `data/`. Add `-- --reseed` for fresh data.
+## Additional run dev flags
+```sh
+npm run dev -- --reset  # reset dev database to factory default (cannot use with --reseed or --test flags)
+npm run dev -- --reseed # seeds dev database with mock endpoints, targets, and groups
+npm run dev -- --tests  # same as npm run dev:tests
+```
 
-See [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md) for details.
+`dev` uses `data/dev` and mock targets, never your real `data/`
+
+See [docs/LOCAL-TESTING.md](docs/LOCAL-TESTING.md) for details
 
 ## AI
 
