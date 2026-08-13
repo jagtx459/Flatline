@@ -41,6 +41,39 @@ export function recordTargetActivity(id, result, trigger) {
   activity.set(id, { ok: result.ok, message: result.message, ts: Date.now(), trigger });
 }
 
+// A restore that is still running. The manual Restore route answers 202 and
+// leaves the sequence going, because waiting for a host to boot or a cluster's
+// API server to answer takes minutes — this is what the page shows meanwhile.
+// In memory only: an interrupted restore is not resumable, so a restart should
+// forget it rather than leave a phase on screen that nothing is working on.
+// target id -> { phase, since, startedAt }
+const restoring = new Map();
+
+export function getRestoreProgress(id) {
+  return restoring.get(id) ?? null;
+}
+
+/**
+ * Marks a restore as running and returns the phase reporter to hand to
+ * restoreStep. Call endRestore() when it settles, whichever way it went.
+ */
+export function beginRestore(id) {
+  const now = Date.now();
+  restoring.set(id, { phase: 'starting', since: now, startedAt: now });
+  return (phase) => {
+    const current = restoring.get(id);
+    if (current) restoring.set(id, { ...current, phase, since: Date.now() });
+  };
+}
+
+export function endRestore(id) {
+  restoring.delete(id);
+}
+
+export function isRestoring(id) {
+  return restoring.has(id);
+}
+
 /** Re-checks one target immediately (e.g. right after it's created/edited) rather than waiting for the next tick. */
 export async function checkTargetNow(id) {
   const target = store.getActionTarget(id);

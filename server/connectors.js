@@ -69,13 +69,18 @@ export async function runStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT
  * `relay` is only used by the ssh/winrm sequence, and only when the target is
  * set to wake through one. It is passed in already resolved and decrypted,
  * because this module talks to machines and never to the database.
+ *
+ * `onPhase` is called with a short label each time the sequence moves on. A
+ * restore that opens by waiting for a host to boot runs for minutes with
+ * nothing to show otherwise, so the caller can report which part it is on.
  */
-export async function restoreStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT_MS, relay = null) {
+export async function restoreStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT_MS, relay = null, onPhase = null) {
+  const phase = typeof onPhase === 'function' ? onPhase : () => {};
   switch (kind) {
-    case 'ssh': return restoreSequence(kind, config, secrets, timeoutMs, relay);
-    case 'winrm': return restoreSequence(kind, config, secrets, timeoutMs, relay);
-    case 'http': return restoreHttp(config, secrets, timeoutMs);
-    case 'k8s': return restoreK8s(config, secrets, timeoutMs);
+    case 'ssh': return restoreSequence(kind, config, secrets, timeoutMs, relay, phase);
+    case 'winrm': return restoreSequence(kind, config, secrets, timeoutMs, relay, phase);
+    case 'http': return restoreHttp(config, secrets, timeoutMs, phase);
+    case 'k8s': return restoreK8s(config, secrets, timeoutMs, phase);
     default: return { ok: false, message: `restore is not supported for '${kind}' targets` };
   }
 }
@@ -508,13 +513,14 @@ async function waitForLogin(config, secrets, timeoutMs, waitSeconds) {
  * thing being undone. The static schemes have no such probe, so they send their
  * request once, as they always have.
  */
-async function restoreHttp(config, secrets, timeoutMs) {
+async function restoreHttp(config, secrets, timeoutMs, phase = () => {}) {
   if (!config.restore_url) return { ok: false, message: 'no restore request configured for this target' };
 
   const done = [];
   let headers;
   if (config.auth_scheme === 'login') {
     const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
+    phase(`waiting up to ${waitSeconds}s for ${config.login_url} to accept the login`);
     const login = await waitForLogin(config, secrets, timeoutMs, waitSeconds);
     if (!login.ok) {
       return {
@@ -530,6 +536,7 @@ async function restoreHttp(config, secrets, timeoutMs) {
     headers = httpAuthHeaders(config, secrets);
   }
 
+  phase(`sending ${config.restore_method ?? 'POST'} ${config.restore_url}`);
   const sent = await sendHttp(config.restore_url, config.restore_method ?? 'POST', config.restore_body,
     headers, timeoutMs, httpTls(config));
   done.push(sent.message);
@@ -615,7 +622,7 @@ function sendPacket(packet, from, to) {
  * a wake that went nowhere useful is otherwise indistinguishable from one that
  * worked, since nothing ever answers a magic packet.
  */
-async function sendMagicPacket(mac, broadcast) {
+export async function sendMagicPacket(mac, broadcast) {
   const packet = magicPacket(mac);
   const explicit = broadcast && broadcast !== DEFAULT_BROADCAST;
   const destinations = explicit
@@ -690,7 +697,7 @@ async function wakeViaRelay(relay, mac, timeoutMs) {
     : { ok: false, message: `relay "${relay.name}" failed to wake ${mac}: ${result.message}` };
 }
 
-async function restoreSequence(kind, config, secrets, timeoutMs, relay = null) {
+async function restoreSequence(kind, config, secrets, timeoutMs, relay = null, phase = () => {}) {
   const action = config.restore_action ?? 'none';
   if (!config.wol_mac && action === 'none') {
     return { ok: false, message: 'no restore configured for this target' };
@@ -698,6 +705,7 @@ async function restoreSequence(kind, config, secrets, timeoutMs, relay = null) {
 
   const done = [];
   if (config.wol_mac) {
+    phase(config.wake_mode === 'relay' ? `asking "${relay?.name ?? 'the relay'}" to wake ${config.wol_mac}` : `waking ${config.wol_mac}`);
     if (config.wake_mode === 'relay') {
       // A relay that was deleted after the target was configured: say so rather
       // than quietly skipping the wake and waiting out the whole timeout.
@@ -719,6 +727,7 @@ async function restoreSequence(kind, config, secrets, timeoutMs, relay = null) {
 
   const proto = kind === 'ssh' ? 'SSH' : 'WinRM';
   const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
+  phase(`waiting up to ${waitSeconds}s for ${proto} to answer`);
   const reachable = await waitUntilReachable(kind, config, secrets, waitSeconds);
   if (!reachable.ok) {
     done.push(`${proto} did not answer within ${waitSeconds}s (${reachable.message})`);
@@ -728,6 +737,7 @@ async function restoreSequence(kind, config, secrets, timeoutMs, relay = null) {
 
   if (action === 'none') return { ok: true, message: done.join('; ') };
 
+  phase(action === 'command' ? `running the restore command over ${proto}` : `sending ${config.restore_method ?? 'POST'} ${config.restore_url}`);
   const result = action === 'command'
     ? (kind === 'ssh'
         ? await execSsh(config, secrets, config.restore_command, timeoutMs, 'restore command')
@@ -891,7 +901,7 @@ async function runK8s(config, secrets, timeoutMs) {
  * the moment the Flatline group reports healthy, which is normally before the
  * control plane has finished coming up.
  */
-async function restoreK8s(config, secrets, timeoutMs) {
+async function restoreK8s(config, secrets, timeoutMs, phase = () => {}) {
   const uncordoning = config.action !== 'custom' || !!config.restore_uncordon;
   const undoing = !!config.restore_path;
   if (!uncordoning && !undoing && !config.restore_restart_deployments) {
@@ -909,21 +919,23 @@ async function restoreK8s(config, secrets, timeoutMs) {
   }
 
   const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
+  phase(`waiting up to ${waitSeconds}s for the API server to answer`);
   const reachable = await waitUntilReachable('k8s', config, secrets, waitSeconds);
   if (!reachable.ok) {
     return { ok: false, message: `API server did not answer within ${waitSeconds}s (${reachable.message})` };
   }
 
   const steps = [];
-  if (uncordoning) steps.push(() => uncordonAllNodes(conn, timeoutMs));
-  if (undoing) steps.push(() => runK8sRestoreRequest(conn, config, timeoutMs));
-  if (config.restore_restart_deployments) steps.push(() => restartAllDeployments(conn, timeoutMs));
+  if (uncordoning) steps.push(['uncordoning every node', () => uncordonAllNodes(conn, timeoutMs)]);
+  if (undoing) steps.push([`sending ${config.restore_method ?? 'PATCH'} ${config.restore_path}`, () => runK8sRestoreRequest(conn, config, timeoutMs)]);
+  if (config.restore_restart_deployments) steps.push(['restarting every Deployment outside kube-system', () => restartAllDeployments(conn, timeoutMs)]);
 
   // Each part stops the ones behind it: there is no point scaling back up onto
   // nodes that would not take the pods, nor restarting what never came up.
   const done = ['API server answered'];
   try {
-    for (const step of steps) {
+    for (const [label, step] of steps) {
+      phase(label);
       const result = await step();
       done.push(result.message);
       if (!result.ok) return { ok: false, message: done.join('; ') };

@@ -1,11 +1,12 @@
 import {
   listActionTargets, createActionTarget, updateActionTarget, deleteActionTarget, testActionTarget, runActionTarget,
-  restoreActionTarget,
+  restoreActionTarget, getRestoreStatus,
   listActionGroups, createActionGroup, updateActionGroup, deleteActionGroup,
   listGroups, updateGroup, listRelays
 } from './api.js';
 import { el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
 import { initHeaderAuth } from './header.js';
+import { hostInNetwork } from './net.js';
 
 initHeaderAuth();
 
@@ -106,34 +107,6 @@ function syncRestoreFields(kind) {
     node.style.display = node.dataset.wakeMode === wakeMode ? '' : 'none';
   }
   renderRelayWarning(kind);
-}
-
-/** Dotted-quad -> unsigned 32-bit, or null when it isn't four 0-255 octets —
- *  which is also how a hostname (rather than an IP) is detected. */
-function ipToInt(ip) {
-  const parts = ip.trim().split('.');
-  if (parts.length !== 4) return null;
-  let out = 0;
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const n = Number(part);
-    if (n > 255) return null;
-    out = (out * 256) + n;
-  }
-  return out;
-}
-
-/** Whether `host` falls inside a relay's CIDR. null when it can't be told —
- *  a hostname rather than an address, which Flatline will not resolve here. */
-function hostInNetwork(host, cidr) {
-  const [net, bits] = String(cidr ?? '').split('/');
-  const addr = ipToInt(String(host ?? ''));
-  const base = ipToInt(net ?? '');
-  const prefix = Number(bits);
-  if (addr === null || base === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
-  if (prefix === 0) return true;
-  const mask = (0xffff_ffff << (32 - prefix)) >>> 0;
-  return ((addr & mask) >>> 0) === ((base & mask) >>> 0);
 }
 
 /**
@@ -605,6 +578,34 @@ function targetActivityText(t) {
 }
 
 /**
+ * The activity cell. A restore in flight replaces the last-activity line for as
+ * long as it runs: it opens by waiting minutes for a host to boot, and a row
+ * that showed only the previous run's timestamp gave no sign anything was
+ * happening at all.
+ */
+function targetActivityCell(t) {
+  const p = t.restore_progress;
+  if (!p) return el('td', { class: 'truncate' }, targetActivityText(t));
+
+  // Not truncated: the phase is the whole point of the cell while a restore is
+  // running, and this column is too narrow to hold it on one line. It wraps
+  // under the pill instead, and the row goes back to one line when it finishes.
+  const elapsed = Math.max(0, Math.round((Date.now() - p.startedAt) / 1000));
+  return el('td', { class: 'restoring-cell', title: `${p.phase} — ${elapsed}s elapsed` },
+    el('div', { class: 'elapsed' },
+      el('span', { class: 'pill working' }, el('span', { class: 'dot' }), 'restoring'),
+      el('span', { class: 'time' }, fmtElapsed(elapsed))),
+    el('div', { class: 'phase' }, p.phase));
+}
+
+/** Elapsed seconds as the shortest thing that reads right — a restore can run
+ *  for minutes, and "312s" is harder to glance at than "5m 12s". */
+function fmtElapsed(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/**
  * The target's restore sequence spelled out, one sentence per step — shown in
  * the Restore button's tooltip and in its confirm dialog, which describe the
  * same thing. Each kind builds it from its own config: ssh/winrm from
@@ -717,8 +718,14 @@ function renderTargetTable() {
       })();
     });
 
-    const restoreBtn = el('button', { class: 'btn ghost small' }, 'Restore');
-    if (!hasRestore(t)) {
+    const restoreBtn = el('button', { class: 'btn ghost small' }, t.restore_progress ? 'Restoring…' : 'Restore');
+    if (t.restore_progress) {
+      // Already coming back — starting a second pass would send the restore
+      // request twice, and it need not be idempotent. The server refuses it
+      // too; this is so the button never offers it.
+      restoreBtn.disabled = true;
+      restoreBtn.title = `Restore in progress: ${t.restore_progress.phase}`;
+    } else if (!hasRestore(t)) {
       restoreBtn.disabled = true;
       restoreBtn.title = 'No restore configured for this target — set one up in the edit form';
     } else {
@@ -762,7 +769,7 @@ function renderTargetTable() {
       el('td', { class: 'target-cell', title: targetConnection(t) }, targetConnection(t)),
       el('td', { class: 'target-cell', title: targetAction(t) }, targetAction(t)),
       el('td', { class: 'truncate', title: credentials }, credentials),
-      el('td', { class: 'truncate' }, targetActivityText(t)),
+      targetActivityCell(t),
       el('td', { class: 'actions-cell' }, editBtn, delBtn, runBtn, restoreBtn)
     ));
   }
@@ -779,6 +786,10 @@ function renderTargetTable() {
     tbody
   );
   $targetTable.append(table);
+
+  // Whatever put a restore on screen — this page starting one, an auto-restore
+  // the watcher started, or another browser — keeps the phase line moving.
+  if (targets.some((t) => t.restore_progress)) scheduleRestorePoll();
 }
 
 // ---------- action groups (ordered stages of parallel steps) ----------
@@ -1256,6 +1267,44 @@ function renderIgTable() {
     tbody
   );
   $igTable.append(table);
+}
+
+// ---------- live restore progress ----------
+// A restore opens by waiting minutes for a host to boot, so the 20s refresh
+// below is far too slow to read as progress. While one is running this polls
+// just the restore status and re-renders only the targets table — a full
+// refresh would rebuild the forms and the relay pickers every few seconds for
+// one line of text.
+
+const RESTORE_POLL_MS = 3000;
+let restoreTimer = null;
+
+function scheduleRestorePoll() {
+  if (restoreTimer !== null) return;
+  restoreTimer = setTimeout(() => void pollRestores(), RESTORE_POLL_MS);
+}
+
+async function pollRestores() {
+  restoreTimer = null;
+  const live = targets.filter((t) => t.restore_progress);
+  if (live.length === 0) return;
+
+  const statuses = await Promise.all(live.map((t) => getRestoreStatus(t.id).catch(() => null)));
+
+  let settled = false;
+  live.forEach((t, i) => {
+    const status = statuses[i];
+    if (!status) return; // a failed poll: leave the row as it was and try again
+    t.restore_progress = status.running ? status.progress : null;
+    if (!status.running) {
+      t.last_activity = status.last_activity;
+      settled = true;
+    }
+  });
+
+  renderTargetTable(); // schedules the next poll if anything is still running
+  // The last one finished: a full refresh picks up the health dot it moved.
+  if (settled && !targets.some((t) => t.restore_progress)) void refreshAll();
 }
 
 // ---------- boot ----------

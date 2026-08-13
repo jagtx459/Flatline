@@ -25,7 +25,11 @@ import http from 'node:http';
  *   /protected         200 only for a request carrying both the token header and
  *                      the session cookie; 401 says which half was missing
  *
- * Used by `npm run dev` and by the action tests.
+ * And, for proving which credential a request carried:
+ *   /needs-auth?header=H&value=V   200 only when header H is exactly V
+ *
+ * Used by `npm run dev` and by the action tests. The SSH side of the same idea
+ * is dev/mock-ssh.js.
  */
 
 /**
@@ -176,6 +180,20 @@ export function startMockTargets(port = 3198, { scenario = false, onPhase = null
           }
           login(res);
         });
+        return;
+      }
+      case '/needs-auth': {
+        // A service that only answers to one specific credential, named in the
+        // query string: ?header=authorization&value=Bearer%20abc. Lets a test
+        // prove *which* credential a request carried, rather than only that it
+        // succeeded — the restore step authenticates separately from the host
+        // it was reached through, and that is the difference worth catching.
+        const name = (url.searchParams.get('header') ?? 'authorization').toLowerCase();
+        const want = url.searchParams.get('value') ?? '';
+        const got = req.headers[name];
+        const ok = got === want;
+        res.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' });
+        res.end(ok ? '{"status":"ok"}' : JSON.stringify({ error: `expected ${name}: ${want}`, got: got ?? null }));
         return;
       }
       case '/protected': {

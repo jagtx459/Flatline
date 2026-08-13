@@ -134,6 +134,7 @@ Optional environment variables:
 npm install
 npm start          # http://localhost:3131 —> data stored in data/
 npm run tests      # scripted assertions against the app and action engine
+npm run tests:k8s  # ...plus the Kubernetes cases against a real cluster in Docker
 npm run dev        # seeded demo instance, everything healthy
 npm run dev:tests  # seeded demo with planned looping events
 ```
