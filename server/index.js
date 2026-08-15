@@ -19,7 +19,7 @@ import {
 import { runCheck } from './checks.js';
 import { intInRange, cleanString } from './inputs.js';
 import {
-  KIND_CONFIG_FIELDS, KIND_SECRET_FIELDS, MAX_SECRET_LEN,
+  KIND_CONFIG_FIELDS, MAX_SECRET_LEN, secretFieldsFor,
   RELAY_KINDS, RELAY_SECRET_FIELDS,
   parseInfraConfig, parseRelayConfig, parseRelayNetwork, parseWakeCommand, isSequenceRestore
 } from './targetConfig.js';
@@ -554,11 +554,11 @@ async function handleApi(req, res, url) {
       const existing = store.getActionTarget(id);
       if (!existing) { sendError(res, 404, 'target not found'); return; }
       const baseEnc = kind === existing.kind ? existing.secret_enc : null;
-      const merged = mergeSecrets(KIND_SECRET_FIELDS[kind], baseEnc, body.secrets);
+      const merged = mergeSecrets(secretFieldsFor(kind, cfg), baseEnc, body.secrets);
       if (typeof merged === 'string' && !merged.startsWith('v1:')) { sendError(res, 400, merged); return; }
       secrets = decryptSecrets(merged);
     } else {
-      secrets = pickSecrets(KIND_SECRET_FIELDS[kind], body.secrets);
+      secrets = pickSecrets(secretFieldsFor(kind, cfg), body.secrets);
       if (typeof secrets === 'string') { sendError(res, 400, secrets); return; }
     }
 
@@ -591,16 +591,15 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // POST /api/actions/targets/:id/restore — brings a target back: the ssh/winrm
-  // or k8s restore sequence, or the configured undo request for http.
+  // POST /api/actions/targets/:id/restore — brings a target back by running the
+  // restore its owner configured: a wake, a wait, then one action.
   //
-  // A sequence starts by waiting — for a host to boot, for a cluster's API
+  // Most of those open by waiting — for a host to boot, for a cluster's API
   // server to answer, or for an http target's login to — which can take minutes,
-  // so those are started and left
-  // to run rather than held open: the response says it began, and the outcome
-  // lands in the target's last activity and the event feed, both of which the
-  // actions page is already polling. While it runs, GET on the same path reports
-  // which part of the sequence it is on.
+  // so they are started and left to run rather than held open: the response says
+  // it began, and the outcome lands in the target's last activity and the event
+  // feed, both of which the actions page is already polling. While it runs, GET
+  // on the same path reports which part of the sequence it is on.
   if (parts[1] === 'actions' && parts[2] === 'targets' && parts.length === 5 && parts[4] === 'restore' && method === 'GET') {
     const id = Number(parts[3]);
     if (!Number.isInteger(id) || !store.getActionTarget(id)) { sendError(res, 404, 'target not found'); return; }
@@ -659,7 +658,7 @@ async function handleApi(req, res, url) {
       if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'winrm', 'k8s', or 'http'"); return; }
       const cfg = parseInfraConfig(kind, body.config);
       if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
-      const secretEnc = mergeSecrets(KIND_SECRET_FIELDS[kind], null, body.secrets);
+      const secretEnc = mergeSecrets(secretFieldsFor(kind, cfg), null, body.secrets);
       if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
       const created = store.createActionTarget({
         name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc,
@@ -682,9 +681,11 @@ async function handleApi(req, res, url) {
         if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'winrm', 'k8s', or 'http'"); return; }
         const cfg = parseInfraConfig(kind, body.config);
         if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
-        // Changing kind invalidates old secrets (different field set).
+        // Changing kind invalidates old secrets (different field set). Changing
+        // the restore method narrows the list the same way, so a credential the
+        // restore no longer connects with is dropped rather than left encrypted.
         const baseEnc = kind === existing.kind ? existing.secret_enc : null;
-        const secretEnc = mergeSecrets(KIND_SECRET_FIELDS[kind], baseEnc, body.secrets);
+        const secretEnc = mergeSecrets(secretFieldsFor(kind, cfg), baseEnc, body.secrets);
         if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
         const updated = store.updateActionTarget(id, {
           name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc,

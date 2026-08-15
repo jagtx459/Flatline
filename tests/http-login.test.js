@@ -199,17 +199,24 @@ describe('testing a login target', () => {
 });
 
 describe('restore', () => {
+  /** A login target restoring over http, reusing its own connection — the login
+   *  is what the wait polls, so it is the one that has to be inherited. */
+  const undo = (over = {}) => target({
+    restore_enabled: 1, restore_kind: 'http', restore_inherit: 1,
+    restore_method: 'POST', ...over
+  });
+
   test('sends the configured undo request', async () => {
     const result = await restoreStep('http',
-      target({ restore_url: `${base}/protected`, restore_method: 'POST', restore_wait_seconds: 0 }), secrets);
+      undo({ restore_url: `${base}/protected`, restore_wait_seconds: 0 }), secrets);
     assert.equal(result.ok, true, result.message);
     assert.match(result.message, /authenticated at .*; POST .*\/protected -> 200/);
   });
 
-  test('says so when there is nothing configured to undo', async () => {
+  test('says so when there is no restore configured', async () => {
     const result = await restoreStep('http', target(), secrets);
     assert.equal(result.ok, false);
-    assert.match(result.message, /no restore request configured/);
+    assert.match(result.message, /no restore configured/);
   });
 
   test('waits for the login to start answering, then sends the request', async () => {
@@ -217,7 +224,7 @@ describe('restore', () => {
     // moment the group reports healthy, which is normally before it is back. The
     // budget is what caps the sleep between attempts, so keep it short: the first
     // attempt fails, the second (a budget later) succeeds.
-    const result = await restoreStep('http', target({
+    const result = await restoreStep('http', undo({
       login_url: `${base}/login-after?ms=500`,
       restore_url: `${base}/protected`,
       restore_wait_seconds: 2
@@ -227,7 +234,7 @@ describe('restore', () => {
   });
 
   test('gives up with the budget and the last failure in the message', async () => {
-    const result = await restoreStep('http', target({
+    const result = await restoreStep('http', undo({
       login_url: `${base}/login-after?ms=600000`,
       restore_url: `${base}/protected`,
       restore_wait_seconds: 1
@@ -240,6 +247,7 @@ describe('restore', () => {
   test('a static-scheme target has no probe, so it sends its request once', async () => {
     const result = await restoreStep('http', {
       url: `${base}/up`, method: 'POST', auth_scheme: 'none',
+      restore_enabled: 1, restore_kind: 'http', restore_inherit: 1,
       restore_url: `${base}/up`, restore_method: 'POST', restore_wait_seconds: 300
     }, {});
     assert.equal(result.ok, true, result.message);

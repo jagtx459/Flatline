@@ -54,8 +54,14 @@ function target(name, { auto_restore = 1, enabled = 1, restore = true } = {}) {
       url: `${base}/trigger?t=${unique}`,
       method: 'POST',
       auth_scheme: 'none',
+      restore_enabled: restore ? 1 : 0,
       auto_restore,
-      ...(restore ? { restore_url: `${base}/restore?t=${unique}`, restore_method: 'GET' } : {})
+      ...(restore
+        ? {
+            restore_kind: 'http', restore_inherit: 1,
+            restore_url: `${base}/restore?t=${unique}`, restore_method: 'GET'
+          }
+        : {})
     }),
     secret_enc: null,
     enabled
@@ -165,16 +171,17 @@ describe('who takes part', () => {
     assert.deepEqual(restored(), ['mine']);
   });
 
-  test('a target with auto-restore but no restore request still reports', async () => {
-    // It takes part in the walk and fails plainly, rather than being skipped in
-    // silence — a ticked box that does nothing is worth surfacing.
-    const t = target('no-request', { restore: false });
+  test('a target whose restore is switched off takes no part', async () => {
+    // The auto_restore flag lives inside the restore, and is cleared with it, so
+    // "ticked but nothing configured" is no longer a state a saved target can be
+    // in. One built that way by hand is skipped rather than failing every
+    // recovery with a message nobody can act on.
+    const t = target('no-restore', { restore: false });
     const ag = actionGroup('shutdown', [[t]]);
 
     await runAutoRestore(flatlineGroup('lab', [ag]));
     assert.deepEqual(restored(), [], 'nothing was sent');
-    assert.equal(getTargetActivity(t.id).ok, false);
-    assert.match(getTargetActivity(t.id).message, /no restore request configured/);
+    assert.equal(getTargetActivity(t.id), null, 'and nothing was recorded against it');
   });
 });
 
@@ -207,7 +214,7 @@ describe('a group that flaps', () => {
     const slow = store.createActionTarget({
       name: `slow-${++seq}`, kind: 'http',
       config: JSON.stringify({
-        url: `${base}/trigger`, method: 'POST', auth_scheme: 'none', auto_restore: 1,
+        url: `${base}/trigger`, method: 'POST', auth_scheme: 'none', restore_enabled: 1, auto_restore: 1, restore_kind: 'http', restore_inherit: 1,
         // Held open for 400ms, so the second call lands mid-flight.
         restore_url: `${base}/restore?ms=400&t=slow`, restore_method: 'GET'
       }),
@@ -253,7 +260,7 @@ describe('what a restore leaves behind', () => {
     const slow = store.createActionTarget({
       name: `watched-${++seq}`, kind: 'http',
       config: JSON.stringify({
-        url: `${base}/trigger`, method: 'POST', auth_scheme: 'none', auto_restore: 1,
+        url: `${base}/trigger`, method: 'POST', auth_scheme: 'none', restore_enabled: 1, auto_restore: 1, restore_kind: 'http', restore_inherit: 1,
         restore_url: `${base}/restore?ms=300&t=watched`, restore_method: 'GET'
       }),
       secret_enc: null, enabled: 1
@@ -307,7 +314,7 @@ describe('resolving the relay a target wakes through', () => {
   });
 
   test('a deleted or disabled relay resolves to null, so the wake reports it', () => {
-    // restoreSequence turns a null relay into "that relay no longer exists"
+    // The wake step turns a null relay into "that relay no longer exists"
     // rather than skipping the wake and waiting out the whole timeout.
     const gone = relay();
     store.deleteRelay(gone.id);

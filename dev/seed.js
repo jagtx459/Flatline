@@ -47,7 +47,10 @@ export function seedDemoData(mockPort, { kubeconfig = null } = {}) {
 
   const httpTarget = (name, route, enabled = 1) => store.createActionTarget({
     name, kind: 'http',
-    config: JSON.stringify({ url: mock(route), method: 'POST', auth_scheme: 'none', restore_url: mock('/up') }),
+    config: JSON.stringify({
+      url: mock(route), method: 'POST', auth_scheme: 'none',
+      restore_enabled: 1, restore_kind: 'http', restore_inherit: 1, restore_url: mock('/up')
+    }),
     secret_enc: null, enabled
   });
 
@@ -62,8 +65,9 @@ export function seedDemoData(mockPort, { kubeconfig = null } = {}) {
       login_body: '{"username":"{username}","password":"{password}"}', login_username: MOCK_LOGIN.username,
       token_source: 'json', token_json_path: 'data.csrf_token', token_header: 'X-CSRF-Token',
       session_cookie_name: 'session', session_cookie_json_path: 'data.ticket', send_cookies: 1,
-      insecure_tls: 0, auto_restore: 1, restore_wait_seconds: 60,
-      restore_url: mock('/protected'), restore_method: 'POST'
+      insecure_tls: 0,
+      restore_enabled: 1, auto_restore: 1, restore_kind: 'http', restore_inherit: 1,
+      restore_wait_seconds: 60, restore_url: mock('/protected'), restore_method: 'POST'
     }),
     secret_enc: encryptSecrets({ login_password: MOCK_LOGIN.password }),
     enabled: 1
@@ -87,8 +91,8 @@ export function seedDemoData(mockPort, { kubeconfig = null } = {}) {
       name: 'k3s cluster (real, in Docker)', kind: 'k8s',
       config: JSON.stringify({
         auth_method: 'kubeconfig', action: 'drain',
-        auto_restore: 1, restore_wait_seconds: 60,
-        restore_restart_deployments: 1
+        restore_enabled: 1, auto_restore: 1, restore_kind: 'k8s', restore_inherit: 1,
+        restore_wait_seconds: 60, restore_uncordon: 1, restore_restart_deployments: 1
       }),
       secret_enc: encryptSecrets({ kubeconfig }),
       enabled: 1

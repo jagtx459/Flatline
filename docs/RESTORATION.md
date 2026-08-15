@@ -1,12 +1,24 @@
 # Restoration
 
-Every action target can carry a **Restore** procedure: what Flatline does to
-bring that target back after its trigger action ran. It is configured in the
-collapsible *Restore* panel at the bottom of each target type's section on the Actions
-page, and stored in the same config blob as the rest of the target.
+Every action target can carry a **Restore**: what Flatline does to bring that
+target back after its trigger action ran. It is configured in the collapsible
+*Restore* panel at the bottom of the target form on the Actions page, and stored
+in the same config blob as the rest of the target.
+
+A restore is always the same three parts, whatever kind of target it belongs to:
+
+```
+wake (optional)  ->  wait  ->  one action
+```
+
+The action's **method** is chosen independently of how the target itself is
+reached. A cluster taken down over its API can be woken with a magic packet and
+revived over SSH; a NAS shut down through its HTTP API can be woken and finished
+off with a command. The method either **inherits** the target's own connection
+and credentials, or brings its own.
 
 There is **no snapshot of prior state anywhere**. A restore is only as good as
-what the target's owner configured, Flatline does not record which nodes were
+what the target's owner configured — Flatline does not record which nodes were
 cordoned, which services were stopped, or what a shutdown command turned off.
 
 ## When a restore runs
@@ -27,22 +39,25 @@ deliberately not awaited: a restore waits minutes for hosts to boot, and the
 watcher has every other group to keep evaluating.
 
 A target takes part in auto-restore only when all of these hold
-([autoRestore.js:60](../server/autoRestore.js#L60)):
+([autoRestore.js:56](../server/autoRestore.js#L56)):
 
-- its type is `ssh`, `winrm`, `k8s` or `http` (all four, currently),
 - the target is **enabled**,
-- `auto_restore` is ticked on the target,
+- **Enable restore** is on,
+- **Auto-restore** is ticked,
 - it is a step in an **enabled** action group assigned to the recovered Flatline group.
 
+`auto_restore` lives inside the restore and is cleared with it, so "ticked but
+nothing configured" is not a state a saved target can be in.
+
 The manual Restore button ignores `auto_restore` entirely. It is disabled in the
-UI when the target has nothing configured to do
-(`hasRestore()`, [actions.js:653](../public/scripts/actions.js#L653)), and the
-server refuses a second concurrent restore of the same target with a 409.
+UI when the target has no restore (`hasRestore()`,
+[actions.js](../public/scripts/actions.js)), and the server refuses a second
+concurrent restore of the same target with a 409.
 
 ## Auto-restore order
 
 Targets come back in the **reverse of the order they went down in**
-([autoRestore.js:83](../server/autoRestore.js#L83)):
+([autoRestore.js:79](../server/autoRestore.js#L79)):
 
 1. the group's action groups, back to front,
 2. each action group's stages, back to front,
@@ -54,48 +69,32 @@ than one step, stage or action group is restored **once**, at the first point th
 reverse walk reaches it.
 
 Ordering only decides who is *asked* first. What actually holds a machine behind
-the one it depends on is each target's own wait for the host, the cluster's API
-server, or the login endpoint to answer before the final step runs.
+the one it depends on is each target's own wait.
 
 One auto-restore per Flatline group runs at a time: a group that flaps while its
 restore is still going is logged and ignored (`inFlight`,
-[autoRestore.js:28](../server/autoRestore.js#L28)).
+[autoRestore.js:24](../server/autoRestore.js#L24)).
 
-## Common settings
-
-**Auto-restore when the Flatline group recovers** — the tick box described above.
-
-**Wait up to N seconds** (`restore_wait_seconds`) — 0 to 3600, default **300**.
-This is a *give-up budget*, not a sleep: Flatline polls every 10s and moves on
-the moment the target answers. `0` means one attempt, then give up. The probe is
-the target's own connectivity test. It is the same **Test connection** button
-and the background health poller run.
-
-Everything after the wait runs with a **60s** timeout
-(`DEFAULT_TIMEOUT_MS`, [connectors.js:31](../server/connectors.js#L31)); SSH
-connection setup inside that is capped at 16s.
-
-## SSH and WinRM Restore
-
-Three parts, each optional except the wait that joins them
-([connectors.js:700](../server/connectors.js#L700)):
+## The three parts
 
 ### 1. Wake (optional)
 
-Configured with a **Wake-on-LAN MAC** (`wol_mac`, stored canonically as
-`AA:BB:CC:DD:EE:FF`). Leave it blank if the host comes back on its own, the
-sequence then starts at the wait. The packet is the standard magic packet
-(6 × `0xFF` then the MAC repeated 16 times) sent to UDP port 9.
+Configured with a **Wake MAC** (`wol_mac`, stored canonically as
+`AA:BB:CC:DD:EE:FF`) and offered to **every kind of target** — what shut a
+machine down says nothing about whether it needs a magic packet to come back.
+Leave it blank if the host comes back on its own; the restore then starts at the
+wait. The packet is the standard magic packet (6 × `0xFF` then the MAC repeated
+16 times) sent to UDP port 9.
 
 Two ways to deliver it (`wake_mode`):
 
-- **`packet` — from Flatline itself.** With no **Broadcast address**
+- **`packet` — from Flatline itself.** With no **Broadcast** address
   (`wol_broadcast`) set, Flatline sends one packet per non-internal IPv4
   interface, to that interface's own directed broadcast, *from* that interface
-  ([connectors.js:583](../server/connectors.js#L583)). This removes the guess on
-  a host with Hyper-V/WSL/Docker adapters. With an address set, exactly one
-  packet goes there under normal routing. Broadcasts do not typically cross VLANs/interfaces, so
-  this only reaches networks Flatline is attached to; in Docker that needs
+  ([connectors.js](../server/connectors.js)). This removes the guess on a host
+  with Hyper-V/WSL/Docker adapters. With an address set, exactly one packet goes
+  there under normal routing. Broadcasts do not typically cross VLANs, so this
+  only reaches networks Flatline is attached to; in Docker that needs
   `network_mode: host`.
 - **`relay` — through a machine on the target's network.** Flatline signs in to
   an SSH or WinRM **relay** (Config → WoL Relays) and runs the relay's own
@@ -106,99 +105,105 @@ Two ways to deliver it (`wake_mode`):
 
 Relays carry their own connection config and credentials (same fields as an
 ssh/winrm target, minus the restore panel), a CIDR **network** used only to warn
-you in the UI when a relay cannot reach a target's address, and the wake command
-itself. Defaults: `wakeonlan {mac}` for SSH relays, an inline PowerShell UDP
-broadcast for WinRM relays (nothing to install on Windows).
+you in the UI when a relay cannot reach the address the restore will connect to,
+and the wake command itself. Defaults: `wakeonlan {mac}` for SSH relays, an
+inline PowerShell UDP broadcast for WinRM relays (nothing to install on Windows).
 
 A wake that fails stops the sequence there. Nothing ever answers a magic packet,
 so success only means the packet was accepted for delivery. The destinations it
 went to are reported in the result message.
 
-### 2. Wait for the host
+### 2. Wait
 
-Polls the target's own test (SSH connect + `echo flatline-ok`, or WinRM
-`Write-Output flatline-ok`) every 10s until it answers or the budget runs out.
-Each attempt has an 8s timeout. If the host never answers, the restore fails and
-the final step **is not run**.
+**Wait up to N seconds** (`restore_wait_seconds`) — 0 to 3600, default **300**.
+This is a *give-up budget*, not a sleep: Flatline polls every 10s and moves on
+the moment the target answers. `0` means one attempt, then give up.
 
-### 3. Once it answers (`restore_action`)
+What gets polled is whatever the restore is about to act on, using that
+connection's own connectivity test — the same one the **Test connection** button
+and the background health poller run:
 
-| Value | What happens |
+| Method | Polls |
 | --- | --- |
-| `none` | Nothing. Being back up is the whole restore. |
-| `command` | `restore_command` runs over the **same connection and credentials** as the trigger command, including the stored sudo password, which is written to the command's stdin (so the command needs `sudo -S`). A non-zero exit fails the restore. |
-| `http` | Flatline sends `restore_method` (default POST) to `restore_url`, with `restore_body` as `application/json` if set. Sent **from Flatline**, not from the host. |
+| `ssh` / `winrm` | An SSH connect + `echo flatline-ok`, or WinRM `Write-Output flatline-ok` |
+| `k8s` | `GET version` on the API server |
+| `http`, inheriting a target that logs in | The **login**, retried until it succeeds |
+| `http`, otherwise | The **target's** own test, when the target has one that is safe to repeat |
+| `none` (wake only) | The **target's** own test, when it has one |
 
-The HTTP option authenticates **separately** from the host login. The service
-being resumed need not be the machine that was shut down
-([connectors.js:671](../server/connectors.js#L671)). Its schemes are
-`none` / `bearer` / `header` / `basic`, with their own secrets
-(`restore_token`, `restore_password`) and `restore_header_name` /
-`restore_username`. The SSH or WinRM password is never what this step sends.
+The HTTP method never polls its own request: it need not be idempotent, and the
+trigger request is the very thing being undone. When it brings its own
+connection it falls back to the target's test — the target is the machine the
+wake was aimed at, which holds the "wake the host, wait for it, then call a
+resume API" shape. An HTTP target using a static auth scheme has no safe probe at
+all (its test *is* its real request), so there the request is sent once and the
+budget is ignored.
 
-A target with no MAC and `restore_action: none` has nothing to do, and reports
-"no restore configured for this target".
+If the wait runs out, the restore fails and **the action is not run**.
 
-## Kubernetes Cluster Restore
+Everything after the wait runs with a **60s** timeout
+(`DEFAULT_TIMEOUT_MS`, [connectors.js:31](../server/connectors.js#L31)); SSH
+connection setup inside that is capped at 16s.
+
+### 3. The action
+
+`restore_kind` picks the method; `restore_inherit` picks where it connects.
+
+**Inheriting** reuses the target's own connection and credentials, and is only on
+offer when the method matches the target's kind — an HTTP target has no SSH login
+to lend an SSH restore. Otherwise the restore carries its own address and its own
+encrypted credentials, under `restore_`-prefixed names that mirror the method's
+normal fields (`restore_host`, `restore_username`, `restore_password`, …). The
+rename is all `restoreConnection()` does before handing off, so nothing below
+that point knows which of the two it got.
+
+| `restore_kind` | What happens |
+| --- | --- |
+| `none` | Nothing beyond the wake and the wait. Being back up is the whole restore. |
+| `ssh` / `winrm` | `restore_command` runs over the connection. When inheriting, that includes the stored sudo password, written to the command's stdin (so the command needs `sudo -S`). A non-zero exit fails the restore. |
+| `k8s` | Up to three parts, in this order: uncordon every node, one raw API request, restart every Deployment. |
+| `http` | One request: `restore_method` (default POST) to `restore_url`, with `restore_body` as `application/json` if set. |
+
+An HTTP restore that brings its own connection carries its own auth scheme
+(`none` / `bearer` / `header` / `basic`), TLS policy (`restore_insecure_tls` /
+`restore_ca_cert`) and secrets (`restore_token`, `restore_password`). The `login`
+scheme is not on offer there: a login round trip belongs to a target, which has
+room for the whole conversation it needs.
+
+### The Kubernetes method in detail
 
 The connection is resolved **before** the wait, so a missing token or an
 unparseable kubeconfig fails immediately instead of being buried under a
-five-minute timeout ([connectors.js:904](../server/connectors.js#L904)). Then, in
-this order:
+five-minute timeout. Then, in this order:
 
-1. **Wait for the API server** — polls `GET version` every 10s within the budget.
-   Auto-restore starts the moment the Flatline group reports healthy, which is
-   normally before the control plane has finished coming up.
-2. **Uncordon every node** — `PATCH spec.unschedulable=false` on each. Always
-   done for a `drain` target (it is the mirror image of its trigger); for a
-   `custom` target it is the optional `restore_uncordon` tick box, on by default.
-   Nothing records which nodes were cordoned before the outage, so **every** node
-   in the cluster is uncordoned.
-3. **Optional restore request** — one raw API call, `restore_method` (default
+1. **Uncordon every node** (`restore_uncordon`) — `PATCH spec.unschedulable=false`
+   on each. This is an explicit choice, defaulted on in the form: it is the
+   mirror image of a cordon + drain, but nothing infers it from the trigger
+   action, because the cluster being restored need not be the one this target
+   shut down. Nothing records which nodes were cordoned before the outage, so
+   **every** node in the cluster is uncordoned.
+2. **Optional restore request** — one raw API call, `restore_method` (default
    `PATCH`, sent as `application/merge-patch+json`) to `restore_path` with
-   `restore_body`. Offered whatever the trigger action was: a drained cluster can
-   need a request of its own on the way back. Leave the path blank to skip it.
-4. **Optional Deployment restart** (`restore_restart_deployments`) — the
+   `restore_body`. Leave the path blank to skip it.
+3. **Optional Deployment restart** (`restore_restart_deployments`) — the
    equivalent of `kubectl rollout restart deployment` in every namespace except
    `kube-system`, by stamping a fresh `kubectl.kubernetes.io/restartedAt`
    annotation. Evicted pods reschedule on their own once nodes are schedulable;
    this is for the ones that come back wedged.
 
-Each part stops the ones behind it. There is no point scaling back up onto
-nodes that would not take the pods. With none of steps 2–4 configured (only
-possible on a `custom` target), the restore reports "no restore configured".
-
-## HTTP(S) Restore
-
-`restore_url` is the whole feature: with it blank there is nothing to undo and
-the Restore button is disabled. The request reuses the target's **URL host,
-credentials, TLS policy** (`insecure_tls` / `ca_cert`) and redirect handling;
-only method, path and body differ ([connectors.js:516](../server/connectors.js#L516)).
-
-How it starts depends on the auth scheme:
-
-- **Static schemes** (`none`, `bearer`, `header`, `basic`) — sent **once,
-  immediately**. There is no request that is safe to repeat while waiting: the
-  restore request need not be idempotent, and the trigger request is the very
-  thing being undone. `restore_wait_seconds` is ignored here.
-- **`login` (2-Step auth)** — Flatline retries the **login** every 10s until it
-  succeeds or the budget runs out, then sends the restore request with the token
-  and cookies from that login. The login is performed fresh every time, never
-  cached: a token minted during the outage would have expired by the time the
-  service is back.
-
-Redirects are followed (up to 5), and credentials are dropped when a redirect
-crosses to another origin.
+Each part stops the ones behind it. There is no point scaling back up onto nodes
+that would not take the pods. The form refuses to save a cluster restore with
+none of the three selected.
 
 ## Reporting and progress
 
 A restore that opens with a wait runs for minutes with nothing to show, so those
 are started and left running rather than held open:
 
-- `POST …/restore` answers **202** (`started: true`) for `ssh`, `winrm` and `k8s`,
-  and for `http` only when it uses `login` with a wait above 0
-  (`isSequenceRestore()`, [targetConfig.js:54](../server/targetConfig.js#L54)).
-  Everything else answers **200** with the finished result.
+- `POST …/restore` answers **202** (`started: true`) whenever the restore has a
+  wake or a wait to sit through (`isSequenceRestore()`,
+  [targetConfig.js](../server/targetConfig.js)). Everything else answers **200**
+  with the finished result.
 - While one runs, `GET …/restore` reports `{ running, progress, last_activity }`;
   the Actions page polls it every 3s and shows the current phase (e.g. *waiting
   up to 300s for SSH to answer*) with elapsed time in the target's row.
@@ -218,6 +223,25 @@ The message accumulates one clause per part of the sequence, so a failure says
 how far it got. For example, `sent Wake-on-LAN for AA:…:FF via 10.1.20.255; SSH did not
 answer within 300s (…)`.
 
+## Upgrading from the type-locked restore
+
+Before this, a restore was whatever shape the target's kind implied: only
+ssh/winrm could wake a host, only a k8s target could uncordon, and an http target
+could do nothing but replay one request. Migration 9 maps every existing restore
+onto the new shape without changing what it does:
+
+| Was | Becomes |
+| --- | --- |
+| ssh/winrm with `restore_action: 'command'` | `restore_kind` = the target's kind, `restore_inherit: 1` |
+| ssh/winrm with `restore_action: 'http'` | `restore_kind: 'http'`, `restore_inherit: 0` — that step always authenticated separately, and its fields already used `restore_` names |
+| ssh/winrm with a MAC and no final step | `restore_kind: 'none'` |
+| k8s | `restore_kind: 'k8s'`, `restore_inherit: 1`, with the uncordon that a `drain` target used to imply now written down |
+| http with a `restore_url` | `restore_kind: 'http'`, `restore_inherit: 1` |
+
+`restore_enabled` is set from whether the old config would actually have done
+anything — the same test the Restore button used to enable itself with — so a
+target that was never set up does not silently acquire a restore.
+
 ## Limits worth knowing
 
 - **No stored prior state.** Uncordon touches every node; the Deployment restart
@@ -234,3 +258,6 @@ answer within 300s (…)`.
   what the sequence is for.
 - **Auto-restore ignores targets in disabled action groups**, even if those
   targets ran before the group was disabled.
+- **Changing the restore method drops the old one's credentials.** The allowed
+  secret list narrows with the method (`secretFieldsFor()`), so a credential the
+  restore no longer connects with is not left sitting encrypted in the blob.

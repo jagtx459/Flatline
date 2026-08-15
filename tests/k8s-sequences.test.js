@@ -26,7 +26,13 @@ async function cluster(state) {
   return mock;
 }
 
-const target = (over = {}) => ({ auth_method: 'kubeconfig', action: 'drain', restore_wait_seconds: 1, ...over });
+// Uncordoning used to be inferred from a 'drain' action; it is an explicit part
+// of the restore now, so the baseline turns it on the way the form does.
+const target = (over = {}) => ({
+  auth_method: 'kubeconfig', action: 'drain',
+  restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1, restore_uncordon: 1,
+  restore_wait_seconds: 1, ...over
+});
 const secrets = () => ({ kubeconfig: mock.kubeconfig });
 
 before(async () => { mock = await startMockK8s(); });
@@ -273,28 +279,30 @@ describe('the restore', () => {
   });
 
   test('a drain target always uncordons; a custom one only when asked', async (t) => {
-    // Uncordoning is the mirror image of a drain. A custom target chooses,
-    // because Flatline never cordoned anything on its behalf.
+    // Uncordoning is now asked for, not inferred from the trigger action — the
+    // cluster being restored need not be the one this target shut down.
     const c = await cluster({ nodes: [node('node-1')] });
     if (!c) return t.skip(SKIP);
     c.cluster.nodes[0].spec.unschedulable = true;
 
     await restoreStep('k8s', target({
-      action: 'custom', command_path: 'x', restore_uncordon: 0,
+      restore_uncordon: 0,
       restore_path: 'apis/apps/v1/namespaces/default/deployments/web/scale'
     }), secrets(), 5000);
-    assert.equal(c.cluster.nodes[0].spec.unschedulable, true, 'a custom target left it alone');
+    assert.equal(c.cluster.nodes[0].spec.unschedulable, true, 'left alone when not asked for');
 
-    await restoreStep('k8s', target({ action: 'custom', command_path: 'x', restore_uncordon: 1 }), secrets(), 5000);
+    await restoreStep('k8s', target({ restore_uncordon: 1 }), secrets(), 5000);
     assert.equal(c.cluster.nodes[0].spec.unschedulable, false, 'until it was asked');
   });
 
-  test('a target with nothing to undo says so', async (t) => {
+  test('a restore with no steps still confirms the cluster came back', async (t) => {
+    // The form refuses to save this (see target-config.test.js), so it only
+    // arises from a hand-edited config — and reaching the API server is a real
+    // result, the same way a wake-only restore's wait is.
     if (!await cluster()) return t.skip(SKIP);
-    const result = await restoreStep('k8s',
-      target({ action: 'custom', command_path: 'x', restore_uncordon: 0 }), secrets(), 5000);
-    assert.equal(result.ok, false);
-    assert.match(result.message, /no restore configured/);
+    const result = await restoreStep('k8s', target({ restore_uncordon: 0 }), secrets(), 5000);
+    assert.equal(result.ok, true, result.message);
+    assert.match(result.message, /API server answered/);
   });
 });
 

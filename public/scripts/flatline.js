@@ -3,10 +3,11 @@ import {
   listGroups, createGroup, updateGroup, deleteGroup,
   listActionGroups
 } from './api.js';
-import { el, clear, enabledPill, initCollapsible, initDirtyNote, confirmDialog } from './dom.js';
+import { el, clear, enabledPill, initCollapsible, initDirtyNote, confirmDialog, initHelp } from './dom.js';
 import { initHeaderAuth } from './header.js';
 
 initHeaderAuth();
+initHelp();
 
 let groups = [];
 let actionGroups = [];

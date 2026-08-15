@@ -351,6 +351,64 @@ export const migrations = [
         );
       `);
     }
+  },
+  {
+    version: 9,
+    name: 'restore method is chosen, not inherited from the target kind',
+    up(db) {
+      // Restore used to be whatever shape the target's kind implied: only
+      // ssh/winrm could wake a host, only a k8s target could uncordon, and an
+      // http target could do nothing but replay one request. A restore is now a
+      // wake + wait + one action whose method (restore_kind) is picked
+      // independently, connecting either to the target itself (restore_inherit)
+      // or somewhere of its own.
+      //
+      // Every existing restore maps onto the new shape unchanged, so nothing
+      // needs reconfiguring: what a target did before is what it still does.
+      // restore_enabled is set from whether the old config would actually have
+      // done anything — the same test the Restore button used to enable itself
+      // with — so a target that was never set up does not silently acquire one.
+      const rows = db.prepare('SELECT id, kind, config FROM action_targets').all();
+      const update = db.prepare('UPDATE action_targets SET config = ? WHERE id = ?');
+
+      for (const row of rows) {
+        let config;
+        try { config = JSON.parse(row.config); } catch { continue; }
+        if (typeof config !== 'object' || config === null) continue;
+
+        if (row.kind === 'ssh' || row.kind === 'winrm') {
+          // wake -> wait -> (nothing | command on the host | an HTTP request).
+          // The HTTP option already carried its own URL, auth and secrets under
+          // restore_ names, which are exactly the names it keeps.
+          const action = config.restore_action ?? 'none';
+          config.restore_enabled = (config.wol_mac || action !== 'none') ? 1 : 0;
+          config.restore_kind = action === 'http' ? 'http' : action === 'command' ? row.kind : 'none';
+          // A command ran over the target's own connection; an HTTP request
+          // never did — it authenticated separately by design.
+          config.restore_inherit = action === 'command' ? 1 : 0;
+          delete config.restore_action;
+        } else if (row.kind === 'k8s') {
+          const uncordoning = config.action !== 'custom' || !!config.restore_uncordon;
+          config.restore_enabled = (uncordoning || config.restore_path || config.restore_restart_deployments) ? 1 : 0;
+          config.restore_kind = 'k8s';
+          config.restore_inherit = 1;
+          // Was implied by a 'drain' target rather than stored; it is an
+          // explicit choice now, so write down what was actually happening.
+          config.restore_uncordon = uncordoning ? 1 : 0;
+        } else if (row.kind === 'http') {
+          config.restore_enabled = config.restore_url ? 1 : 0;
+          config.restore_kind = config.restore_url ? 'http' : 'none';
+          config.restore_inherit = 1;
+        }
+
+        if (!config.restore_enabled) {
+          config.auto_restore = 0;
+          config.restore_kind = 'none';
+          config.restore_inherit = 0;
+        }
+        update.run(JSON.stringify(config), row.id);
+      }
+    }
   }
 ];
 

@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { fmtLatency, fmtUptime } from '../public/scripts/dom.js';
 import { hostInNetwork } from '../public/scripts/net.js';
@@ -33,6 +35,31 @@ test('hostInNetwork tells inside from outside', () => {
   assert.equal(hostInNetwork('10.9.9.9', '0.0.0.0/0'), true);       // /0 reaches everything
   assert.equal(hostInNetwork('10.1.20.7', '10.1.20.7/32'), true);   // /32 reaches one host
   assert.equal(hostInNetwork('10.1.20.8', '10.1.20.7/32'), false);
+});
+
+// A help popover holds paragraphs, so it must never sit inside a <p>. The HTML
+// parser closes an open <p> the moment it meets another one, which silently
+// empties the popover and spills its paragraphs into the surrounding row — the
+// page still loads, nothing throws, and the "?" just opens a blank box. Caught
+// here because there is no other automated check on this markup.
+
+test('no help popover is nested inside a <p>', () => {
+  const dir = path.join(import.meta.dirname, '..', 'public');
+  const offenders = [];
+
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.html'))) {
+    // Comments are stripped first — several of them mention <p> by name.
+    const html = fs.readFileSync(path.join(dir, file), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+    // Each <p …> up to its closing tag. The popovers are the only nested-<p>
+    // risk in these files, so the naive span is enough to catch it.
+    for (const m of html.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)) {
+      if (m[1].includes('class="help"')) {
+        offenders.push(`${file}: ${m[0].slice(0, 60).replace(/\s+/g, ' ')}…`);
+      }
+    }
+  }
+
+  assert.deepEqual(offenders, [], 'use a <span> or <div> for a title that carries a help popover');
 });
 
 test('hostInNetwork says "cannot tell" rather than guessing', () => {

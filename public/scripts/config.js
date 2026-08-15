@@ -7,10 +7,11 @@ import {
   listRelays, createRelay, updateRelay, deleteRelay, testRelay,
   exportConfig, importConfig, resetApp, downloadBackup, restoreBackup
 } from './api.js';
-import { el, clear, enabledPill, fmtDateTime, initCollapsible, initDirtyNote, initTabs, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
+import { el, clear, enabledPill, fmtDateTime, initCollapsible, initDirtyNote, initTabs, wireFileUpload, confirmDialog, alertDialog, initHelp } from './dom.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
 
 initHeaderAuth();
+initHelp();
 
 // Sub-tabs split this page's cards into panels. They only hide and show, so
 // every getElementById below still resolves whichever tab is open.
