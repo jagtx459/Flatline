@@ -17,7 +17,8 @@
 <body>
   <div class="container">
     <header class="site">
-      <span class="brand"><img class="logo-light" src="/assets/Logo.png" alt="Flatline logo"><img class="logo-dark" src="/assets/LogoDark.png" alt="Flatline logo">FLATLINE</span>
+      <span class="brand"><img class="logo-light" src="/assets/Logo.png" alt="Flatline logo"><img class="logo-dark"
+          src="/assets/LogoDark.png" alt="Flatline logo">FLATLINE</span>
       <nav>
         <a href="/">Dashboard</a>
         <a href="/flatline">Flatline</a>
@@ -28,11 +29,14 @@
         <span class="header-version" id="header-version"></span>
         <a class="icon-link" href="https://github.com/jagtx459/Flatline" target="_blank" rel="noopener noreferrer"
           title="View on GitHub" aria-label="View on GitHub">
-          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd"
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd"
               d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.22.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z">
-            </path></svg>
+            </path>
+          </svg>
         </a>
-        <button type="button" class="icon-link" id="header-theme" title="Toggle light / dark mode" aria-label="Toggle light / dark mode"></button>
+        <button type="button" class="icon-link" id="header-theme" title="Toggle light / dark mode"
+          aria-label="Toggle light / dark mode"></button>
         <button type="button" class="btn ghost small" id="header-logout" style="display:none">Log out</button>
       </div>
     </header>
@@ -45,485 +49,511 @@
 
     <div data-panel="notifications" hidden>
 
-    <div class="card">
-      <h2>Notification channels</h2>
-      <div id="channel-table"></div>
-    </div>
+      <div class="card">
+        <h2>Notification channels</h2>
+        <div id="channel-table"></div>
+      </div>
 
-    <div class="card">
-      <div class="card-header" id="channel-form-header">
-        <span class="chevron">▸</span>
-        <!-- The title text is its own span so the script can rewrite it to
+      <div class="card">
+        <div class="card-header" id="channel-form-header">
+          <span class="chevron">▸</span>
+          <!-- The title text is its own span so the script can rewrite it to
              "Edit channel: …" without taking the help button with it. -->
-        <h2><span id="channel-form-title">Add notification channel</span> <span class="help">
-          <button type="button" class="help-btn" aria-expanded="false" aria-label="About notification channels">?</button>
-          <span class="help-pop" role="tooltip" hidden>
-            <p>A channel delivers Flatline events — endpoint down/up, group armed/triggered, action
-              results — to an external service.</p>
-            <p>Webhook URLs and tokens are encrypted at rest and never sent back to the browser. When
-              editing, leave a credential blank to keep the stored value.</p>
-          </span></span></h2>
-      </div>
-      <div class="card-body" id="channel-form-body">
-      <form id="channel-form" method="post">
-        <div class="grid">
-          <label class="field">
-            <span class="cap">Name</span>
-            <input type="text" name="name" required maxlength="100" placeholder="Homelab Discord / Phone">
-          </label>
-          <label class="field">
-            <span class="cap">Service</span>
-            <select name="kind" id="c-kind">
-              <option value="webhook">Generic webhook (JSON POST)</option>
-              <option value="discord">Discord</option>
-              <option value="ntfy">ntfy</option>
-              <option value="email">Email (SMTP)</option>
-              <option value="apprise">Apprise</option>
-            </select>
-          </label>
-        </div>
-
-        <!-- webhook -->
-        <div class="kind-section" data-kind="webhook">
-          <p class="hint-row">Sends <code>POST {"event", "title", "message", "timestamp"}</code> to your URL,
-            with an optional bearer token.</p>
-          <div class="grid">
-            <label class="field secret" data-secret="url" style="grid-column: span 2"><span class="cap">URL <span
-                  class="secret-state"></span></span>
-              <input type="text" name="webhook_url_field" maxlength="2000" autocomplete="off"
-                placeholder="https://host/hook"></label>
-            <label class="field secret" data-secret="token"><span class="cap">Bearer token (optional) <span
-                  class="secret-state"></span></span>
-              <input type="password" name="webhook_token" autocomplete="new-password"></label>
-          </div>
-        </div>
-
-        <!-- discord -->
-        <div class="kind-section" data-kind="discord">
-          <p class="hint-row">Server settings → Integrations → Webhooks → copy the webhook URL.</p>
-          <label class="field secret" data-secret="webhook_url"><span class="cap">Webhook URL <span
-                class="secret-state"></span></span>
-            <input type="password" name="discord_webhook_url" autocomplete="new-password"
-              placeholder="https://discord.com/api/webhooks/..."></label>
-        </div>
-
-        <!-- ntfy -->
-        <div class="kind-section" data-kind="ntfy">
-          <div class="grid">
-            <label class="field"><span class="cap">Server</span>
-              <input type="text" name="ntfy_server_url" maxlength="2000" placeholder="https://ntfy.sh"></label>
-            <label class="field"><span class="cap">Topic</span>
-              <input type="text" name="ntfy_topic" maxlength="64" placeholder="flatline-alerts"></label>
-            <label class="field"><span class="cap">Priority (1–5, optional)</span>
-              <input type="number" name="ntfy_priority" min="1" max="5" placeholder="3"></label>
-            <label class="field"><span class="cap">Authentication</span>
-              <select name="ntfy_auth_scheme" id="ntfy-auth-scheme">
-                <option value="none">None (public topic)</option>
-                <option value="token">Access token</option>
-                <option value="basic">Username / password</option>
-              </select>
-            </label>
-            <label class="field secret" data-secret="token" data-ntfy-auth="token"><span class="cap">Access token <span
-                  class="secret-state"></span></span>
-              <input type="password" name="ntfy_token" autocomplete="new-password"></label>
-            <label class="field" data-ntfy-auth="basic"><span class="cap">Username</span>
-              <input type="text" name="ntfy_username" maxlength="2000" autocomplete="off"></label>
-            <label class="field secret" data-secret="password" data-ntfy-auth="basic"><span class="cap">Password <span
-                  class="secret-state"></span></span>
-              <input type="password" name="ntfy_password" autocomplete="new-password"></label>
-          </div>
-        </div>
-
-        <!-- email -->
-        <div class="kind-section" data-kind="email">
-          <div class="grid">
-            <label class="field"><span class="cap">SMTP host <span class="help">
-              <button type="button" class="help-btn" aria-expanded="false" aria-label="About SMTP delivery">?</button>
+          <h2><span id="channel-form-title">Add notification channel</span> <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false"
+                aria-label="About notification channels">?</button>
               <span class="help-pop" role="tooltip" hidden>
-                <p>Sends plain-text mail through your SMTP server.</p>
-                <p>Port 587 uses STARTTLS when the server offers it; tick <strong>implicit TLS</strong>
-                  for port 465.</p>
-              </span></span></span>
-              <input type="text" name="email_host" maxlength="253" placeholder="smtp.example.com"></label>
-            <label class="field"><span class="cap">Port</span>
-              <input type="number" name="email_port" min="1" max="65535" value="587"></label>
-            <div class="field" style="align-self:end">
-              <label class="check"><input type="checkbox" name="email_secure"><span>Implicit TLS (port 465)</span></label>
+                <p>A channel delivers Flatline events — endpoint down/up, group armed/triggered, action
+                  results — to an external service.</p>
+                <p>Webhook URLs and tokens are encrypted at rest and never sent back to the browser. When
+                  editing, leave a credential blank to keep the stored value.</p>
+              </span></span></h2>
+        </div>
+        <div class="card-body" id="channel-form-body">
+          <form id="channel-form" method="post">
+            <div class="grid">
+              <label class="field">
+                <span class="cap">Name</span>
+                <input type="text" name="name" required maxlength="100" placeholder="Homelab Discord / Phone">
+              </label>
+              <label class="field">
+                <span class="cap">Service</span>
+                <select name="kind" id="c-kind">
+                  <option value="webhook">Generic webhook (JSON POST)</option>
+                  <option value="discord">Discord</option>
+                  <option value="ntfy">ntfy</option>
+                  <option value="email">Email (SMTP)</option>
+                  <option value="apprise">Apprise</option>
+                </select>
+              </label>
             </div>
-          </div>
-          <div class="grid" style="margin-top:10px">
-            <label class="field"><span class="cap">From</span>
-              <input type="text" name="email_from" maxlength="254" placeholder="flatline@example.com"></label>
-            <label class="field" style="grid-column: span 2"><span class="cap">To (comma-separated)</span>
-              <input type="text" name="email_to" maxlength="2000" placeholder="you@example.com"></label>
-          </div>
-          <div class="grid" style="margin-top:10px">
-            <label class="field"><span class="cap">Username (optional)</span>
-              <input type="text" name="email_username" maxlength="254" autocomplete="off"></label>
-            <label class="field secret" data-secret="password"><span class="cap">Password <span
-                  class="secret-state"></span></span>
-              <input type="password" name="email_password" autocomplete="new-password"></label>
-          </div>
-        </div>
 
-        <!-- apprise -->
-        <div class="kind-section" data-kind="apprise">
-          <div class="grid">
-            <label class="field"><span class="cap">Apprise server <span class="help">
-              <button type="button" class="help-btn" aria-expanded="false" aria-label="About Apprise">?</button>
-              <span class="help-pop" role="tooltip" hidden>
-                <p>Posts to an <a href="https://github.com/caronc/apprise-api" target="_blank"
-                  rel="noopener noreferrer">Apprise API</a> server, which fans out to 100+ services.</p>
-                <p>Use a <strong>config key</strong> for a config stored on the Apprise server, or leave it
-                  blank and paste <strong>Apprise URLs</strong> to send directly.</p>
-              </span></span></span>
-              <input type="text" name="apprise_server_url" maxlength="2000" placeholder="http://apprise:8000"></label>
-            <label class="field"><span class="cap">Config key</span>
-              <input type="text" name="apprise_config_key" maxlength="64" placeholder="flatline"></label>
-            <label class="field"><span class="cap">Tags (optional)</span>
-              <input type="text" name="apprise_tags" maxlength="200" placeholder="devops, admin"></label>
-          </div>
-          <label class="field secret" data-secret="urls" style="margin-top:10px"><span class="cap">Apprise URLs
-              (one per line, used when no config key) <span class="secret-state"></span></span>
-            <textarea name="apprise_urls" rows="2" autocomplete="off" spellcheck="false"
-              placeholder="discord://webhook_id/webhook_token&#10;mailto://user:pass@gmail.com"></textarea></label>
-        </div>
+            <!-- webhook -->
+            <div class="kind-section" data-kind="webhook">
+              <p class="hint-row">Sends <code>POST {"event", "title", "message", "timestamp"}</code> to your URL,
+                with an optional bearer token.</p>
+              <div class="grid">
+                <label class="field secret" data-secret="url" style="grid-column: span 2"><span class="cap">URL <span
+                      class="secret-state"></span></span>
+                  <input type="text" name="webhook_url_field" maxlength="2000" autocomplete="off"
+                    placeholder="https://host/hook"></label>
+                <label class="field secret" data-secret="token"><span class="cap">Bearer token (optional) <span
+                      class="secret-state"></span></span>
+                  <input type="password" name="webhook_token" autocomplete="new-password"></label>
+              </div>
+            </div>
 
-        <div class="field" style="margin-top:12px">
-          <span class="cap">Send on these events</span>
-          <div class="check-scroll" id="channel-event-checks"></div>
-        </div>
+            <!-- discord -->
+            <div class="kind-section" data-kind="discord">
+              <p class="hint-row">Server settings → Integrations → Webhooks → copy the webhook URL.</p>
+              <label class="field secret" data-secret="webhook_url"><span class="cap">Webhook URL <span
+                    class="secret-state"></span></span>
+                <input type="password" name="discord_webhook_url" autocomplete="new-password"
+                  placeholder="https://discord.com/api/webhooks/..."></label>
+            </div>
 
-        <div class="grid" style="margin-top:12px">
-          <label class="field"><span class="cap">Title template</span>
-            <input type="text" name="title_template" maxlength="500" placeholder="Flatline: {event}"></label>
-          <label class="field" style="grid-column: span 2"><span class="cap">Body template <span class="help">
-              <button type="button" class="help-btn" aria-expanded="false" aria-label="About message placeholders">?</button>
-              <span class="help-pop" role="tooltip" hidden>
-                <p>Leave both templates blank for the defaults. Placeholders:</p>
-                <ul>
-                  <li><code>{event}</code> — the event's label</li>
-                  <li><code>{kind}</code> — the raw event key</li>
-                  <li><code>{endpoint}</code> — the endpoint's name</li>
-                  <li><code>{message}</code> — the details</li>
-                  <li><code>{time}</code>, <code>{state}</code></li>
-                  <li><code>{url}</code> — a link back to this Flatline, from the
-                    <a href="#general" id="baseurl-jump">site URL</a> under General</li>
-                </ul>
-              </span></span></span>
-            <textarea name="body_template" rows="2" maxlength="500" spellcheck="false"
-              placeholder="{message}&#10;{time}"></textarea></label>
-        </div>
+            <!-- ntfy -->
+            <div class="kind-section" data-kind="ntfy">
+              <div class="grid">
+                <label class="field"><span class="cap">Server</span>
+                  <input type="text" name="ntfy_server_url" maxlength="2000" placeholder="https://ntfy.sh"></label>
+                <label class="field"><span class="cap">Topic</span>
+                  <input type="text" name="ntfy_topic" maxlength="64" placeholder="flatline-alerts"></label>
+                <label class="field"><span class="cap">Priority (1–5, optional)</span>
+                  <input type="number" name="ntfy_priority" min="1" max="5" placeholder="3"></label>
+                <label class="field"><span class="cap">Authentication</span>
+                  <select name="ntfy_auth_scheme" id="ntfy-auth-scheme">
+                    <option value="none">None (public topic)</option>
+                    <option value="token">Access token</option>
+                    <option value="basic">Username / password</option>
+                  </select>
+                </label>
+                <label class="field secret" data-secret="token" data-ntfy-auth="token"><span class="cap">Access token
+                    <span class="secret-state"></span></span>
+                  <input type="password" name="ntfy_token" autocomplete="new-password"></label>
+                <label class="field" data-ntfy-auth="basic"><span class="cap">Username</span>
+                  <input type="text" name="ntfy_username" maxlength="2000" autocomplete="off"></label>
+                <label class="field secret" data-secret="password" data-ntfy-auth="basic"><span class="cap">Password
+                    <span class="secret-state"></span></span>
+                  <input type="password" name="ntfy_password" autocomplete="new-password"></label>
+              </div>
+            </div>
 
-        <div style="margin-top:12px">
-          <label class="check">
-            <input type="checkbox" name="enabled" checked>
-            <span>Enabled</span>
-          </label>
+            <!-- email -->
+            <div class="kind-section" data-kind="email">
+              <div class="grid">
+                <label class="field"><span class="cap">SMTP host <span class="help">
+                      <button type="button" class="help-btn" aria-expanded="false"
+                        aria-label="About SMTP delivery">?</button>
+                      <span class="help-pop" role="tooltip" hidden>
+                        <p>Sends plain-text mail through your SMTP server.</p>
+                        <p>Port 587 uses STARTTLS when the server offers it; tick <strong>implicit TLS</strong>
+                          for port 465.</p>
+                      </span></span></span>
+                  <input type="text" name="email_host" maxlength="253" placeholder="smtp.example.com"></label>
+                <label class="field"><span class="cap">Port</span>
+                  <input type="number" name="email_port" min="1" max="65535" value="587"></label>
+                <div class="field" style="align-self:end">
+                  <label class="check"><input type="checkbox" name="email_secure"><span>Implicit TLS (port
+                      465)</span></label>
+                </div>
+              </div>
+              <div class="grid" style="margin-top:10px">
+                <label class="field"><span class="cap">From</span>
+                  <input type="text" name="email_from" maxlength="254" placeholder="flatline@example.com"></label>
+                <label class="field" style="grid-column: span 2"><span class="cap">To (comma-separated)</span>
+                  <input type="text" name="email_to" maxlength="2000" placeholder="you@example.com"></label>
+              </div>
+              <div class="grid" style="margin-top:10px">
+                <label class="field"><span class="cap">Username (optional)</span>
+                  <input type="text" name="email_username" maxlength="254" autocomplete="off"></label>
+                <label class="field secret" data-secret="password"><span class="cap">Password <span
+                      class="secret-state"></span></span>
+                  <input type="password" name="email_password" autocomplete="new-password"></label>
+              </div>
+            </div>
+
+            <!-- apprise -->
+            <div class="kind-section" data-kind="apprise">
+              <div class="grid">
+                <label class="field"><span class="cap">Apprise server <span class="help">
+                      <button type="button" class="help-btn" aria-expanded="false" aria-label="About Apprise">?</button>
+                      <span class="help-pop" role="tooltip" hidden>
+                        <p>Posts to an <a href="https://github.com/caronc/apprise-api" target="_blank"
+                            rel="noopener noreferrer">Apprise API</a> server, which fans out to 100+ services.</p>
+                        <p>Use a <strong>config key</strong> for a config stored on the Apprise server, or leave it
+                          blank and paste <strong>Apprise URLs</strong> to send directly.</p>
+                      </span></span></span>
+                  <input type="text" name="apprise_server_url" maxlength="2000"
+                    placeholder="http://apprise:8000"></label>
+                <label class="field"><span class="cap">Config key</span>
+                  <input type="text" name="apprise_config_key" maxlength="64" placeholder="flatline"></label>
+                <label class="field"><span class="cap">Tags (optional)</span>
+                  <input type="text" name="apprise_tags" maxlength="200" placeholder="devops, admin"></label>
+              </div>
+              <label class="field secret" data-secret="urls" style="margin-top:10px"><span class="cap">Apprise URLs
+                  (one per line, used when no config key) <span class="secret-state"></span></span>
+                <textarea name="apprise_urls" rows="2" autocomplete="off" spellcheck="false"
+                  placeholder="discord://webhook_id/webhook_token&#10;mailto://user:pass@gmail.com"></textarea></label>
+            </div>
+
+            <div class="field" style="margin-top:12px">
+              <span class="cap">Send on these events</span>
+              <div class="check-scroll" id="channel-event-checks"></div>
+            </div>
+
+            <div class="grid" style="margin-top:12px">
+              <label class="field"><span class="cap">Title template</span>
+                <input type="text" name="title_template" maxlength="500" placeholder="Flatline: {event}"></label>
+              <label class="field" style="grid-column: span 2"><span class="cap">Body template <span class="help">
+                    <button type="button" class="help-btn" aria-expanded="false"
+                      aria-label="About message placeholders">?</button>
+                    <span class="help-pop" role="tooltip" hidden>
+                      <p>Leave both templates blank for the defaults. Placeholders:</p>
+                      <ul>
+                        <li><code>{event}</code> — the event's label</li>
+                        <li><code>{kind}</code> — the raw event key</li>
+                        <li><code>{endpoint}</code> — the endpoint's name</li>
+                        <li><code>{message}</code> — the details</li>
+                        <li><code>{time}</code>, <code>{state}</code></li>
+                        <li><code>{url}</code> — a link back to this Flatline, from the
+                          <a href="#general" id="baseurl-jump">site URL</a> under General
+                        </li>
+                      </ul>
+                    </span></span></span>
+                <textarea name="body_template" rows="2" maxlength="500" spellcheck="false"
+                  placeholder="{message}&#10;{time}"></textarea></label>
+            </div>
+
+            <div style="margin-top:12px">
+              <label class="check">
+                <input type="checkbox" name="enabled" checked>
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn" id="channel-submit">Add channel</button>
+              <button type="button" class="btn ghost" id="channel-test">Send test</button>
+              <button class="btn ghost" id="channel-cancel" style="display:none">Cancel</button>
+              <button type="button" class="btn ghost" id="channel-reset">Reset</button>
+              <span class="dirty-note" id="channel-dirty"></span>
+              <span class="note" id="channel-save-note"></span>
+              <span class="note" id="channel-test-result"></span>
+              <span class="error" id="channel-error"></span>
+            </div>
+          </form>
         </div>
-        <div class="form-actions">
-          <button type="submit" class="btn" id="channel-submit">Add channel</button>
-          <button type="button" class="btn ghost" id="channel-test">Send test</button>
-          <button class="btn ghost" id="channel-cancel" style="display:none">Cancel</button>
-          <button type="button" class="btn ghost" id="channel-reset">Reset</button>
-          <span class="dirty-note" id="channel-dirty"></span>
-          <span class="note" id="channel-save-note"></span>
-          <span class="note" id="channel-test-result"></span>
-          <span class="error" id="channel-error"></span>
-        </div>
-      </form>
       </div>
-    </div>
 
     </div><!-- /notifications panel -->
 
     <div data-panel="general">
 
-    <div class="card">
-      <h2>General</h2>
-      <form id="settings-form" method="post">
-        <div class="grid">
-          <label class="field">
-            <span class="cap">History retention (days, max 14)</span>
-            <input type="number" name="retention_days" min="1" max="14" value="14">
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn">Save settings</button>
-          <span class="dirty-note" id="settings-dirty"></span>
-          <span class="note" id="settings-note"></span>
-        </div>
-      </form>
-    </div>
-
-    <div class="card">
-      <h2>Encryption key <span class="help">
-        <button type="button" class="help-btn" aria-expanded="false" aria-label="About the encryption key">?</button>
-        <span class="help-pop" role="tooltip" hidden>
-          <p>Stored credentials — passwords, SSH keys, tokens, webhook URLs — are encrypted with
-            AES-256-GCM.</p>
-          <p>Rotating re-encrypts everything under a fresh key in one step; nothing has to be
-            re-entered.</p>
-          <p><strong>Back the key up.</strong> Without it, stored credentials are unrecoverable.</p>
-        </span></span></h2>
-      <p class="note" id="key-status">Loading key status…</p>
-
-      <div id="key-rotate-section">
-        <div class="form-actions">
-          <button type="button" class="btn" id="key-rotate">Rotate key (generate new)</button>
-        </div>
+      <div class="card">
+        <h2>General</h2>
+        <form id="settings-form" method="post">
+          <div class="grid">
+            <label class="field">
+              <span class="cap">History retention (days, max 14)</span>
+              <input type="number" name="retention_days" min="1" max="14" value="14">
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn">Save settings</button>
+            <span class="dirty-note" id="settings-dirty"></span>
+            <span class="note" id="settings-note"></span>
+          </div>
+        </form>
       </div>
 
-      <form id="key-form" method="post" style="margin-top:12px">
-        <div class="grid">
-          <label class="field" style="grid-column: span 2">
-            <span class="cap">Set key manually (64 hex chars or base64 for 32 bytes)</span>
-            <input type="text" name="key" maxlength="64" autocomplete="off" spellcheck="false"
-              placeholder="paste or generate a key">
-            <input type="file" id="key-upload" hidden>
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn danger-soft" id="key-set">Re-encrypt with this key</button>
-          <button type="button" class="btn ghost" id="key-generate">Generate</button>
-          <button type="button" class="btn ghost" id="key-upload-btn">Upload from file</button>
-          <span class="dirty-note" id="key-dirty"></span>
-          <span class="note" id="key-note"></span>
-          <span class="error" id="key-error"></span>
-        </div>
-      </form>
-    </div>
+      <div class="card">
+        <h2>Encryption key <span class="help">
+            <button type="button" class="help-btn" aria-expanded="false"
+              aria-label="About the encryption key">?</button>
+            <span class="help-pop" role="tooltip" hidden>
+              <p>Stored credentials — passwords, SSH keys, tokens, webhook URLs — are encrypted with
+                AES-256-GCM.</p>
+              <p>Rotating re-encrypts everything under a fresh key in one step; nothing has to be
+                re-entered.</p>
+              <p><strong>Back the key up.</strong> Without it, stored credentials are unrecoverable.</p>
+            </span></span></h2>
+        <p class="note" id="key-status">Loading key status…</p>
 
-    <div class="card">
-      <h2>Site access</h2>
-
-      <h3 style="margin-top:4px">Password</h3>
-      <p class="note" id="auth-status">Loading…</p>
-
-      <form id="password-form" method="post" style="margin-top:12px">
-        <div class="grid">
-          <label class="field"><span class="cap" id="password-cap">Set a site password (min 8 chars)</span>
-            <input type="password" name="password" minlength="8" maxlength="200" autocomplete="new-password"></label>
-          <label class="field"><span class="cap">Confirm password</span>
-            <input type="password" name="password2" maxlength="200" autocomplete="new-password"></label>
+        <div id="key-rotate-section">
+          <div class="form-actions">
+            <button type="button" class="btn" id="key-rotate">Rotate key (generate new)</button>
+          </div>
         </div>
-        <div class="form-actions">
-          <button type="submit" class="btn" id="password-set">Set password</button>
-          <button type="button" class="btn danger-ghost" id="password-remove" style="display:none">Remove password</button>
-          <span class="dirty-note" id="password-dirty"></span>
-          <span class="note" id="password-note"></span>
-          <span class="error" id="password-error"></span>
-        </div>
-      </form>
 
-      <h3 style="margin-top:20px">Site URL <span class="help">
-        <button type="button" class="help-btn" aria-expanded="false" aria-label="About the site URL">?</button>
-        <span class="help-pop" role="tooltip" hidden>
-          <p>The address this Flatline is reached at. Notifications use it for the <code>{url}</code>
-            link back to the dashboard, so an alert read on your phone can be clicked through.</p>
-          <p>Leave it blank and notifications carry no link — Flatline cannot guess an address that works
-            from wherever the alert is read.</p>
-        </span></span></h3>
-      <p class="note" id="baseurl-status">Loading…</p>
-      <form id="baseurl-form" method="post" style="margin-top:12px">
-        <div class="grid">
-          <label class="field" style="grid-column: span 2">
-            <span class="cap">Base URL</span>
-            <input type="text" name="base_url" maxlength="2000" autocomplete="off" spellcheck="false"
-              placeholder="http://flatline.lan:3131">
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn" id="baseurl-save">Save site URL</button>
-          <span class="dirty-note" id="baseurl-dirty"></span>
-          <span class="note" id="baseurl-note"></span>
-          <span class="error" id="baseurl-error"></span>
-        </div>
-      </form>
-
-      <h3 style="margin-top:20px">Allowed hostnames</h3>
-      <form id="hosts-form" method="post" style="margin-top:12px">
-        <div class="grid">
-          <label class="field" style="grid-column: span 3">
-            <span class="cap">Comma-separated — IPs and localhost will always work</span>
-            <input type="text" name="allowed_hosts" maxlength="2000" autocomplete="off" spellcheck="false"
-              placeholder="flatline.lan, monitor.home.lan">
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn" id="hosts-save">Save allowed hosts</button>
-          <span class="dirty-note" id="hosts-dirty"></span>
-          <span class="note" id="hosts-note"></span>
-          <span class="error" id="hosts-error"></span>
-        </div>
-      </form>
-    </div>
-
-    <div class="card">
-      <h2>Backup &amp; restore</h2>
-
-      <h3 style="margin-top:4px">Configuration (JSON)</h3>
-      <p class="hint-row">Export endpoints, Flatline groups, action targets, action groups, and notification
-        channels to a JSON file. Credentials are included but stay <strong>encrypted</strong>. Importing to another instance works only if it uses the <strong>same encryption key</strong>. Importing
-        <strong>replaces</strong> all existing configuration.</p>
-      <div class="form-actions">
-        <button type="button" class="btn" id="config-export">Export config</button>
-        <button type="button" class="btn danger-soft" id="config-import-btn">Import config</button>
-        <input type="file" id="config-import" accept="application/json,.json" hidden>
-        <span class="note" id="config-transfer-note"></span>
-        <span class="error" id="config-transfer-error"></span>
+        <form id="key-form" method="post" style="margin-top:12px">
+          <div class="grid">
+            <label class="field" style="grid-column: span 2">
+              <span class="cap">Set key manually (64 hex chars or base64 for 32 bytes)</span>
+              <input type="text" name="key" maxlength="64" autocomplete="off" spellcheck="false"
+                placeholder="paste or generate a key">
+              <input type="file" id="key-upload" hidden>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn danger-soft" id="key-set">Re-encrypt with this key</button>
+            <button type="button" class="btn ghost" id="key-generate">Generate</button>
+            <button type="button" class="btn ghost" id="key-upload-btn">Upload from file</button>
+            <span class="dirty-note" id="key-dirty"></span>
+            <span class="note" id="key-note"></span>
+            <span class="error" id="key-error"></span>
+          </div>
+        </form>
       </div>
 
-      <h3 style="margin-top:20px">Database</h3>
-      <p class="hint-row">Download a full snapshot of the SQLite database (configuration <em>and</em> history),
-        or restore one. Restoring <strong>replaces the entire database</strong>; stored credentials work only
-        if this instance uses the same encryption key as the backup. It is <strong>STRONGLY</strong> recommended to have access to your current encryption key or generate a new one prior to performing a backup->restore procedure.</p>
-      <div class="form-actions">
-        <button type="button" class="btn" id="db-backup">Backup database</button>
-        <button type="button" class="btn danger-soft" id="db-restore-btn">Restore database</button>
-        <input type="file" id="db-restore" accept=".db,application/octet-stream,application/x-sqlite3" hidden>
-        <button type="button" class="btn danger-soft" id="app-reset">Reset database</button>
-        <span class="note" id="db-transfer-note"></span>
-        <span class="error" id="db-transfer-error"></span>
+      <div class="card">
+        <h2>Site access</h2>
+
+        <h3 style="margin-top:4px">Password</h3>
+        <p class="note" id="auth-status">Loading…</p>
+
+        <form id="password-form" method="post" style="margin-top:12px">
+          <div class="grid">
+            <label class="field"><span class="cap" id="password-cap">Set a site password (min 8 chars)</span>
+              <input type="password" name="password" minlength="8" maxlength="200" autocomplete="new-password"></label>
+            <label class="field"><span class="cap">Confirm password</span>
+              <input type="password" name="password2" maxlength="200" autocomplete="new-password"></label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn" id="password-set">Set password</button>
+            <button type="button" class="btn danger-ghost" id="password-remove" style="display:none">Remove
+              password</button>
+            <span class="dirty-note" id="password-dirty"></span>
+            <span class="note" id="password-note"></span>
+            <span class="error" id="password-error"></span>
+          </div>
+        </form>
+
+        <h3 style="margin-top:20px">Site URL <span class="help">
+            <button type="button" class="help-btn" aria-expanded="false" aria-label="About the site URL">?</button>
+            <span class="help-pop" role="tooltip" hidden>
+              <p>The address this Flatline is reached at. Notifications use it for the <code>{url}</code>
+                link back to the dashboard, so an alert read on your phone can be clicked through.</p>
+              <p>Leave it blank and notifications carry no link — Flatline cannot guess an address that works
+                from wherever the alert is read.</p>
+            </span></span></h3>
+        <p class="note" id="baseurl-status">Loading…</p>
+        <form id="baseurl-form" method="post" style="margin-top:12px">
+          <div class="grid">
+            <label class="field" style="grid-column: span 2">
+              <span class="cap">Base URL</span>
+              <input type="text" name="base_url" maxlength="2000" autocomplete="off" spellcheck="false"
+                placeholder="http://flatline.lan:3131">
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn" id="baseurl-save">Save site URL</button>
+            <span class="dirty-note" id="baseurl-dirty"></span>
+            <span class="note" id="baseurl-note"></span>
+            <span class="error" id="baseurl-error"></span>
+          </div>
+        </form>
+
+        <h3 style="margin-top:20px">Allowed hostnames</h3>
+        <form id="hosts-form" method="post" style="margin-top:12px">
+          <div class="grid">
+            <label class="field" style="grid-column: span 3">
+              <span class="cap">Comma-separated (IPs and localhost will always work)</span>
+              <input type="text" name="allowed_hosts" maxlength="2000" autocomplete="off" spellcheck="false"
+                placeholder="flatline.lan, monitor.home.lan">
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn" id="hosts-save">Save allowed hosts</button>
+            <span class="dirty-note" id="hosts-dirty"></span>
+            <span class="note" id="hosts-note"></span>
+            <span class="error" id="hosts-error"></span>
+          </div>
+        </form>
       </div>
-      <p class="hint-row">This will reset <strong>all</strong> endpoints, groups, actions,
-        channels, history, removes the site password, and clears settings. Only the encryption key is kept.</p>
-    </div>
+
+      <div class="card">
+        <h2>Backup &amp; restore <span class="help">
+            <button type="button" class="help-btn" aria-expanded="false"
+              aria-label="About Backup &amp; restore">?</button>
+            <span class="help-pop" role="tooltip" hidden>
+              <p class="hint-row">Export endpoints, Flatline groups, action targets, action groups, and notification
+                channels to a JSON file. Credentials are included but stay <strong>encrypted</strong>. Importing to
+                another instance works only if it uses the <strong>same encryption key</strong>. Importing
+                <strong>replaces</strong> all existing configuration.
+              </p>
+              </br>
+              <p class="hint-row">Download a full snapshot of the SQLite database (configuration <em>and</em> history),
+                or restore one. Restoring <strong>replaces the entire database</strong>; stored credentials work only
+                if this instance uses the same encryption key as the backup. It is <strong>STRONGLY</strong> recommended
+                to have access to your current encryption key or generate a new one prior to performing a
+                backup->restore procedure.</p>
+            </span>
+          </span>
+        </h2>
+
+        <h3 style="margin-top:4px">Configuration (JSON)</h3>
+
+        <div class="form-actions">
+          <button type="button" class="btn" id="config-export">Export config</button>
+          <button type="button" class="btn danger-soft" id="config-import-btn">Import config</button>
+          <input type="file" id="config-import" accept="application/json,.json" hidden>
+          <span class="note" id="config-transfer-note"></span>
+          <span class="error" id="config-transfer-error"></span>
+        </div>
+
+        <h3 style="margin-top:20px">Database</h3>
+
+        <div class="form-actions">
+          <button type="button" class="btn" id="db-backup">Backup database</button>
+          <button type="button" class="btn danger-soft" id="db-restore-btn">Restore database</button>
+          <input type="file" id="db-restore" accept=".db,application/octet-stream,application/x-sqlite3" hidden>
+          <button type="button" class="btn danger-soft" id="app-reset">Reset database</button>
+          <label class="field" style="grid-column: span 3"><span class="cap">This will reset <strong><u>all</u></strong>
+              endpoints, groups, actions,
+              channels, history, removes the site password, and clears settings. Only the encryption key is
+              kept.</span></label>
+          <span class="note" id="db-transfer-note"></span>
+          <span class="error" id="db-transfer-error"></span>
+        </div>
+      </div>
 
     </div><!-- /general panel -->
 
     <div data-panel="relays" hidden>
 
-    <div class="card">
-      <h2>Wake-on-LAN relays</h2>
-      <div id="relay-table"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-header" id="relay-form-header">
-        <span class="chevron">▸</span>
-        <h2><span id="relay-form-title">Add relay</span> <span class="help">
-          <button type="button" class="help-btn" aria-expanded="false" aria-label="About relays">?</button>
-          <span class="help-pop" role="tooltip" hidden>
-            <p>A magic packet is a broadcast, and <strong>broadcasts do not cross routers</strong>, so
-              Flatline can only wake a machine on a network it is itself attached to.</p>
-            <p>A relay is a machine that already sits on the target's network — a NAS, a hypervisor, a
-              Pi — which Flatline signs in to and asks to send the packet locally.</p>
-            <p>Set one up per network you need to wake into, then pick it on the action target's Restore
-              step. Credentials are encrypted at rest and never sent back to the browser; leave one blank
-              when editing to keep the stored value.</p>
-          </span></span></h2>
+      <div class="card">
+        <h2>Wake-on-LAN relays</h2>
+        <div id="relay-table"></div>
       </div>
-      <div class="card-body" id="relay-form-body">
-      <form id="relay-form" method="post">
-        <div class="grid">
-          <label class="field">
-            <span class="cap">Name</span>
-            <input type="text" name="name" required maxlength="100" placeholder="VLAN 20 NAS">
-          </label>
-          <label class="field">
-            <span class="cap">Type</span>
-            <select name="kind" id="r-kind">
-              <option value="ssh">SSH</option>
-              <option value="winrm">WinRM</option>
-            </select>
-          </label>
-        </div>
 
-        <!-- SSH relay -->
-        <div class="relay-section" data-relay-kind="ssh">
-          <div class="grid">
-            <label class="field"><span class="cap">Host</span>
-              <input type="text" name="ssh_host" maxlength="2000" placeholder="10.1.20.10"></label>
-            <label class="field"><span class="cap">Port</span>
-              <input type="number" name="ssh_port" min="1" max="65535" value="22"></label>
-            <label class="field"><span class="cap">Authentication</span>
-              <select name="ssh_auth_method">
-                <option value="password">Password</option>
-                <option value="key">Private key</option>
-              </select>
-            </label>
-          </div>
-          <div class="grid" style="margin-top:10px; grid-template-columns: repeat(2, minmax(0, 380px))">
-            <label class="field"><span class="cap">Username</span>
-              <input type="text" name="ssh_username" maxlength="2000" autocomplete="off"></label>
-            <label class="field secret" data-secret="password" data-relay-ssh-auth="password">
-              <span class="cap">Password <span class="secret-state"></span></span>
-              <input type="password" name="ssh_password" autocomplete="new-password"></label>
-            <label class="field secret" data-secret="passphrase" data-relay-ssh-auth="key">
-              <span class="cap">Key passphrase (optional) <span class="secret-state"></span></span>
-              <input type="password" name="ssh_passphrase" autocomplete="new-password"></label>
-          </div>
-          <label class="field secret" data-secret="private_key" data-relay-ssh-auth="key" style="margin-top:10px">
-            <span class="cap">Private key (PEM) <span class="secret-state"></span></span>
-            <textarea name="ssh_private_key" rows="4" spellcheck="false"
-              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
-            <button type="button" class="btn ghost small" id="relay-key-upload-btn"
-              style="align-self:flex-start; margin-top:8px">Upload from file</button>
-            <input type="file" id="relay-key-upload" hidden>
-          </label>
-          <div class="grid" style="margin-top:10px; grid-template-columns: minmax(0, 380px)">
-            <label class="field secret" data-secret="sudo_password">
-              <span class="cap">Sudo password (optional) <span class="secret-state"></span></span>
-              <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
-          </div>
-        </div>
-
-        <!-- WinRM relay -->
-        <div class="relay-section" data-relay-kind="winrm">
-          <p class="hint-row">Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>);
-            the default port is 5985.</p>
-          <div class="grid">
-            <label class="field"><span class="cap">Host</span>
-              <input type="text" name="winrm_host" maxlength="2000" placeholder="10.1.20.11"></label>
-            <label class="field"><span class="cap">WinRM port</span>
-              <input type="number" name="winrm_port" min="1" max="65535" value="5985"></label>
-            <label class="field"><span class="cap">Domain (optional)</span>
-              <input type="text" name="winrm_domain" maxlength="2000"></label>
-          </div>
-          <div class="grid">
-            <label class="field"><span class="cap">Username</span>
-              <input type="text" name="winrm_username" maxlength="2000" autocomplete="off"></label>
-            <label class="field secret" data-secret="password">
-              <span class="cap">Password <span class="secret-state"></span></span>
-              <input type="password" name="winrm_password" autocomplete="new-password"></label>
-          </div>
-        </div>
-
-        <div class="grid" style="margin-top:12px; grid-template-columns: minmax(0, 380px)">
-          <label class="field">
-            <span class="cap">Network (CIDR) <span class="help">
-              <button type="button" class="help-btn" aria-expanded="false" aria-label="About the relay's network">?</button>
+      <div class="card">
+        <div class="card-header" id="relay-form-header">
+          <span class="chevron">▸</span>
+          <h2><span id="relay-form-title">Add relay</span> <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About relays">?</button>
               <span class="help-pop" role="tooltip" hidden>
-                <p>The broadcast domain the relay sits in.</p>
-                <p>Flatline checks a target's address against this and warns you if you pick a relay that
-                  cannot reach it — a magic packet sent to the wrong network fails silently, because
-                  nothing ever answers one.</p>
-              </span></span></span>
-            <input type="text" name="network" maxlength="43" placeholder="10.1.20.0/24">
-          </label>
+                <p>A magic packet is a broadcast, and <strong>broadcasts do not cross routers</strong>, so
+                  Flatline can only wake a machine on a network it is itself attached to.</p>
+                <p>A relay is a machine that already sits on the target's network — a NAS, a hypervisor, a
+                  Pi — which Flatline signs in to and asks to send the packet locally.</p>
+                <p>Set one up per network you need to wake into, then pick it on the action target's Restore
+                  step. Credentials are encrypted at rest and never sent back to the browser; leave one blank
+                  when editing to keep the stored value.</p>
+              </span></span></h2>
         </div>
+        <div class="card-body" id="relay-form-body">
+          <form id="relay-form" method="post">
+            <div class="grid">
+              <label class="field">
+                <span class="cap">Name</span>
+                <input type="text" name="name" required maxlength="100" placeholder="VLAN 20 NAS">
+              </label>
+              <label class="field">
+                <span class="cap">Type</span>
+                <select name="kind" id="r-kind">
+                  <option value="ssh">SSH</option>
+                  <option value="winrm">WinRM</option>
+                </select>
+              </label>
+            </div>
 
-        <label class="field" style="margin-top:12px">
-          <span class="cap">Wake command <span class="help">
-            <button type="button" class="help-btn" aria-expanded="false" aria-label="About the wake command">?</button>
-            <span class="help-pop" role="tooltip" hidden>
-              <p><code>{mac}</code> is replaced with the target's MAC address — every occurrence of it.</p>
-              <p>One relay serves every machine on its network: the command lives here, the MAC lives on
-                each action target.</p>
-            </span></span></span>
-          <input type="text" name="wake_command" maxlength="10000" placeholder="wakeonlan {mac}">
-          <span class="hint-row" style="margin:6px 0 0">
-            <button type="button" class="link-btn" id="relay-cmd-reset">reset to the default for this type</button></span>
-        </label>
+            <!-- SSH relay -->
+            <div class="relay-section" data-relay-kind="ssh">
+              <div class="grid">
+                <label class="field"><span class="cap">Host</span>
+                  <input type="text" name="ssh_host" maxlength="2000" placeholder="10.1.20.10"></label>
+                <label class="field"><span class="cap">Port</span>
+                  <input type="number" name="ssh_port" min="1" max="65535" value="22"></label>
+                <label class="field"><span class="cap">Authentication</span>
+                  <select name="ssh_auth_method">
+                    <option value="password">Password</option>
+                    <option value="key">Private key</option>
+                  </select>
+                </label>
+              </div>
+              <div class="grid" style="margin-top:10px; grid-template-columns: repeat(2, minmax(0, 380px))">
+                <label class="field"><span class="cap">Username</span>
+                  <input type="text" name="ssh_username" maxlength="2000" autocomplete="off"></label>
+                <label class="field secret" data-secret="password" data-relay-ssh-auth="password">
+                  <span class="cap">Password <span class="secret-state"></span></span>
+                  <input type="password" name="ssh_password" autocomplete="new-password"></label>
+                <label class="field secret" data-secret="passphrase" data-relay-ssh-auth="key">
+                  <span class="cap">Key passphrase (optional) <span class="secret-state"></span></span>
+                  <input type="password" name="ssh_passphrase" autocomplete="new-password"></label>
+              </div>
+              <label class="field secret" data-secret="private_key" data-relay-ssh-auth="key" style="margin-top:10px">
+                <span class="cap">Private key (PEM) <span class="secret-state"></span></span>
+                <textarea name="ssh_private_key" rows="4" spellcheck="false"
+                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+                <button type="button" class="btn ghost small" id="relay-key-upload-btn"
+                  style="align-self:flex-start; margin-top:8px">Upload from file</button>
+                <input type="file" id="relay-key-upload" hidden>
+              </label>
+              <div class="grid" style="margin-top:10px; grid-template-columns: minmax(0, 380px)">
+                <label class="field secret" data-secret="sudo_password">
+                  <span class="cap">Sudo password (optional) <span class="secret-state"></span></span>
+                  <input type="password" name="ssh_sudo_password" autocomplete="new-password"></label>
+              </div>
+            </div>
 
-        <details class="setup-help" style="margin-top:12px">
-          <summary>Installing a wake tool on the relay</summary>
-          <div class="help-body">
-            <p><strong>Windows relays need nothing installed</strong> — the default command uses PowerShell,
-              which is always present. On Linux the tool is not installed by default, and the package name and
-              command differ by distribution:</p>
-            <pre># Debian / Ubuntu
+            <!-- WinRM relay -->
+            <div class="relay-section" data-relay-kind="winrm">
+              <p class="hint-row">Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>);
+                the default port is 5985.</p>
+              <div class="grid">
+                <label class="field"><span class="cap">Host</span>
+                  <input type="text" name="winrm_host" maxlength="2000" placeholder="10.1.20.11"></label>
+                <label class="field"><span class="cap">WinRM port</span>
+                  <input type="number" name="winrm_port" min="1" max="65535" value="5985"></label>
+                <label class="field"><span class="cap">Domain (optional)</span>
+                  <input type="text" name="winrm_domain" maxlength="2000"></label>
+              </div>
+              <div class="grid">
+                <label class="field"><span class="cap">Username</span>
+                  <input type="text" name="winrm_username" maxlength="2000" autocomplete="off"></label>
+                <label class="field secret" data-secret="password">
+                  <span class="cap">Password <span class="secret-state"></span></span>
+                  <input type="password" name="winrm_password" autocomplete="new-password"></label>
+              </div>
+            </div>
+
+            <div class="grid" style="margin-top:12px; grid-template-columns: minmax(0, 380px)">
+              <label class="field">
+                <span class="cap">Network (CIDR) <span class="help">
+                    <button type="button" class="help-btn" aria-expanded="false"
+                      aria-label="About the relay's network">?</button>
+                    <span class="help-pop" role="tooltip" hidden>
+                      <p>The broadcast domain the relay sits in.</p>
+                      <p>Flatline checks a target's address against this and warns you if you pick a relay that
+                        cannot reach it — a magic packet sent to the wrong network fails silently, because
+                        nothing ever answers one.</p>
+                    </span></span></span>
+                <input type="text" name="network" maxlength="43" placeholder="10.1.20.0/24">
+              </label>
+            </div>
+
+            <label class="field" style="margin-top:12px">
+              <span class="cap">Wake command <span class="help">
+                  <button type="button" class="help-btn" aria-expanded="false"
+                    aria-label="About the wake command">?</button>
+                  <span class="help-pop" role="tooltip" hidden>
+                    <p><code>{mac}</code> is replaced with the target's MAC address — every occurrence of it.</p>
+                    <p>One relay serves every machine on its network: the command lives here, the MAC lives on
+                      each action target.</p>
+                  </span></span></span>
+              <input type="text" name="wake_command" maxlength="10000" placeholder="wakeonlan {mac}">
+              <span class="hint-row" style="margin:6px 0 0">
+                <button type="button" class="link-btn" id="relay-cmd-reset">reset to the default for this
+                  type</button></span>
+            </label>
+
+            <details class="setup-help" style="margin-top:12px">
+              <summary>Installing a wake tool on the relay</summary>
+              <div class="help-body">
+                <p><strong>Windows relays need nothing installed</strong> — the default command uses PowerShell,
+                  which is always present. On Linux the tool is not installed by default, and the package name and
+                  command differ by distribution:</p>
+                <pre># Debian / Ubuntu
 sudo apt install wakeonlan          ->  wakeonlan {mac}
 
 # Fedora
@@ -535,37 +565,37 @@ sudo dnf install wol                ->  wol {mac}
 
 # Alpine
 sudo apk add wakeonlan              ->  wakeonlan {mac}</pre>
-            <p>Whichever you install, put the matching command in the field above. If you cannot install
-              anything, this one-liner uses only core Perl, which is present on essentially every Linux
-              (guaranteed on Debian/Ubuntu, where <code>perl-base</code> is an essential package):</p>
-            <pre>perl -e 'use Socket; socket(S,PF_INET,SOCK_DGRAM,getprotobyname("udp"));
+                <p>Whichever you install, put the matching command in the field above. If you cannot install
+                  anything, this one-liner uses only core Perl, which is present on essentially every Linux
+                  (guaranteed on Debian/Ubuntu, where <code>perl-base</code> is an essential package):</p>
+                <pre>perl -e 'use Socket; socket(S,PF_INET,SOCK_DGRAM,getprotobyname("udp"));
 setsockopt(S,SOL_SOCKET,SO_BROADCAST,1);
 $m = "{mac}"; $m =~ s/[:-]//g;
 send(S, "\xff" x 6 . pack("H*",$m) x 16, 0, sockaddr_in(9, inet_aton("255.255.255.255")));'</pre>
-            <p>Test the connection below before saving — that proves the login works. It does not send a
-              packet, since that would actually power a machine on.</p>
-          </div>
-        </details>
+                <p>Test the connection below before saving — that proves the login works. It does not send a
+                  packet, since that would actually power a machine on.</p>
+              </div>
+            </details>
 
-        <div style="margin-top:12px">
-          <label class="check">
-            <input type="checkbox" name="enabled" checked>
-            <span>Enabled</span>
-          </label>
+            <div style="margin-top:12px">
+              <label class="check">
+                <input type="checkbox" name="enabled" checked>
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn" id="relay-submit">Add relay</button>
+              <button type="button" class="btn ghost" id="relay-test">Test connection</button>
+              <button class="btn ghost" id="relay-cancel" style="display:none">Cancel</button>
+              <button type="button" class="btn ghost" id="relay-reset">Reset</button>
+              <span class="dirty-note" id="relay-dirty"></span>
+              <span class="note" id="relay-save-note"></span>
+              <span class="note" id="relay-test-result"></span>
+              <span class="error" id="relay-error"></span>
+            </div>
+          </form>
         </div>
-        <div class="form-actions">
-          <button type="submit" class="btn" id="relay-submit">Add relay</button>
-          <button type="button" class="btn ghost" id="relay-test">Test connection</button>
-          <button class="btn ghost" id="relay-cancel" style="display:none">Cancel</button>
-          <button type="button" class="btn ghost" id="relay-reset">Reset</button>
-          <span class="dirty-note" id="relay-dirty"></span>
-          <span class="note" id="relay-save-note"></span>
-          <span class="note" id="relay-test-result"></span>
-          <span class="error" id="relay-error"></span>
-        </div>
-      </form>
       </div>
-    </div>
 
     </div><!-- /relays panel -->
   </div>
