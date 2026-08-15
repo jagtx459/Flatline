@@ -9,9 +9,9 @@ import path from 'node:path';
 // layer between a submitted form and the JSON stored in the config column.
 //
 // The parsers return either the clean object or a string error, so a test
-// asserts on the type: a string means rejected. parseRestoreSequence and
-// parseHttpLogin are reached through parseInfraConfig rather than directly,
-// because that is the only way the routes call them.
+// asserts on the type: a string means rejected. parseRestore and parseHttpLogin
+// are reached through parseInfraConfig rather than directly, because that is the
+// only way the routes call them.
 //
 // db.js opens a SQLite file at import time (targetConfig.js needs it to check a
 // relay exists) — point it at a throwaway dir before the dynamic import.
@@ -19,7 +19,7 @@ process.env.FLATLINE_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'flatline-target
 const store = await import('../server/db.js');
 const {
   parseInfraConfig, parseRelayConfig, parseRelayNetwork, parseWakeCommand,
-  isSequenceRestore, MAX_RESTORE_WAIT_SECONDS
+  isSequenceRestore, secretFieldsFor, MAX_RESTORE_WAIT_SECONDS
 } = await import('../server/targetConfig.js');
 
 /** A relay for the wake-through-a-relay cases to point at. */
@@ -34,12 +34,72 @@ const ssh = (over = {}) => parseInfraConfig('ssh', { host: '10.0.0.5', username:
 const http = (over = {}) => parseInfraConfig('http', { url: 'http://svc.local/hook', ...over });
 const k8s = (over = {}) => parseInfraConfig('k8s', { api_url: 'https://10.0.0.1:6443', ...over });
 
-// ---- the ssh/winrm restore sequence ----
+// ---- the restore, which is the same shape for every kind ----
 
-describe('restore sequence: wake-on-lan', () => {
+/** An ssh target with its restore switched on, so each case states only the part
+ *  of the restore it is about. A bare MAC is enough to be a valid restore. */
+const restore = (over = {}) => ssh({ restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF', ...over });
+
+describe('restore: the toggle', () => {
+  test('a target has no restore until one is asked for', () => {
+    const cfg = ssh();
+    assert.equal(cfg.restore_enabled, 0);
+    assert.equal('restore_kind' in cfg, false);
+    assert.equal('auto_restore' in cfg, false);
+  });
+
+  test('switching it off leaves nothing behind', () => {
+    // A half-configured restore would be invisible in the form yet still stored,
+    // and auto_restore would still arm it.
+    const cfg = ssh({
+      restore_enabled: 0, auto_restore: 1, restore_kind: 'ssh',
+      wol_mac: 'AA:BB:CC:DD:EE:FF', restore_command: 'systemctl start app'
+    });
+    assert.equal(cfg.restore_enabled, 0);
+    for (const field of ['auto_restore', 'restore_kind', 'wol_mac', 'restore_command']) {
+      assert.equal(field in cfg, false, field);
+    }
+  });
+
+  test('a restore that would do nothing at all is refused', () => {
+    assert.match(ssh({ restore_enabled: 1 }), /needs a wake or a method/);
+    // Either half on its own is enough.
+    assert.equal(typeof ssh({ restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF' }), 'object');
+    assert.equal(typeof ssh({ restore_enabled: 1, restore_kind: 'ssh', restore_inherit: 1, restore_command: 'x' }),
+      'object');
+  });
+
+  test('the wait is clamped to the allowed range and defaults to five minutes', () => {
+    assert.equal(restore().restore_wait_seconds, 300);
+    assert.equal(restore({ restore_wait_seconds: 0 }).restore_wait_seconds, 0);
+    assert.equal(restore({ restore_wait_seconds: -30 }).restore_wait_seconds, 0);
+    assert.equal(restore({ restore_wait_seconds: 99_999 }).restore_wait_seconds, MAX_RESTORE_WAIT_SECONDS);
+    assert.equal(restore({ restore_wait_seconds: 'soon' }).restore_wait_seconds, 300, 'nonsense falls back');
+  });
+
+  test('auto-restore is a flag, not free text', () => {
+    assert.equal(restore({ auto_restore: true }).auto_restore, 1);
+    assert.equal(restore({ auto_restore: 0 }).auto_restore, 0);
+  });
+});
+
+describe('restore: wake-on-lan', () => {
+  test('every kind of target can be woken, not just ssh and winrm', () => {
+    // The whole point of the redesign: what shut a machine down says nothing
+    // about whether it needs a magic packet to come back.
+    for (const cfg of [
+      k8s({ restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF' }),
+      http({ restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF' }),
+      parseInfraConfig('winrm', { host: '10.0.0.6', username: 'admin', restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF' })
+    ]) {
+      assert.equal(typeof cfg, 'object', typeof cfg === 'string' ? cfg : '');
+      assert.equal(cfg.wol_mac, 'AA:BB:CC:DD:EE:FF');
+    }
+  });
+
   test('a MAC is stored in one canonical form whichever separator was typed', () => {
     for (const typed of ['aa:bb:cc:dd:ee:ff', 'aa-bb-cc-dd-ee-ff', 'AA BB CC DD EE FF']) {
-      assert.equal(ssh({ wol_mac: typed }).wol_mac, 'AA:BB:CC:DD:EE:FF', typed);
+      assert.equal(restore({ wol_mac: typed }).wol_mac, 'AA:BB:CC:DD:EE:FF', typed);
     }
   });
 
@@ -47,95 +107,157 @@ describe('restore sequence: wake-on-lan', () => {
     // Rejected rather than dropped: a typo'd MAC would leave the target looking
     // wake-capable while every packet went to the wrong machine, or nowhere.
     for (const bad of ['aa:bb:cc:dd:ee', 'aa:bb:cc:dd:ee:ff:00', 'zz:bb:cc:dd:ee:ff', 'aabb.ccdd.eeff', 'not-a-mac']) {
-      assert.equal(typeof ssh({ wol_mac: bad }), 'string', bad);
+      assert.equal(typeof restore({ wol_mac: bad }), 'string', bad);
     }
   });
 
   test('the broadcast address must look like a host or an IPv4 address', () => {
-    assert.equal(ssh({ wol_broadcast: '10.0.0.255' }).wol_broadcast, '10.0.0.255');
-    assert.equal(typeof ssh({ wol_broadcast: '10.0.0.255; rm -rf /' }), 'string');
+    assert.equal(restore({ wol_broadcast: '10.0.0.255' }).wol_broadcast, '10.0.0.255');
+    assert.equal(typeof restore({ wol_broadcast: '10.0.0.255; rm -rf /' }), 'string');
   });
 
   test('waking through a relay needs both a MAC and a relay that exists', () => {
-    const ok = ssh({ wake_mode: 'relay', wol_mac: 'AA:BB:CC:DD:EE:FF', wake_relay_id: relay.id });
+    const ok = restore({ wake_mode: 'relay', wake_relay_id: relay.id });
     assert.equal(ok.wake_mode, 'relay');
     assert.equal(ok.wake_relay_id, relay.id);
 
     // Both are errors rather than quiet drops — silently discarding the relay
     // left the form looking like the choice had never been made.
-    assert.match(ssh({ wake_mode: 'relay', wake_relay_id: relay.id }), /MAC address is required/);
-    assert.match(ssh({ wake_mode: 'relay', wol_mac: 'AA:BB:CC:DD:EE:FF', wake_relay_id: relay.id + 999 }),
-      /pick an existing relay/);
-    assert.match(ssh({ wake_mode: 'relay', wol_mac: 'AA:BB:CC:DD:EE:FF' }), /pick an existing relay/);
+    assert.match(ssh({ restore_enabled: 1, wake_mode: 'relay', wake_relay_id: relay.id }), /MAC address is required/);
+    assert.match(restore({ wake_mode: 'relay', wake_relay_id: relay.id + 999 }), /pick an existing relay/);
+    assert.match(restore({ wake_mode: 'relay' }), /pick an existing relay/);
   });
 
   test('switching back to broadcasting drops the relay it used to point at', () => {
-    const cfg = ssh({ wake_mode: 'packet', wol_mac: 'AA:BB:CC:DD:EE:FF', wake_relay_id: relay.id });
+    const cfg = restore({ wake_mode: 'packet', wake_relay_id: relay.id });
     assert.equal('wake_relay_id' in cfg, false, 'a stale relay id would outlive the choice that set it');
   });
 
   test('an unknown wake mode is rejected, and the default is to broadcast', () => {
-    assert.equal(ssh().wake_mode, 'packet');
-    assert.equal(typeof ssh({ wake_mode: 'carrier-pigeon' }), 'string');
+    assert.equal(restore().wake_mode, 'packet');
+    assert.equal(typeof restore({ wake_mode: 'carrier-pigeon' }), 'string');
   });
 });
 
-describe('restore sequence: the final step', () => {
-  test("restore_action 'none' is the default and asks for nothing else", () => {
-    const cfg = ssh();
-    assert.equal(cfg.restore_action, 'none');
-    assert.equal(cfg.auto_restore, 0);
+describe('restore: the method', () => {
+  test("'none' is the default, and pairs with a wake", () => {
+    const cfg = restore();
+    assert.equal(cfg.restore_kind, 'none');
+    assert.equal(cfg.restore_inherit, 0);
   });
 
-  test("'command' requires a command", () => {
-    assert.match(ssh({ restore_action: 'command' }), /restore command is required/);
-    assert.equal(ssh({ restore_action: 'command', restore_command: 'systemctl start app' }).restore_command,
-      'systemctl start app');
+  test('an unknown method is rejected', () => {
+    assert.match(restore({ restore_kind: 'telnet' }), /restore method must be one of/);
   });
 
-  test("'http' requires a valid http(s) URL", () => {
-    assert.match(ssh({ restore_action: 'http' }), /restore URL is required/);
-    assert.match(ssh({ restore_action: 'http', restore_url: 'file:///etc/passwd' }), /must be http\(s\)/);
-    assert.match(ssh({ restore_action: 'http', restore_url: 'not a url' }), /must be a valid URL/);
-    assert.equal(ssh({ restore_action: 'http', restore_url: 'https://svc.local/start' }).restore_method, 'POST');
-    assert.match(ssh({ restore_action: 'http', restore_url: 'https://svc.local/start', restore_method: 'TRACE' }),
-      /restore method must be/);
+  test('the connection is only inheritable when the method matches the kind', () => {
+    // "The same machine, reached the same way" only exists when the method is
+    // the target's own kind.
+    assert.equal(restore({ restore_kind: 'ssh', restore_inherit: 1, restore_command: 'x' }).restore_inherit, 1);
+    // An ssh target has no cluster credentials to lend a Kubernetes restore, so
+    // the request to inherit is dropped and its own connection required.
+    assert.match(restore({ restore_kind: 'k8s', restore_inherit: 1, restore_uncordon: 1 }),
+      /restore API server URL is required/);
   });
 
-  test('an unknown restore action is rejected', () => {
-    assert.match(ssh({ restore_action: 'reboot' }), /restore action must be one of/);
+  test('an inherited shell restore needs only its command', () => {
+    const cfg = restore({ restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app' });
+    assert.equal(cfg.restore_command, 'systemctl start app');
+    assert.equal('restore_host' in cfg, false, 'nothing of its own to store');
+    assert.match(restore({ restore_kind: 'ssh', restore_inherit: 1 }), /restore command is required/);
   });
 
-  test("the restore request's auth scheme brings its own requirements", () => {
-    const withUrl = (over) => ssh({ restore_action: 'http', restore_url: 'https://svc.local/start', ...over });
+  test('a shell restore that brings its own connection needs a host and a user', () => {
+    // An HTTP target revived over SSH: the credentials cannot come from the
+    // target, because it has none of that shape.
+    assert.match(http({ restore_enabled: 1, restore_kind: 'ssh', restore_command: 'x' }), /host is required/);
+    assert.match(http({ restore_enabled: 1, restore_kind: 'ssh', restore_command: 'x', restore_host: '10.0.0.9' }),
+      /username is required/);
+    const cfg = http({
+      restore_enabled: 1, restore_kind: 'winrm', restore_command: 'Restart-Service app',
+      restore_host: '10.0.0.9', restore_username: 'admin'
+    });
+    assert.equal(cfg.restore_port, 5985, 'the port defaults per method, not per target kind');
+    assert.equal(cfg.restore_inherit, 0);
+  });
 
-    assert.equal(withUrl().restore_auth_scheme, 'none');
-    // 'login' is the http kind's scheme only — the restore step has no room for
-    // a login round trip of its own.
-    assert.match(withUrl({ restore_auth_scheme: 'login' }), /restore auth scheme must be one of/);
+  test('a cluster restore needs at least one thing to do', () => {
+    const cluster = (over) => k8s({ restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1, ...over });
+    assert.match(cluster({}), /at least one thing for the cluster restore to do/);
+    assert.equal(cluster({ restore_uncordon: 1 }).restore_uncordon, 1);
+    assert.equal(cluster({ restore_restart_deployments: 1 }).restore_restart_deployments, 1);
+    assert.equal(cluster({ restore_path: '/apis/apps/v1/namespaces/default/deployments/app' }).restore_method, 'PATCH');
+    assert.match(cluster({ restore_uncordon: 1, restore_method: 'TRACE' }), /restore method must be one of/);
+  });
 
-    assert.match(withUrl({ restore_auth_scheme: 'header' }), /header name is required/);
-    assert.match(withUrl({ restore_auth_scheme: 'header', restore_header_name: 'X-Bad\r\nInjected: 1' }),
+  test('an http restore needs a valid http(s) URL', () => {
+    const undo = (over) => http({ restore_enabled: 1, restore_kind: 'http', restore_inherit: 1, ...over });
+    assert.match(undo({}), /restore URL is required/);
+    assert.match(undo({ restore_url: 'file:///etc/passwd' }), /must be http\(s\)/);
+    assert.match(undo({ restore_url: 'not a url' }), /must be a valid URL/);
+    assert.equal(undo({ restore_url: 'https://svc.local/start' }).restore_method, 'POST');
+    assert.match(undo({ restore_url: 'https://svc.local/start', restore_method: 'PATCH' }), /restore method must be/);
+  });
+
+  test("an http restore with its own connection carries its own auth, but never 'login'", () => {
+    const own = (over) => ssh({
+      restore_enabled: 1, restore_kind: 'http', restore_url: 'https://svc.local/start', ...over
+    });
+    assert.equal(own().restore_auth_scheme, 'none');
+    // A login round trip belongs to a target, which can hold the whole
+    // conversation it needs; the restore has no room for one.
+    assert.match(own({ restore_auth_scheme: 'login' }), /restore auth scheme must be one of/);
+
+    assert.match(own({ restore_auth_scheme: 'header' }), /header name is required/);
+    assert.match(own({ restore_auth_scheme: 'header', restore_header_name: 'X-Bad\r\nInjected: 1' }),
       /invalid characters/);
-    assert.equal(withUrl({ restore_auth_scheme: 'header', restore_header_name: 'X-Api-Key' }).restore_header_name,
+    assert.equal(own({ restore_auth_scheme: 'header', restore_header_name: 'X-Api-Key' }).restore_header_name,
       'X-Api-Key');
 
-    assert.match(withUrl({ restore_auth_scheme: 'basic' }), /username is required/);
-    assert.match(withUrl({ restore_auth_scheme: 'basic', restore_username: 'ad\r\nmin' }), /invalid characters/);
-    assert.equal(withUrl({ restore_auth_scheme: 'basic', restore_username: 'admin' }).restore_username, 'admin');
+    assert.match(own({ restore_auth_scheme: 'basic' }), /username is required/);
+    assert.match(own({ restore_auth_scheme: 'basic', restore_username: 'ad\r\nmin' }), /invalid characters/);
+    assert.equal(own({ restore_auth_scheme: 'basic', restore_username: 'admin' }).restore_username, 'admin');
+    assert.match(own({ restore_ca_cert: 'just some bytes' }), /restore CA certificate must be PEM/);
   });
 
-  test('the wait is clamped to the allowed range and defaults to five minutes', () => {
-    assert.equal(ssh().restore_wait_seconds, 300);
-    assert.equal(ssh({ restore_wait_seconds: 0 }).restore_wait_seconds, 0);
-    assert.equal(ssh({ restore_wait_seconds: -30 }).restore_wait_seconds, 0);
-    assert.equal(ssh({ restore_wait_seconds: 99_999 }).restore_wait_seconds, MAX_RESTORE_WAIT_SECONDS);
-    assert.equal(ssh({ restore_wait_seconds: 'soon' }).restore_wait_seconds, 300, 'nonsense falls back');
+  test('switching method leaves no field of the old one behind', () => {
+    // Same reason the http kind clears a login it no longer uses: it would sit
+    // in the blob unreachable from the form.
+    const cfg = restore({
+      restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app',
+      restore_url: 'https://svc.local/start', restore_path: '/apis/x', restore_api_url: 'https://10.0.0.1:6443'
+    });
+    assert.equal(cfg.restore_command, 'systemctl start app');
+    for (const field of ['restore_url', 'restore_path', 'restore_api_url']) {
+      assert.equal(field in cfg, false, field);
+    }
   });
 
-  test('auto-restore is a flag, not free text', () => {
-    assert.equal(ssh({ auto_restore: true }).auto_restore, 1);
-    assert.equal(ssh({ auto_restore: 0 }).auto_restore, 0);
+  test('an inherited connection stores none of its own fields', () => {
+    const cfg = restore({
+      restore_kind: 'ssh', restore_inherit: 1, restore_command: 'x',
+      restore_host: '10.9.9.9', restore_username: 'someone'
+    });
+    assert.equal('restore_host' in cfg, false);
+    assert.equal('restore_username' in cfg, false);
+  });
+});
+
+describe('restore credentials follow the method', () => {
+  test('an inherited restore adds none of its own', () => {
+    const fields = secretFieldsFor('ssh', { restore_enabled: 1, restore_inherit: 1, restore_kind: 'ssh' });
+    assert.deepEqual(fields, ['password', 'private_key', 'passphrase', 'sudo_password']);
+  });
+
+  test('a restore with its own connection adds exactly that method\'s credentials', () => {
+    // Narrowing the list is what drops a stale credential once the method
+    // changes — mergeSecrets keeps only what is on it.
+    assert.deepEqual(secretFieldsFor('http', { restore_enabled: 1, restore_inherit: 0, restore_kind: 'k8s' }),
+      ['token', 'password', 'login_password', 'restore_token', 'restore_kubeconfig']);
+    assert.deepEqual(secretFieldsFor('k8s', { restore_enabled: 1, restore_inherit: 0, restore_kind: 'winrm' }),
+      ['token', 'kubeconfig', 'restore_password']);
+    assert.deepEqual(secretFieldsFor('http', { restore_enabled: 0 }),
+      ['token', 'password', 'login_password']);
   });
 });
 
@@ -244,12 +366,8 @@ describe('http target config', () => {
     assert.equal(http({ insecure_tls: true }).insecure_tls, 1);
   });
 
-  test('the restore request is validated only once a URL is given', () => {
-    assert.equal(http().restore_url, undefined, 'no restore request configured');
-    assert.match(http({ restore_url: 'ftp://svc.local/start' }), /restore URL must be http\(s\)/);
-    assert.match(http({ restore_url: 'not a url' }), /restore URL must be a valid URL/);
-    assert.equal(http({ restore_url: 'https://svc.local/start' }).restore_method, 'POST');
-    assert.match(http({ restore_url: 'https://svc.local/start', restore_method: 'PATCH' }), /restore method must be/);
+  test('a restore URL is ignored until a restore is actually turned on', () => {
+    assert.equal(http({ restore_url: 'https://svc.local/start' }).restore_url, undefined);
   });
 });
 
@@ -279,36 +397,47 @@ describe('k8s target config', () => {
     assert.match(k8s({ action: 'custom', command_path: '/x', command_method: 'TRACE' }), /command method must be/);
   });
 
-  test('only a custom action carries a restore_uncordon choice', () => {
-    // A drained cluster always uncordons — it is the mirror image of the drain,
-    // so storing the flag would let the form imply a choice that is not there.
-    assert.equal('restore_uncordon' in k8s({ restore_uncordon: true }), false);
-    assert.equal(k8s({ action: 'custom', command_path: '/x', restore_uncordon: true }).restore_uncordon, 1);
-    assert.equal(k8s({ action: 'custom', command_path: '/x' }).restore_uncordon, 0);
-  });
-
-  test('the restore request is offered whatever the trigger action was', () => {
-    assert.equal(k8s({ restore_path: '/apis/apps/v1/namespaces/default/deployments/app' }).restore_method, 'PATCH');
-    assert.match(k8s({ restore_method: 'TRACE' }), /restore method must be one of/);
-    assert.equal(k8s({ restore_restart_deployments: true }).restore_restart_deployments, 1);
+  test('uncordoning is no longer implied by the trigger action', () => {
+    // It used to be inferred from a 'drain' target. It is an explicit choice
+    // now, because the cluster being restored need not be the one shut down.
+    assert.equal('restore_uncordon' in k8s({ restore_uncordon: true }), false, 'no restore configured');
+    const cluster = k8s({ restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1, restore_uncordon: true });
+    assert.equal(cluster.restore_uncordon, 1);
   });
 });
 
 // ---- which restores answer 202 ----
 
 describe('isSequenceRestore', () => {
-  test('the kinds that open by waiting always do', () => {
-    for (const kind of ['ssh', 'winrm', 'k8s']) {
-      assert.equal(isSequenceRestore(kind, {}), true, kind);
+  test('a target with no restore never does', () => {
+    assert.equal(isSequenceRestore('ssh', { restore_enabled: 0 }), false);
+  });
+
+  test('a wake always does — nothing answers a magic packet, so a wait follows', () => {
+    assert.equal(isSequenceRestore('http', { restore_enabled: 1, restore_kind: 'none', wol_mac: 'AA:BB:CC:DD:EE:FF' }),
+      true);
+  });
+
+  test('the methods that open by polling always do, whatever the target is', () => {
+    for (const restore_kind of ['ssh', 'winrm', 'k8s']) {
+      assert.equal(isSequenceRestore('http', { restore_enabled: 1, restore_kind }), true, restore_kind);
     }
   });
 
-  test('an http target does only when it logs in and has a wait to sit through', () => {
-    // Only a target that logs in has a safe probe to wait on, so only that one
-    // can sit there for minutes; everything else answers with its result.
-    assert.equal(isSequenceRestore('http', { auth_scheme: 'login' }), true, 'the default 300s wait');
-    assert.equal(isSequenceRestore('http', { auth_scheme: 'login', restore_wait_seconds: 0 }), false);
-    assert.equal(isSequenceRestore('http', { auth_scheme: 'bearer', restore_wait_seconds: 300 }), false);
+  test('an http method does only when some safe probe is at hand', () => {
+    // The restore request itself is never polled, so this turns on whether
+    // anything else is safe to retry while waiting.
+    const undo = (kind, over) => isSequenceRestore(kind,
+      { restore_enabled: 1, restore_kind: 'http', restore_inherit: 1, auth_scheme: 'login', ...over });
+
+    assert.equal(undo('http', {}), true, 'the inherited login, on the default 300s wait');
+    assert.equal(undo('http', { restore_wait_seconds: 0 }), false, 'no budget to wait through');
+    assert.equal(undo('http', { auth_scheme: 'bearer' }), false, 'a static scheme has no safe probe');
+
+    // With its own connection the fallback is the target's own test, which an
+    // ssh target has and a static-scheme http target does not.
+    assert.equal(undo('ssh', { restore_inherit: 0 }), true);
+    assert.equal(undo('http', { restore_inherit: 0, auth_scheme: 'bearer' }), false);
   });
 });
 

@@ -47,11 +47,18 @@
 
     <div class="card">
       <div class="card-header" id="form-header">
-        <h2 id="form-title">Add Flatline endpoint</h2>
         <span class="chevron">▸</span>
+        <!-- The title text is its own span so the script can rewrite it to
+             "Edit endpoint: …" without taking the help button with it. -->
+        <h2><span id="form-title">Add Flatline endpoint</span> <span class="help">
+          <button type="button" class="help-btn" aria-expanded="false" aria-label="About endpoints">?</button>
+          <span class="help-pop" role="tooltip" hidden>
+            <p>An endpoint is one thing Flatline watches, on its own interval.</p>
+            <p>Endpoints always start ungrouped. Add them to a Flatline group in the form below to tie
+              them to actions — nothing triggers until they are in one.</p>
+          </span></span></h2>
       </div>
       <div class="card-body" id="form-body">
-      <p class="hint-row">Endpoints will always start ungrouped. Add them to a Flatline group in the form below to tie them to actions.</p>
       <form id="endpoint-form" method="post">
         <div class="grid">
           <label class="field">
@@ -59,18 +66,18 @@
             <input type="text" name="name" required maxlength="100" placeholder="Router / UPS / NAS">
           </label>
           <label class="field">
-            <span class="cap">Check type</span>
+            <span class="cap">Check</span>
             <select name="type" id="f-type">
               <option value="icmp">Ping (ICMP)</option>
               <option value="http">HTTP(S)</option>
             </select>
           </label>
           <label class="field">
-            <span class="cap">Target (IP, hostname, or URL)</span>
+            <span class="cap">Target</span>
             <input type="text" name="target" required maxlength="500" placeholder="192.168.1.1 or https://host/health">
           </label>
           <label class="field">
-            <span class="cap">Check interval (seconds)</span>
+            <span class="cap">Interval (s)</span>
             <input type="number" name="interval_seconds" min="5" max="86400" value="30">
           </label>
           <label class="field">
@@ -78,21 +85,34 @@
             <input type="number" name="timeout_ms" min="250" max="60000" value="5000">
           </label>
           <label class="field">
-            <span class="cap">Mark DOWN after (consecutive failures)</span>
+            <span class="cap">DOWN after <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About the thresholds">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Consecutive failures before the endpoint flips DOWN, and consecutive successes before
+                  it flips back UP.</p>
+                <p>Both exist so a single dropped packet does not arm an outage, and a single lucky reply
+                  does not disarm one.</p>
+              </span></span></span>
             <input type="number" name="down_threshold" min="1" max="100" value="3">
           </label>
           <label class="field">
-            <span class="cap">Mark UP after (consecutive successes)</span>
+            <span class="cap">UP after</span>
             <input type="number" name="up_threshold" min="1" max="100" value="2">
           </label>
         </div>
         <div class="grid" style="margin-top:12px" id="http-fields">
           <label class="field" id="expect-field">
-            <span class="cap">Expected HTTP status (blank = any &lt; 400)</span>
+            <span class="cap">Expected status <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About the expected response">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Leave the status blank to accept any response under 400.</p>
+                <p>The JSON field is optional: when set, the response body must contain these keys and
+                  values for the check to pass.</p>
+              </span></span></span>
             <input type="number" name="expect_status" min="100" max="599" placeholder="200">
           </label>
           <label class="field" id="expect-json-field" style="grid-column: span 2">
-            <span class="cap">Expected JSON response (optional: response must contain these keys/values)</span>
+            <span class="cap">Expected JSON</span>
             <textarea name="expect_json" rows="2" spellcheck="false" placeholder='{"status":"ok"}'></textarea>
           </label>
         </div>
@@ -118,11 +138,17 @@
 
     <div class="card">
       <div class="card-header" id="group-form-header">
-        <h2 id="group-form-title">Add Flatline group</h2>
         <span class="chevron">▸</span>
+        <h2><span id="group-form-title">Add Flatline group</span> <span class="help">
+          <button type="button" class="help-btn" aria-expanded="false" aria-label="About Flatline groups">?</button>
+          <span class="help-pop" role="tooltip" hidden>
+            <p>A Flatline group sets the failure condition for a set of endpoints. An endpoint can
+              belong to more than one group.</p>
+            <p>Assign action groups to this group from the <a href="/actions">Actions page</a> — those
+              are what actually run when it triggers.</p>
+          </span></span></h2>
       </div>
       <div class="card-body" id="group-form-body">
-      <p class="hint-row">A Flatline group is used to establish failure condition for endpoints. An endpoint can also belong to more than one flatline group. You can assign action groups to this group from the <a href="/actions">Actions page</a>.</p>
       <form id="group-form" method="post">
         <div class="grid">
           <label class="field">
@@ -132,17 +158,23 @@
           <label class="field" style="grid-column: span 2">
             <span class="cap">Fails when</span>
             <select name="mode">
-              <option value="all">ALL endpoints in the group are down</option>
-              <option value="any">ANY endpoint in the group is down</option>
+              <option value="all">ALL endpoints are down</option>
+              <option value="any">ANY endpoint is down</option>
             </select>
           </label>
           <label class="field">
-            <span class="cap">Grace period before actions (minutes)</span>
+            <span class="cap">Grace (min) <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About the grace period">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>How long the group stays armed before its actions run.</p>
+                <p>If it recovers inside this window it disarms and nothing runs — which is what keeps a
+                  brief blip from shutting down your infrastructure.</p>
+              </span></span></span>
             <input type="number" name="grace_minutes" min="1" max="1440" value="5">
           </label>
         </div>
         <div class="field" style="margin-top:12px">
-          <span class="cap">Endpoints in this group</span>
+          <span class="cap">Endpoints</span>
           <div class="check-scroll" id="group-endpoint-checks"></div>
         </div>
         <div style="margin-top:12px">

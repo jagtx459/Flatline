@@ -54,10 +54,92 @@ export function initCollapsible(key, headerEl, bodyEl) {
         localStorage.setItem(storageKey, collapsed ? '1' : '0');
         apply();
     }
-    headerEl.addEventListener('click', () => setCollapsed(!collapsed));
+    // A "?" beside the title is not part of the fold control. initHelp is
+    // delegated from the document, so its stopPropagation lands too late to
+    // keep the click from reaching this listener first — it is skipped here.
+    headerEl.addEventListener('click', (e) => {
+        if (e.target.closest('.help'))
+            return;
+        setCollapsed(!collapsed);
+    });
     apply();
 
     return { expand: () => setCollapsed(false), collapse: () => setCollapsed(true) };
+}
+/**
+ * Click-to-open help popovers. A field carries a "?" button beside its label and
+ * the prose that used to sit under it as a sibling `.help-pop`:
+ *
+ *   <span class="help">
+ *     <button type="button" class="help-btn" aria-expanded="false">?</button>
+ *     <span class="help-pop" role="tooltip" hidden>…</span>
+ *   </span>
+ *
+ * Hovering the "?" opens it and leaving closes it again; clicking pins it open
+ * so the prose can be read (and copied) without keeping the pointer still, and
+ * so keyboard and touch reach it too. One is open at a time; Escape or a click
+ * anywhere else closes it. Delegated from the document so markup rendered later
+ * needs no re-initialising, and so every page gets the same behaviour from one
+ * call.
+ */
+export function initHelp() {
+    let open = null;
+    function close() {
+        if (!open)
+            return;
+        open.pop.hidden = true;
+        open.pop.classList.remove('flip');
+        open.btn.setAttribute('aria-expanded', 'false');
+        open = null;
+    }
+    function show(btn, pinned) {
+        const pop = btn.parentElement?.querySelector('.help-pop');
+        if (!pop)
+            return;
+        close();
+        pop.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        open = { btn, pop, pinned };
+        // Opened flush against the right edge of the viewport it would be
+        // cut off, so it hangs from the other corner instead.
+        if (pop.getBoundingClientRect().right > document.documentElement.clientWidth - 8) {
+            pop.classList.add('flip');
+        }
+    }
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.help-btn');
+        if (btn) {
+            // These buttons sit inside a <label>, where a click would otherwise
+            // focus the field, so the event stops here.
+            e.preventDefault();
+            e.stopPropagation();
+            if (open?.btn === btn && open.pinned)
+                close();
+            else
+                show(btn, true);
+            return;
+        }
+        if (open && !e.target.closest('.help-pop'))
+            close();
+    });
+    document.addEventListener('mouseover', (e) => {
+        const btn = e.target.closest('.help-btn');
+        if (btn && open?.btn !== btn)
+            show(btn, false);
+    });
+    document.addEventListener('mouseout', (e) => {
+        if (!open || open.pinned)
+            return;
+        // The popover is a child of the same .help wrapper as its button, so
+        // moving between the two never leaves it — only leaving the pair does.
+        const wrap = open.btn.parentElement;
+        if (wrap.contains(e.target) && !wrap.contains(e.relatedTarget))
+            close();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape')
+            close();
+    });
 }
 /**
  * Wires a tab bar to its panels: each [role="tab"] button carries data-tab, and

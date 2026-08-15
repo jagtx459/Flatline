@@ -52,13 +52,19 @@
 
     <div class="card">
       <div class="card-header" id="channel-form-header">
-        <h2 id="channel-form-title">Add notification channel</h2>
         <span class="chevron">▸</span>
+        <!-- The title text is its own span so the script can rewrite it to
+             "Edit channel: …" without taking the help button with it. -->
+        <h2><span id="channel-form-title">Add notification channel</span> <span class="help">
+          <button type="button" class="help-btn" aria-expanded="false" aria-label="About notification channels">?</button>
+          <span class="help-pop" role="tooltip" hidden>
+            <p>A channel delivers Flatline events — endpoint down/up, group armed/triggered, action
+              results — to an external service.</p>
+            <p>Webhook URLs and tokens are encrypted at rest and never sent back to the browser. When
+              editing, leave a credential blank to keep the stored value.</p>
+          </span></span></h2>
       </div>
       <div class="card-body" id="channel-form-body">
-      <p class="hint-row">A channel delivers Flatline events (endpoint down/up, group armed/triggered,
-        action results) to an external service. Webhook URLs and tokens are encrypted at rest and never
-        sent back to the browser. When adding or updating, leave a credential blank to keep the stored value.</p>
       <form id="channel-form" method="post">
         <div class="grid">
           <label class="field">
@@ -130,10 +136,14 @@
 
         <!-- email -->
         <div class="kind-section" data-kind="email">
-          <p class="hint-row">Sends plain-text mail through your SMTP server. Port 587 uses STARTTLS when
-            the server offers it; check "implicit TLS" for port 465.</p>
           <div class="grid">
-            <label class="field"><span class="cap">SMTP host</span>
+            <label class="field"><span class="cap">SMTP host <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About SMTP delivery">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Sends plain-text mail through your SMTP server.</p>
+                <p>Port 587 uses STARTTLS when the server offers it; tick <strong>implicit TLS</strong>
+                  for port 465.</p>
+              </span></span></span>
               <input type="text" name="email_host" maxlength="253" placeholder="smtp.example.com"></label>
             <label class="field"><span class="cap">Port</span>
               <input type="number" name="email_port" min="1" max="65535" value="587"></label>
@@ -158,14 +168,17 @@
 
         <!-- apprise -->
         <div class="kind-section" data-kind="apprise">
-          <p class="hint-row">Posts to an <a href="https://github.com/caronc/apprise-api" target="_blank"
-              rel="noopener noreferrer">Apprise API</a> server, which fans out to 100+ services. Use a
-            <strong>config key</strong> for a config stored on the Apprise server, or leave it blank and paste
-            <strong>Apprise URLs</strong> to send directly.</p>
           <div class="grid">
-            <label class="field"><span class="cap">Apprise API server</span>
+            <label class="field"><span class="cap">Apprise server <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About Apprise">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Posts to an <a href="https://github.com/caronc/apprise-api" target="_blank"
+                  rel="noopener noreferrer">Apprise API</a> server, which fans out to 100+ services.</p>
+                <p>Use a <strong>config key</strong> for a config stored on the Apprise server, or leave it
+                  blank and paste <strong>Apprise URLs</strong> to send directly.</p>
+              </span></span></span>
               <input type="text" name="apprise_server_url" maxlength="2000" placeholder="http://apprise:8000"></label>
-            <label class="field"><span class="cap">Config key (optional)</span>
+            <label class="field"><span class="cap">Config key</span>
               <input type="text" name="apprise_config_key" maxlength="64" placeholder="flatline"></label>
             <label class="field"><span class="cap">Tags (optional)</span>
               <input type="text" name="apprise_tags" maxlength="200" placeholder="devops, admin"></label>
@@ -184,14 +197,23 @@
         <div class="grid" style="margin-top:12px">
           <label class="field"><span class="cap">Title template</span>
             <input type="text" name="title_template" maxlength="500" placeholder="Flatline: {event}"></label>
-          <label class="field" style="grid-column: span 2"><span class="cap">Body template</span>
+          <label class="field" style="grid-column: span 2"><span class="cap">Body template <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About message placeholders">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Leave both templates blank for the defaults. Placeholders:</p>
+                <ul>
+                  <li><code>{event}</code> — the event's label</li>
+                  <li><code>{kind}</code> — the raw event key</li>
+                  <li><code>{endpoint}</code> — the endpoint's name</li>
+                  <li><code>{message}</code> — the details</li>
+                  <li><code>{time}</code>, <code>{state}</code></li>
+                  <li><code>{url}</code> — a link back to this Flatline, from the
+                    <a href="#general" id="baseurl-jump">site URL</a> under General</li>
+                </ul>
+              </span></span></span>
             <textarea name="body_template" rows="2" maxlength="500" spellcheck="false"
               placeholder="{message}&#10;{time}"></textarea></label>
         </div>
-        <p class="hint-row">Placeholders: <code>{event}</code> label, <code>{kind}</code> raw event key,
-          <code>{endpoint}</code> endpoint name, <code>{message}</code> details, <code>{time}</code>,
-          <code>{state}</code>, <code>{url}</code> a link back to this Flatline (set the
-          <a href="#general" id="baseurl-jump">site URL</a> under General). Leave blank for the defaults.</p>
 
         <div style="margin-top:12px">
           <label class="check">
@@ -235,10 +257,15 @@
     </div>
 
     <div class="card">
-      <h2>Encryption key</h2>
-      <p class="hint-row">Stored credentials (passwords, SSH keys, tokens, webhook URLs) are encrypted with
-        AES-256-GCM. Rotating re-encrypts everything under a fresh key in one step; nothing has to be
-        re-entered. <strong>Back the key up</strong>, without it stored credentials are unrecoverable.</p>
+      <h2>Encryption key <span class="help">
+        <button type="button" class="help-btn" aria-expanded="false" aria-label="About the encryption key">?</button>
+        <span class="help-pop" role="tooltip" hidden>
+          <p>Stored credentials — passwords, SSH keys, tokens, webhook URLs — are encrypted with
+            AES-256-GCM.</p>
+          <p>Rotating re-encrypts everything under a fresh key in one step; nothing has to be
+            re-entered.</p>
+          <p><strong>Back the key up.</strong> Without it, stored credentials are unrecoverable.</p>
+        </span></span></h2>
       <p class="note" id="key-status">Loading key status…</p>
 
       <div id="key-rotate-section">
@@ -289,11 +316,14 @@
         </div>
       </form>
 
-      <h3 style="margin-top:20px">Site URL</h3>
-      <p class="hint-row">The address this Flatline is reached at. Notifications use it to include a
-        <code>{url}</code> link back to the dashboard, so an alert read on your phone can be clicked
-        through. Leave it blank and notifications carry no link — Flatline cannot guess an address that
-        works from wherever the alert is read.</p>
+      <h3 style="margin-top:20px">Site URL <span class="help">
+        <button type="button" class="help-btn" aria-expanded="false" aria-label="About the site URL">?</button>
+        <span class="help-pop" role="tooltip" hidden>
+          <p>The address this Flatline is reached at. Notifications use it for the <code>{url}</code>
+            link back to the dashboard, so an alert read on your phone can be clicked through.</p>
+          <p>Leave it blank and notifications carry no link — Flatline cannot guess an address that works
+            from wherever the alert is read.</p>
+        </span></span></h3>
       <p class="note" id="baseurl-status">Loading…</p>
       <form id="baseurl-form" method="post" style="margin-top:12px">
         <div class="grid">
@@ -371,17 +401,20 @@
 
     <div class="card">
       <div class="card-header" id="relay-form-header">
-        <h2 id="relay-form-title">Add relay</h2>
         <span class="chevron">▸</span>
+        <h2><span id="relay-form-title">Add relay</span> <span class="help">
+          <button type="button" class="help-btn" aria-expanded="false" aria-label="About relays">?</button>
+          <span class="help-pop" role="tooltip" hidden>
+            <p>A magic packet is a broadcast, and <strong>broadcasts do not cross routers</strong>, so
+              Flatline can only wake a machine on a network it is itself attached to.</p>
+            <p>A relay is a machine that already sits on the target's network — a NAS, a hypervisor, a
+              Pi — which Flatline signs in to and asks to send the packet locally.</p>
+            <p>Set one up per network you need to wake into, then pick it on the action target's Restore
+              step. Credentials are encrypted at rest and never sent back to the browser; leave one blank
+              when editing to keep the stored value.</p>
+          </span></span></h2>
       </div>
       <div class="card-body" id="relay-form-body">
-      <p class="hint-row">A magic packet is a broadcast, and <strong>broadcasts do not cross routers</strong>.
-        Flatline can only wake a machine on a network it is itself attached to. A relay is a machine that
-        already sits on the target's network — a NAS, a hypervisor, a Pi — which Flatline signs in to and asks
-        to send the packet locally. Set one up per network you need to wake into, then pick it on the action
-        target's Restore step. Credentials are encrypted at rest and never sent back to the browser; leave a
-        credential blank when editing to keep the stored value.</p>
-
       <form id="relay-form" method="post">
         <div class="grid">
           <label class="field">
@@ -389,10 +422,10 @@
             <input type="text" name="name" required maxlength="100" placeholder="VLAN 20 NAS">
           </label>
           <label class="field">
-            <span class="cap">Connection type</span>
+            <span class="cap">Type</span>
             <select name="kind" id="r-kind">
               <option value="ssh">SSH</option>
-              <option value="winrm">WinRM (Windows)</option>
+              <option value="winrm">WinRM</option>
             </select>
           </label>
         </div>
@@ -459,20 +492,28 @@
 
         <div class="grid" style="margin-top:12px; grid-template-columns: minmax(0, 380px)">
           <label class="field">
-            <span class="cap">Network this relay can reach (CIDR)</span>
+            <span class="cap">Network (CIDR) <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About the relay's network">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>The broadcast domain the relay sits in.</p>
+                <p>Flatline checks a target's address against this and warns you if you pick a relay that
+                  cannot reach it — a magic packet sent to the wrong network fails silently, because
+                  nothing ever answers one.</p>
+              </span></span></span>
             <input type="text" name="network" maxlength="43" placeholder="10.1.20.0/24">
-            <span class="hint-row" style="margin:6px 0 0">The broadcast domain the relay sits in. Flatline
-              checks a target's address against this and warns you if you pick a relay that cannot reach
-              it — a magic packet sent to the wrong network fails silently, because nothing ever answers
-              one.</span>
           </label>
         </div>
 
         <label class="field" style="margin-top:12px">
-          <span class="cap">Wake command — <code>{mac}</code> is replaced with the target's MAC address</span>
+          <span class="cap">Wake command <span class="help">
+            <button type="button" class="help-btn" aria-expanded="false" aria-label="About the wake command">?</button>
+            <span class="help-pop" role="tooltip" hidden>
+              <p><code>{mac}</code> is replaced with the target's MAC address — every occurrence of it.</p>
+              <p>One relay serves every machine on its network: the command lives here, the MAC lives on
+                each action target.</p>
+            </span></span></span>
           <input type="text" name="wake_command" maxlength="10000" placeholder="wakeonlan {mac}">
-          <span class="hint-row" style="margin:6px 0 0">One relay serves every machine on its network: the
-            command lives here, the MAC lives on each action target.
+          <span class="hint-row" style="margin:6px 0 0">
             <button type="button" class="link-btn" id="relay-cmd-reset">reset to the default for this type</button></span>
         </label>
 
