@@ -97,6 +97,30 @@ header.site .icon-link svg { width: 20px; height: 20px; display: block; }
 header.site button.icon-link { background: none; border: 0; padding: 0; cursor: pointer; }
 header.site .header-version { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
+/* ---- sub-tabs (config page): one page's worth of cards split into panels,
+       styled to echo the header nav's underlined active item ---- */
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.tabs button {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.tabs button:hover { color: var(--text-primary); }
+.tabs button.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 /* ---- cards ---- */
 .card {
   background: var(--surface);
@@ -120,6 +144,100 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
   color: var(--text-secondary);
 }
 
+/* ---- disclosure chevron ----
+   One treatment for everything that folds: card forms, the restore panel,
+   dashboard group headings and the setup-help blocks. The triangle always leads
+   the title at the same size and always rotates rather than swapping glyph, so
+   open/closed reads down a single straight left edge instead of being chased
+   across the row. Always a direct child of the element carrying aria-expanded —
+   the child combinator below is what keeps a nested panel's chevron from
+   following its parent's state. */
+.chevron {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+[aria-expanded="true"] > .chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .chevron { transition: none; }
+}
+
+/* ---- help popover ----
+   The "?" beside a label holds the explanation that used to sit under the field
+   as a paragraph. Click to open, Escape or a click elsewhere to close (dom.js
+   initHelp). The popover resets the caps/tracking of whatever label it hangs
+   off, since .cap and .card-header both restyle their text. */
+.help { position: relative; display: inline-block; vertical-align: middle; }
+/* A title carrying a help popover centres it against the text. vertical-align
+   has nothing to align to on an uppercase heading — there is no x-height — so
+   the button lands visibly low; making the title itself a flex row centres the
+   two against each other instead. */
+h2:has(> .help), h3:has(> .help), .cap:has(> .help),
+.restore-title:has(> .help), .sub-head:has(> .help) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cap:has(> .help) { gap: 4px; }
+.help-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: none;
+  color: var(--text-muted);
+  font: 600 10px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+.help-btn:hover { color: var(--text-primary); border-color: var(--baseline); }
+.help-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.help-pop {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(380px, 78vw);
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  color: var(--text-secondary);
+  font: 400 12.5px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  cursor: auto;
+}
+/* Bridges the 6px gap under the button so moving the pointer down into the
+   popover does not cross bare page and dismiss it on the way. */
+.help-pop::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  height: 6px;
+}
+.help-pop[hidden] { display: none; }
+.help-pop.flip { left: auto; right: 0; }
+.help-pop p { margin: 0 0 8px; }
+.help-pop p:last-child, .help-pop ol:last-child, .help-pop ul:last-child { margin-bottom: 0; }
+.help-pop ol, .help-pop ul { margin: 0 0 8px; padding-left: 18px; }
+.help-pop li { margin-bottom: 4px; }
+.help-pop pre {
+  background: var(--page); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 10px; margin: 0 0 8px; overflow-x: auto;
+  font: 12px/1.6 ui-monospace, Consolas, monospace; color: var(--text-primary);
+}
+
 /* ---- collapsible card sections (add/edit forms) ---- */
 .card-header {
   display: flex;
@@ -129,13 +247,6 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
   user-select: none;
 }
 .card-header h2 { margin: 0; flex: 1; }
-.card-header .chevron {
-  flex: none;
-  color: var(--text-muted);
-  font-size: 11px;
-  transition: transform 0.15s ease;
-}
-.card-header[aria-expanded="true"] .chevron { transform: rotate(90deg); }
 .card-body { margin-top: 12px; }
 
 /* Long lists get a fixed window instead of pushing the rest of the page down.
@@ -224,6 +335,14 @@ header.site .header-version { color: var(--text-muted); font-size: 12px; font-va
 .pill.unknown { color: var(--text-muted); }
 .pill.disabled .dot { background: var(--baseline); }
 .pill.disabled { color: var(--text-muted); }
+/* In progress — a restore holding while a host boots. Pulsed, because unlike
+   the states above this one is expected to change on its own. */
+.pill.working .dot { background: var(--status-warning); animation: pill-pulse 1.6s ease-in-out infinite; }
+.pill.working { color: var(--text-secondary); }
+@keyframes pill-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .pill.working .dot { animation: none; }
+}
 
 /* ---- endpoint card ---- */
 .endpoint-card .head {
@@ -451,6 +570,21 @@ table.endpoints .mono { font-variant-numeric: tabular-nums; }
 table.endpoints .target-cell { color: var(--text-secondary); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Last activity while a restore is running. The phase wraps under the pill
+   rather than being cut off — it is the only sign anything is happening. */
+.restoring-cell { overflow: hidden; }
+/* The pill and the time wrap as units — the column is narrow, but "3m 46s"
+   must never be broken in half, nor spill over the buttons beside it. */
+.restoring-cell .elapsed { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.restoring-cell .time { white-space: nowrap; font-weight: 650; font-size: 12px; }
+.restoring-cell .phase {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
 /* Action targets table: fixed column widths so 8 columns of dense content
    never force the table wider than the card (no horizontal scrollbar). */
 table.target-table { table-layout: fixed; }
@@ -477,13 +611,6 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 .group-heading:first-child { margin-top: 0; }
 .group-heading .gh-title { font-size: 14px; font-weight: 650; }
 .group-heading .gh-count { color: var(--text-muted); font-size: 12px; }
-.group-heading .chevron {
-  flex: none;
-  color: var(--text-muted);
-  font-size: 11px;
-  transition: transform 0.15s ease;
-}
-.group-heading[aria-expanded="true"] .chevron { transform: rotate(90deg); }
 
 /* sub-section heading inside a card (form under a table) */
 .sub-head {
@@ -497,7 +624,6 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* group/action forms */
 .hint-row { color: var(--text-secondary); font-size: 12.5px; margin: 0 0 12px; }
-.check-grid { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 6px; }
 .check-scroll {
   display: flex;
   flex-direction: column;
@@ -519,8 +645,21 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
   color: var(--text-secondary); font-size: 12.5px; font-weight: 600;
 }
 .setup-help > summary::-webkit-details-marker { display: none; }
-.setup-help > summary::before { content: "▸"; display: inline-block; width: 1.1em; }
-.setup-help[open] > summary::before { content: "▾"; }
+/* Same triangle, same size, same rotation as every other disclosure control —
+   a <details> cannot carry a .chevron child, so the shared treatment is
+   repeated here rather than shared by selector. */
+.setup-help > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1.1em;
+  font-size: 11px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+.setup-help[open] > summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .setup-help > summary::before { transition: none; }
+}
 .setup-help .help-body { padding: 0 10px 10px; }
 .setup-help .help-body p { color: var(--text-secondary); font-size: 12.5px; margin: 0 0 8px; }
 .setup-help pre {
@@ -528,6 +667,35 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
   padding: 8px 10px; margin: 0 0 8px; overflow-x: auto;
   font: 12px/1.6 ui-monospace, Consolas, monospace; color: var(--text-primary);
 }
+/* Restore sequence (ssh / winrm targets): wake -> wait for it to answer -> one
+   final step. Numbered rows because the order is the whole point. */
+.restore-panel {
+  border: 1px solid var(--gridline);
+  border-radius: 9px;
+  padding: 10px 12px;
+  margin-top: 12px;
+  background: var(--surface);
+}
+/* The panel folds away from its own header, reusing the card chevron. */
+.restore-panel > .card-header .restore-title { font-weight: 600; font-size: 13px; margin: 0; flex: 1; }
+/* What the restore does, in a few words, so a folded panel still says whether
+   one is configured at all. */
+.restore-panel > .card-header .restore-summary {
+  flex: none; color: var(--text-muted); font-size: 12px; font-weight: 400;
+}
+/* A tick box with a "?" beside it: the label must not stretch across the row,
+   or the popover button lands somewhere far from what it explains. */
+.check-row { display: flex; align-items: center; gap: 6px; }
+.restore-step { display: flex; gap: 10px; padding: 10px 0 2px; border-top: 1px dashed var(--gridline); margin-top: 10px; }
+.restore-step .restore-num {
+  flex: none; width: 20px; padding-top: 2px;
+  color: var(--text-muted); font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.restore-step .restore-body { flex: 1; min-width: 0; }
+/* a sentence with an input in the middle of it ("wait up to [ 300 ] seconds") */
+.restore-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-secondary); font-size: 12.5px; }
+.restore-inline input { width: 80px; padding: 4px 6px; }
+
 textarea {
   width: 100%;
   background: var(--page);
@@ -560,6 +728,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .step-row .step-timeout { width: 70px; padding: 4px 6px; }
 .step-row .step-timeout-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 12px; }
 .step-row .step-btns { display: inline-flex; gap: 4px; }
+/* a wait step runs no command, so it reads quieter than the targets beside it */
+.step-row.wait { border-style: dashed; }
+.step-row.wait .step-name { font-weight: 400; color: var(--text-muted); }
 .step-add { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
 .step-add select { width: auto; min-width: 220px; }
 
@@ -572,6 +743,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   margin-bottom: 10px;
   background: var(--surface);
 }
+/* the gap between two stage cards, and how long it is held */
+.stage-wait {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 6px 14px;
+  font-size: 12px;
+}
+.stage-wait .step-timeout { width: 70px; padding: 4px 6px; }
 .stage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .stage-head .stage-title { font-weight: 600; }
 .stage-head .stage-btns { display: inline-flex; gap: 4px; }
@@ -657,6 +837,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .run-step.ok { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 45%, var(--border)); }
 .run-step.failed { color: var(--status-critical); border-color: color-mix(in srgb, var(--status-critical) 45%, var(--border)); }
 .run-step.skipped { color: var(--text-muted); border-style: dashed; }
+/* not started yet — it sits behind a wait further up its stage */
+.run-step.pending { color: var(--text-muted); opacity: 0.7; }
 .run-message { margin-top: 6px; color: var(--text-secondary); font-size: 12px; }
 .run-btns { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .run-btns .run-note { color: var(--text-muted); font-size: 12px; }

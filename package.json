@@ -1,6 +1,6 @@
 {
   "name": "flatline",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Monitor ICMP/HTTP endpoints, to arm scripts for graceful shutdown or migrate infrastructure.",
   "type": "module",
   "main": "server/index.js",
@@ -8,7 +8,8 @@
     "start": "node server/index.js",
     "dev": "node dev/start.js",
     "dev:tests": "node dev/start.js --tests",
-    "tests": "node --test"
+    "tests": "node dev/run-tests.js",
+    "tests:k8s": "node dev/run-tests.js --k8s"
   },
   "engines": {
     "node": ">=24.0.0"
@@ -22,5 +23,8 @@
   "allowScripts": {
     "cpu-features@0.0.10": true,
     "ssh2@1.17.0": true
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
   }
 }

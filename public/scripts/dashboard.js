@@ -524,7 +524,9 @@ const RUN_STATUS = {
   interrupted: { cls: 'disabled', label: 'INTERRUPTED' }
 };
 
-const STEP_STATE_MARK = { running: '⋯', ok: '✓', failed: '✕', skipped: '⊘' };
+// 'pending' is a step further down its stage, behind a wait that has not been
+// held yet — it has not started, so it gets a mark of its own.
+const STEP_STATE_MARK = { pending: '·', running: '⋯', ok: '✓', failed: '✕', skipped: '⊘' };
 
 const PANEL_KEY = 'flatline.actionPanelCollapsed';
 
@@ -567,8 +569,8 @@ function capList(list, max) {
  *  lopsided, so either header toggles both. */
 function panelCard(title, collapsed, buildBody) {
   const header = el('div', { class: 'card-header', 'aria-expanded': String(!collapsed) },
-    el('h2', {}, title),
-    el('span', { class: 'chevron' }, '▸'));
+    el('span', { class: 'chevron' }, '▸'),
+    el('h2', {}, title));
   header.addEventListener('click', () => {
     localStorage.setItem(PANEL_KEY, collapsed ? '0' : '1');
     renderActionPanel(); // this row only — a full render would reset the scroll position
@@ -751,8 +753,8 @@ function renderEvents() {
   clear($events);
 
   const header = el('div', { class: 'card-header', 'aria-expanded': String(!collapsed) },
-    el('h2', {}, 'Recent events'),
-    el('span', { class: 'chevron' }, '▸'));
+    el('span', { class: 'chevron' }, '▸'),
+    el('h2', {}, 'Recent events'));
   header.addEventListener('click', () => {
     localStorage.setItem(EVENTS_KEY, collapsed ? '0' : '1');
     renderEvents(); // this card only — a full render would reset the scroll position

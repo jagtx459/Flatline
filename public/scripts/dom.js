@@ -30,6 +30,22 @@ export function clear(node) {
     while (node.firstChild)
         node.removeChild(node.firstChild);
 }
+/**
+ * Shows the descendants of `root` whose `data-<attr>` names `value` and hides
+ * the rest — the one move every "which fields does this choice need?" toggle on
+ * the forms makes (target kind, SSH auth method, ntfy scheme, wake mode, …).
+ *
+ * The attribute may list several values separated by spaces
+ * (`data-http="bearer basic"`), for a field that more than one choice needs; a
+ * single value is just the one-element case, so both read the same here.
+ */
+export function toggleByData(root, attr, value) {
+    // data-ssh-auth -> dataset.sshAuth
+    const key = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    for (const node of root.querySelectorAll(`[data-${attr}]`)) {
+        node.style.display = node.dataset[key].split(' ').includes(value) ? '' : 'none';
+    }
+}
 /** Plain enabled/disabled label for things with no live health/state to show
  *  (Flatline groups, action groups) — just the on/off switch, no dot. */
 export function enabledPill(enabled) {
@@ -54,11 +70,139 @@ export function initCollapsible(key, headerEl, bodyEl) {
         localStorage.setItem(storageKey, collapsed ? '1' : '0');
         apply();
     }
-    headerEl.addEventListener('click', () => setCollapsed(!collapsed));
+    // A "?" beside the title is not part of the fold control. initHelp is
+    // delegated from the document, so its stopPropagation lands too late to
+    // keep the click from reaching this listener first — it is skipped here.
+    headerEl.addEventListener('click', (e) => {
+        if (e.target.closest('.help'))
+            return;
+        setCollapsed(!collapsed);
+    });
     apply();
 
     return { expand: () => setCollapsed(false), collapse: () => setCollapsed(true) };
 }
+/**
+ * Click-to-open help popovers. A field carries a "?" button beside its label and
+ * the prose that used to sit under it as a sibling `.help-pop`:
+ *
+ *   <span class="help">
+ *     <button type="button" class="help-btn" aria-expanded="false">?</button>
+ *     <span class="help-pop" role="tooltip" hidden>…</span>
+ *   </span>
+ *
+ * Hovering the "?" opens it and leaving closes it again; clicking pins it open
+ * so the prose can be read (and copied) without keeping the pointer still, and
+ * so keyboard and touch reach it too. One is open at a time; Escape or a click
+ * anywhere else closes it. Delegated from the document so markup rendered later
+ * needs no re-initialising, and so every page gets the same behaviour from one
+ * call.
+ */
+export function initHelp() {
+    let open = null;
+    function close() {
+        if (!open)
+            return;
+        open.pop.hidden = true;
+        open.pop.classList.remove('flip');
+        open.btn.setAttribute('aria-expanded', 'false');
+        open = null;
+    }
+    function show(btn, pinned) {
+        const pop = btn.parentElement?.querySelector('.help-pop');
+        if (!pop)
+            return;
+        close();
+        pop.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+        open = { btn, pop, pinned };
+        // Opened flush against the right edge of the viewport it would be
+        // cut off, so it hangs from the other corner instead.
+        if (pop.getBoundingClientRect().right > document.documentElement.clientWidth - 8) {
+            pop.classList.add('flip');
+        }
+    }
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.help-btn');
+        if (btn) {
+            // These buttons sit inside a <label>, where a click would otherwise
+            // focus the field, so the event stops here.
+            e.preventDefault();
+            e.stopPropagation();
+            if (open?.btn === btn && open.pinned)
+                close();
+            else
+                show(btn, true);
+            return;
+        }
+        if (open && !e.target.closest('.help-pop'))
+            close();
+    });
+    document.addEventListener('mouseover', (e) => {
+        const btn = e.target.closest('.help-btn');
+        if (btn && open?.btn !== btn)
+            show(btn, false);
+    });
+    document.addEventListener('mouseout', (e) => {
+        if (!open || open.pinned)
+            return;
+        // The popover is a child of the same .help wrapper as its button, so
+        // moving between the two never leaves it — only leaving the pair does.
+        const wrap = open.btn.parentElement;
+        if (wrap.contains(e.target) && !wrap.contains(e.relatedTarget))
+            close();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape')
+            close();
+    });
+}
+/**
+ * Wires a tab bar to its panels: each [role="tab"] button carries data-tab, and
+ * the panel it reveals carries a matching data-panel. The choice is remembered
+ * per-browser; a URL hash beats that on load, so another page can deep-link to
+ * one tab (e.g. /config#relays).
+ *
+ * Panels are hidden, never detached — every element inside stays in the DOM, so
+ * the getElementById lookups the page does at load keep working whichever tab
+ * happens to be showing.
+ */
+export function initTabs(key, tablistEl) {
+    const storageKey = `flatline:tab:${key}`;
+    const tabs = [...tablistEl.querySelectorAll('[role="tab"]')];
+    const panels = [...document.querySelectorAll('[data-panel]')];
+    let active = tabs[0]?.dataset.tab;
+
+    function show(name, focus = false) {
+        active = tabs.some((t) => t.dataset.tab === name) ? name : tabs[0]?.dataset.tab;
+        for (const tab of tabs) {
+            const on = tab.dataset.tab === active;
+            tab.classList.toggle('active', on);
+            tab.setAttribute('aria-selected', String(on));
+            // Only the selected tab is in the tab order; arrows move between them.
+            tab.tabIndex = on ? 0 : -1;
+            if (on && focus) tab.focus();
+        }
+        for (const panel of panels) panel.hidden = panel.dataset.panel !== active;
+        localStorage.setItem(storageKey, active);
+    }
+
+    tablistEl.addEventListener('click', (e) => {
+        const tab = e.target.closest('[role="tab"]');
+        if (tab) show(tab.dataset.tab);
+    });
+    tablistEl.addEventListener('keydown', (e) => {
+        const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const i = tabs.findIndex((t) => t.dataset.tab === active);
+        show(tabs[(i + step + tabs.length) % tabs.length].dataset.tab, true);
+    });
+
+    show(location.hash.slice(1) || localStorage.getItem(storageKey));
+    return { show };
+}
+
 // ---- shared tooltip (values lead, labels follow; textContent only) ----
 let tooltipEl = null;
 function tooltip() {

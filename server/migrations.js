@@ -248,6 +248,167 @@ export const migrations = [
         CREATE INDEX idx_action_runs_started ON action_runs (started_at);
       `);
     }
+  },
+  {
+    version: 6,
+    name: 'waits between stages and wait steps within a stage',
+    up(db) {
+      // Two kinds of deliberate pause:
+      //
+      // action_group_stages.wait_seconds — the gap held open BEFORE that stage
+      // starts (ignored for the first stage, which must not delay the response
+      // to an outage). Existing groups get the 5s default, so a sequence that
+      // used to slam its stages together now breathes between them.
+      //
+      // A wait step — an action_group_members row with no target_id and a
+      // wait_seconds instead. It runs alongside the stage's other steps and
+      // holds the stage open for that long. target_id therefore becomes
+      // nullable, and the primary key moves off it: (group, stage, position)
+      // already identifies a step, and position is unique within a stage in
+      // both the migration-3 rows (one per stage) and everything written since.
+      db.exec(`
+        ALTER TABLE action_group_stages ADD COLUMN wait_seconds INTEGER NOT NULL DEFAULT 5;
+
+        CREATE TABLE action_group_members_new (
+          action_group_id INTEGER NOT NULL REFERENCES action_groups(id) ON DELETE CASCADE,
+          target_id       INTEGER REFERENCES action_targets(id) ON DELETE CASCADE,
+          position        INTEGER NOT NULL DEFAULT 0,
+          timeout_seconds INTEGER NOT NULL DEFAULT 60,
+          stage           INTEGER NOT NULL DEFAULT 0,
+          wait_seconds    INTEGER,
+          PRIMARY KEY (action_group_id, stage, position),
+          -- a step acts on a target or waits, never both and never neither
+          CHECK ((target_id IS NULL) <> (wait_seconds IS NULL))
+        );
+        INSERT INTO action_group_members_new
+            (action_group_id, target_id, position, timeout_seconds, stage, wait_seconds)
+          SELECT action_group_id, target_id, position, timeout_seconds, stage, NULL
+          FROM action_group_members;
+        DROP TABLE action_group_members;
+        ALTER TABLE action_group_members_new RENAME TO action_group_members;
+      `);
+    }
+  },
+  {
+    version: 7,
+    name: 'ssh/winrm restore command becomes a restore sequence',
+    up(db) {
+      // Restore for ssh/winrm is now a sequence — an optional Wake-on-LAN
+      // packet, a wait for the host to answer, then a final step chosen by
+      // restore_action. An existing target only has a bare restore_command, and
+      // restore_action defaults to 'none', so without this its restore would
+      // quietly stop doing anything. Auto-restore stays off: nobody asked for
+      // their machines to start coming back on their own.
+      const rows = db.prepare(
+        "SELECT id, config FROM action_targets WHERE kind IN ('ssh', 'winrm')"
+      ).all();
+      const update = db.prepare('UPDATE action_targets SET config = ? WHERE id = ?');
+
+      for (const row of rows) {
+        let config;
+        try { config = JSON.parse(row.config); } catch { continue; }
+        if (typeof config !== 'object' || config === null) continue;
+
+        config.auto_restore = 0;
+        config.restore_wait_seconds = 300;
+        config.restore_action = config.restore_command ? 'command' : 'none';
+        update.run(JSON.stringify(config), row.id);
+      }
+    }
+  },
+  {
+    version: 8,
+    name: 'wake-on-lan relays',
+    up(db) {
+      // A relay is a machine that already sits on the target's LAN, which
+      // Flatline can reach and ask to broadcast a magic packet. It exists
+      // because a broadcast never crosses a router: a target on another VLAN
+      // is unreachable by Wake-on-LAN from Flatline itself, however the
+      // firewall is configured.
+      //
+      // Same shape as an action target — a connection plus encrypted
+      // credentials — minus everything about shutting down, since a relay is
+      // only ever asked to wake something. wake_command is a template holding
+      // {mac}: what to install and what to run differ per box (wakeonlan vs
+      // wol vs a PowerShell one-liner), while the MAC belongs to the target
+      // being woken, so one relay serves every host on its LAN.
+      //
+      // network is the broadcast domain the relay can actually reach, as CIDR
+      // (10.1.20.0/24). A relay only helps for targets inside it, and picking
+      // the wrong one fails silently — nothing ever answers a magic packet —
+      // so the UI checks the target's address against this and warns.
+      db.exec(`
+        CREATE TABLE relays (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          name         TEXT NOT NULL,
+          kind         TEXT NOT NULL CHECK (kind IN ('ssh', 'winrm')),
+          config       TEXT NOT NULL,
+          secret_enc   TEXT,
+          wake_command TEXT NOT NULL,
+          network      TEXT NOT NULL,
+          enabled      INTEGER NOT NULL DEFAULT 1,
+          created_at   INTEGER NOT NULL
+        );
+      `);
+    }
+  },
+  {
+    version: 9,
+    name: 'restore method is chosen, not inherited from the target kind',
+    up(db) {
+      // Restore used to be whatever shape the target's kind implied: only
+      // ssh/winrm could wake a host, only a k8s target could uncordon, and an
+      // http target could do nothing but replay one request. A restore is now a
+      // wake + wait + one action whose method (restore_kind) is picked
+      // independently, connecting either to the target itself (restore_inherit)
+      // or somewhere of its own.
+      //
+      // Every existing restore maps onto the new shape unchanged, so nothing
+      // needs reconfiguring: what a target did before is what it still does.
+      // restore_enabled is set from whether the old config would actually have
+      // done anything — the same test the Restore button used to enable itself
+      // with — so a target that was never set up does not silently acquire one.
+      const rows = db.prepare('SELECT id, kind, config FROM action_targets').all();
+      const update = db.prepare('UPDATE action_targets SET config = ? WHERE id = ?');
+
+      for (const row of rows) {
+        let config;
+        try { config = JSON.parse(row.config); } catch { continue; }
+        if (typeof config !== 'object' || config === null) continue;
+
+        if (row.kind === 'ssh' || row.kind === 'winrm') {
+          // wake -> wait -> (nothing | command on the host | an HTTP request).
+          // The HTTP option already carried its own URL, auth and secrets under
+          // restore_ names, which are exactly the names it keeps.
+          const action = config.restore_action ?? 'none';
+          config.restore_enabled = (config.wol_mac || action !== 'none') ? 1 : 0;
+          config.restore_kind = action === 'http' ? 'http' : action === 'command' ? row.kind : 'none';
+          // A command ran over the target's own connection; an HTTP request
+          // never did — it authenticated separately by design.
+          config.restore_inherit = action === 'command' ? 1 : 0;
+          delete config.restore_action;
+        } else if (row.kind === 'k8s') {
+          const uncordoning = config.action !== 'custom' || !!config.restore_uncordon;
+          config.restore_enabled = (uncordoning || config.restore_path || config.restore_restart_deployments) ? 1 : 0;
+          config.restore_kind = 'k8s';
+          config.restore_inherit = 1;
+          // Was implied by a 'drain' target rather than stored; it is an
+          // explicit choice now, so write down what was actually happening.
+          config.restore_uncordon = uncordoning ? 1 : 0;
+        } else if (row.kind === 'http') {
+          config.restore_enabled = config.restore_url ? 1 : 0;
+          config.restore_kind = config.restore_url ? 'http' : 'none';
+          config.restore_inherit = 1;
+        }
+
+        if (!config.restore_enabled) {
+          config.auto_restore = 0;
+          config.restore_kind = 'none';
+          config.restore_inherit = 0;
+        }
+        update.run(JSON.stringify(config), row.id);
+      }
+    }
   }
 ];
 

@@ -1,15 +1,28 @@
 import {
-  listNotificationChannels, createNotificationChannel, updateNotificationChannel,
-  deleteNotificationChannel, testNotificationChannel,
+  notificationChannels, relays as relaysApi,
   getKeyStatus, rotateKey, setKey,
   getSettings, putSettings,
   getSecurityConfig, setSitePassword, removeSitePassword,
   exportConfig, importConfig, resetApp, downloadBackup, restoreBackup
 } from './api.js';
-import { el, clear, fmtDateTime, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
+import {
+  el, clear, enabledPill, fmtDateTime, initCollapsible, initDirtyNote, initTabs,
+  wireFileUpload, confirmDialog, alertDialog, initHelp, toggleByData
+} from './dom.js';
+import {
+  initEntityForm, initSecretFields, renderTable, editDeleteButtons, actionsCell
+} from './crud.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
 
 initHeaderAuth();
+initHelp();
+
+// Sub-tabs split this page's cards into panels. They only hide and show, so
+// every getElementById below still resolves whichever tab is open.
+const configTabs = initTabs('config', document.getElementById('config-tabs'));
+// The {url} placeholder hint on the Notifications tab points at the setting
+// that fills it, which lives on General.
+document.getElementById('baseurl-jump').addEventListener('click', () => configTabs.show('general'));
 
 let channels = [];
 
@@ -45,11 +58,7 @@ const DEFAULT_EVENTS = [
 // ---------- channel form ----------
 
 const $form = document.getElementById('channel-form');
-const $formTitle = document.getElementById('channel-form-title');
 const $formError = document.getElementById('channel-error');
-const $formSubmit = document.getElementById('channel-submit');
-const $formCancel = document.getElementById('channel-cancel');
-const $formReset = document.getElementById('channel-reset');
 const $formTest = document.getElementById('channel-test');
 const $formTestResult = document.getElementById('channel-test-result');
 const $formSaveNote = document.getElementById('channel-save-note');
@@ -60,29 +69,24 @@ const $eventChecks = document.getElementById('channel-event-checks');
 const channelFormSection = initCollapsible('config:channel-form',
   document.getElementById('channel-form-header'), document.getElementById('channel-form-body'));
 const channelDirty = initDirtyNote($form, document.getElementById('channel-dirty'), $formSaveNote);
-
-let editingChannelId = null;
-let clearedSecrets = new Set();
+const channelSecrets = initSecretFields($form, {
+  sectionAttr: 'kind',
+  onDirty: () => channelDirty.markDirty()
+});
 
 function field(name) {
   return $form.elements.namedItem(name);
 }
 
 function syncKindSections() {
-  const kind = $kind.value;
-  for (const section of $form.querySelectorAll('.kind-section')) {
-    section.style.display = section.dataset.kind === kind ? '' : 'none';
-  }
+  toggleByData($form, 'kind', $kind.value);
   syncNtfyAuthFields();
   $formTestResult.textContent = '';
 }
 $kind.addEventListener('change', syncKindSections);
 
 function syncNtfyAuthFields() {
-  const scheme = $ntfyAuthScheme.value;
-  for (const node of $form.querySelectorAll('[data-ntfy-auth]')) {
-    node.style.display = node.dataset.ntfyAuth === scheme ? '' : 'none';
-  }
+  toggleByData($form, 'ntfy-auth', $ntfyAuthScheme.value);
 }
 $ntfyAuthScheme.addEventListener('change', syncNtfyAuthFields);
 
@@ -100,34 +104,6 @@ function selectedEvents() {
   return [...$eventChecks.querySelectorAll('input[data-event]')]
     .filter((cb) => cb.checked)
     .map((cb) => cb.value);
-}
-
-/** Shows "stored" state + a clear toggle next to each secret input. */
-function renderSecretStates(kind, storedFields) {
-  clearedSecrets = new Set();
-  for (const label of $form.querySelectorAll('label.secret')) {
-    const state = label.querySelector('.secret-state');
-    clear(state);
-    const name = label.dataset.secret;
-    const isStored = storedFields.includes(name) && label.closest('.kind-section')?.dataset.kind === kind;
-    if (!isStored) continue;
-
-    const clearBtn = el('button', { type: 'button', class: 'link-btn' }, 'clear');
-    clearBtn.addEventListener('click', () => {
-      if (clearedSecrets.has(name)) {
-        clearedSecrets.delete(name);
-        clearBtn.textContent = 'clear';
-        hint.textContent = '· stored ✓ (leave blank to keep) ';
-      } else {
-        clearedSecrets.add(name);
-        clearBtn.textContent = 'undo';
-        hint.textContent = '· will be removed on save ';
-      }
-      channelDirty.markDirty();
-    });
-    const hint = el('span', {}, '· stored ✓ (leave blank to keep) ');
-    state.append(hint, clearBtn);
-  }
 }
 
 function collectConfig(kind) {
@@ -161,108 +137,73 @@ function collectConfig(kind) {
   return cfg;
 }
 
-function collectSecrets(kind) {
-  const secrets = {};
-  for (const [secretName, inputName] of Object.entries(SECRET_INPUTS[kind])) {
-    const v = field(inputName).value;
-    if (clearedSecrets.has(secretName)) secrets[secretName] = null;
-    else if (v) secrets[secretName] = v;
-  }
-  return secrets;
-}
+const channelForm = initEntityForm({
+  form: $form,
+  els: {
+    title: document.getElementById('channel-form-title'),
+    error: $formError,
+    submit: document.getElementById('channel-submit'),
+    cancel: document.getElementById('channel-cancel'),
+    reset: document.getElementById('channel-reset'),
+    saveNote: $formSaveNote
+  },
+  section: channelFormSection,
+  dirty: channelDirty,
+  noun: 'notification channel',
+  itemLabel: 'channel',
+  api: notificationChannels,
+  reset: () => {
+    renderEventChecks(DEFAULT_EVENTS);
+    channelSecrets.render('none', []);
+    syncKindSections();
+  },
+  fill: (c) => {
+    field('name').value = c.name;
+    $kind.value = c.kind;
+    field('enabled').checked = !!c.enabled;
 
-function resetChannelForm() {
-  editingChannelId = null;
-  $form.reset();
-  $formTitle.textContent = 'Add notification channel';
-  $formSubmit.textContent = 'Add channel';
-  $formCancel.style.display = 'none';
-  $formReset.style.display = '';
-  $formError.textContent = '';
-  $formSaveNote.textContent = '';
-  channelDirty.markClean();
-  renderEventChecks(DEFAULT_EVENTS);
-  renderSecretStates('none', []);
-  syncKindSections();
-}
+    const cfg = c.config;
+    renderEventChecks(Array.isArray(cfg.events) ? cfg.events : []);
+    field('title_template').value = cfg.title_template ?? '';
+    field('body_template').value = cfg.body_template ?? '';
+    switch (c.kind) {
+      case 'ntfy':
+        field('ntfy_server_url').value = cfg.server_url ?? '';
+        field('ntfy_topic').value = cfg.topic ?? '';
+        field('ntfy_priority').value = cfg.priority ?? '';
+        field('ntfy_auth_scheme').value = cfg.auth_scheme ?? 'none';
+        field('ntfy_username').value = cfg.username ?? '';
+        break;
+      case 'email':
+        field('email_host').value = cfg.host ?? '';
+        field('email_port').value = String(cfg.port ?? 587);
+        field('email_secure').checked = !!cfg.secure;
+        field('email_from').value = cfg.from ?? '';
+        field('email_to').value = cfg.to ?? '';
+        field('email_username').value = cfg.username ?? '';
+        break;
+      case 'apprise':
+        field('apprise_server_url').value = cfg.server_url ?? '';
+        field('apprise_config_key').value = cfg.config_key ?? '';
+        field('apprise_tags').value = cfg.tags ?? '';
+        break;
+    }
 
-function fillChannelForm(c) {
-  resetChannelForm();
-  editingChannelId = c.id;
-  field('name').value = c.name;
-  $kind.value = c.kind;
-  field('enabled').checked = !!c.enabled;
-
-  const cfg = c.config;
-  renderEventChecks(Array.isArray(cfg.events) ? cfg.events : []);
-  field('title_template').value = cfg.title_template ?? '';
-  field('body_template').value = cfg.body_template ?? '';
-  switch (c.kind) {
-    case 'ntfy':
-      field('ntfy_server_url').value = cfg.server_url ?? '';
-      field('ntfy_topic').value = cfg.topic ?? '';
-      field('ntfy_priority').value = cfg.priority ?? '';
-      field('ntfy_auth_scheme').value = cfg.auth_scheme ?? 'none';
-      field('ntfy_username').value = cfg.username ?? '';
-      break;
-    case 'email':
-      field('email_host').value = cfg.host ?? '';
-      field('email_port').value = String(cfg.port ?? 587);
-      field('email_secure').checked = !!cfg.secure;
-      field('email_from').value = cfg.from ?? '';
-      field('email_to').value = cfg.to ?? '';
-      field('email_username').value = cfg.username ?? '';
-      break;
-    case 'apprise':
-      field('apprise_server_url').value = cfg.server_url ?? '';
-      field('apprise_config_key').value = cfg.config_key ?? '';
-      field('apprise_tags').value = cfg.tags ?? '';
-      break;
-  }
-
-  renderSecretStates(c.kind, c.secret_fields);
-  syncKindSections();
-  $formTitle.textContent = `Edit channel: ${c.name}`;
-  $formSubmit.textContent = 'Save changes';
-  $formCancel.style.display = '';
-  $formReset.style.display = 'none';
-  channelFormSection.expand();
-  $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-$formCancel.addEventListener('click', (e) => {
-  e.preventDefault();
-  resetChannelForm();
-});
-
-$formReset.addEventListener('click', () => resetChannelForm());
-
-$form.addEventListener('submit', (e) => {
-  e.preventDefault();
-  void (async () => {
+    channelSecrets.render(c.kind, c.secret_fields);
+    syncKindSections();
+  },
+  collect: () => {
     const kind = $kind.value;
-    const input = {
+    return {
       name: field('name').value,
       kind,
       config: collectConfig(kind),
-      secrets: collectSecrets(kind),
+      secrets: channelSecrets.collect(SECRET_INPUTS[kind]),
       enabled: field('enabled').checked
     };
-    const wasEditing = editingChannelId != null;
-    try {
-      const saved = wasEditing ? await updateNotificationChannel(editingChannelId, input) : await createNotificationChannel(input);
-      $formError.textContent = '';
-      await refreshChannels();
-      if (wasEditing) {
-        fillChannelForm(channels.find((c) => c.id === saved.id) ?? saved);
-        $formSaveNote.textContent = 'Saved ✓';
-      } else {
-        resetChannelForm();
-      }
-    } catch (err) {
-      $formError.textContent = err.message;
-    }
-  })();
+  },
+  findSaved: (id) => channels.find((c) => c.id === id),
+  refresh: refreshChannels
 });
 
 $formTest.addEventListener('click', () => {
@@ -272,11 +213,11 @@ $formTest.addEventListener('click', () => {
     $formTestResult.textContent = 'Sending test notification…';
     $formError.textContent = '';
     try {
-      const result = await testNotificationChannel({
-        id: editingChannelId ?? undefined,
+      const result = await notificationChannels.test({
+        id: channelForm.editingId ?? undefined,
         kind,
         config: collectConfig(kind),
-        secrets: collectSecrets(kind)
+        secrets: channelSecrets.collect(SECRET_INPUTS[kind])
       });
       $formTestResult.className = result.ok ? 'note' : 'error';
       $formTestResult.textContent = `${result.ok ? '✓' : '✕'} ${result.message}`;
@@ -317,74 +258,57 @@ function lastActivityText(c) {
 }
 
 function renderChannelTable() {
-  clear($channelTable);
-  if (channels.length === 0) {
-    $channelTable.append(el('div', { class: 'empty' },
-      el('div', { class: 'big' }, 'No notification channels yet'),
-      el('div', {}, 'Add a webhook, Discord, ntfy, email, or Apprise channel using the form below.')));
-    return;
-  }
+  renderTable($channelTable, {
+    headers: ['Status', 'Name', 'Service', 'Events', 'Credentials', 'Last activity', ''],
+    rows: channels,
+    empty: ['No notification channels yet',
+      'Add a webhook, Discord, ntfy, email, or Apprise channel using the form below.'],
+    cells: (c) => {
+      const testBtn = el('button', { class: 'btn ghost small' }, 'Test');
+      testBtn.addEventListener('click', () => {
+        void (async () => {
+          testBtn.disabled = true;
+          try {
+            const result = await notificationChannels.test({ id: c.id, kind: c.kind, config: c.config, secrets: {} });
+            await alertDialog({ title: result.ok ? 'Test delivered' : 'Test failed', body: result.message });
+          } catch (err) {
+            await alertDialog({ title: 'Test failed', body: err.message });
+          } finally {
+            testBtn.disabled = false;
+            await refreshChannels();
+          }
+        })();
+      });
 
-  const tbody = el('tbody', {});
-  for (const c of channels) {
-    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
-    editBtn.addEventListener('click', () => fillChannelForm(c));
-    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
-    delBtn.addEventListener('click', () => {
-      void (async () => {
-        const ok = await confirmDialog({
-          title: 'Delete notification channel?',
-          body: `"${c.name}" will be deleted and will stop receiving alerts. This can't be undone.`,
-          confirmText: 'Delete channel',
-          danger: true
-        });
-        if (!ok) return;
-        await deleteNotificationChannel(c.id);
-        if (editingChannelId === c.id) resetChannelForm();
-        await refreshChannels();
-      })();
-    });
-    const testBtn = el('button', { class: 'btn ghost small' }, 'Test');
-    testBtn.addEventListener('click', () => {
-      void (async () => {
-        testBtn.disabled = true;
-        try {
-          const result = await testNotificationChannel({ id: c.id, kind: c.kind, config: c.config, secrets: {} });
-          await alertDialog({ title: result.ok ? 'Test delivered' : 'Test failed', body: result.message });
-        } catch (err) {
-          await alertDialog({ title: 'Test failed', body: err.message });
-        } finally {
-          testBtn.disabled = false;
-          await refreshChannels();
-        }
-      })();
-    });
-
-    tbody.append(el('tr', {},
-      el('td', {}, channelStatusPill(c)),
-      el('td', {}, el('strong', {}, c.name)),
-      el('td', {}, KIND_LABELS[c.kind] ?? c.kind),
-      el('td', { class: 'target-cell', title: eventSummary(c.config) }, eventSummary(c.config)),
-      el('td', {}, c.secret_fields.length
-        ? el('span', { class: 'badge' }, `🔒 ${c.secret_fields.join(', ')}`)
-        : '—'),
-      el('td', { class: 'target-cell' }, lastActivityText(c)),
-      el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, testBtn, editBtn, delBtn))
-    ));
-  }
-
-  const table = el('table', { class: 'endpoints' });
-  table.append(
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Name'), el('th', {}, 'Service'), el('th', {}, 'Events'),
-      el('th', {}, 'Credentials'), el('th', {}, 'Last activity'), el('th', {}, ''))),
-    tbody
-  );
-  $channelTable.append(table);
+      return [
+        el('td', {}, channelStatusPill(c)),
+        el('td', {}, el('strong', {}, c.name)),
+        el('td', {}, KIND_LABELS[c.kind] ?? c.kind),
+        el('td', { class: 'target-cell', title: eventSummary(c.config) }, eventSummary(c.config)),
+        el('td', {}, c.secret_fields.length
+          ? el('span', { class: 'badge' }, `🔒 ${c.secret_fields.join(', ')}`)
+          : '—'),
+        el('td', { class: 'target-cell' }, lastActivityText(c)),
+        actionsCell(testBtn, editDeleteButtons({
+          onEdit: () => channelForm.toEditMode(c),
+          confirm: {
+            title: 'Delete notification channel?',
+            body: `"${c.name}" will be deleted and will stop receiving alerts. This can't be undone.`,
+            confirmText: 'Delete channel'
+          },
+          onDelete: async () => {
+            await notificationChannels.remove(c.id);
+            channelForm.forgetIfEditing(c.id);
+            await refreshChannels();
+          }
+        }))
+      ];
+    }
+  });
 }
 
 async function refreshChannels() {
-  channels = await listNotificationChannels();
+  channels = await notificationChannels.list();
   renderChannelTable();
 }
 
@@ -499,6 +423,7 @@ async function loadSettings() {
   const s = await getSettings();
   $settingsForm.elements.namedItem('retention_days').value = s.retention_days ?? '14';
   settingsDirty.markClean();
+  applyBaseUrl(s);
 }
 
 $settingsForm.addEventListener('submit', (e) => {
@@ -516,6 +441,258 @@ $settingsForm.addEventListener('submit', (e) => {
     } catch (err) {
       $settingsNote.className = 'error';
       $settingsNote.textContent = err.message;
+    }
+  })();
+});
+
+// ---------- wake-on-lan relays ----------
+// A machine on the target's network that Flatline asks to broadcast the magic
+// packet, for targets it cannot reach a broadcast to itself. The connection
+// half mirrors an ssh/winrm action target; the wake command is a template
+// holding {mac}, so one relay serves every machine on its network.
+
+const RELAY_KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
+
+/** Default wake command per relay kind. Windows needs nothing installed; the
+ *  Linux default assumes the `wakeonlan` package (see the form's help block). */
+const DEFAULT_WAKE_COMMAND = {
+  ssh: 'wakeonlan {mac}',
+  winrm: "$m = '{mac}'.Replace('-',':').Split(':') | ForEach-Object { [byte]('0x' + $_) }; "
+    + '$p = [byte[]]@(0xFF) * 6 + [byte[]]$m * 16; '
+    + '$u = New-Object System.Net.Sockets.UdpClient; $u.EnableBroadcast = $true; '
+    + "[void]$u.Send($p, $p.Length, '255.255.255.255', 9); $u.Close()"
+};
+
+const RELAY_SECRET_INPUTS = {
+  ssh: { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase', sudo_password: 'ssh_sudo_password' },
+  winrm: { password: 'winrm_password' }
+};
+
+const $relayForm = document.getElementById('relay-form');
+const $relayTable = document.getElementById('relay-table');
+const $relayTest = document.getElementById('relay-test');
+const $relayTestResult = document.getElementById('relay-test-result');
+const $relaySaveNote = document.getElementById('relay-save-note');
+const $relayError = document.getElementById('relay-error');
+const $relayKind = document.getElementById('r-kind');
+const relayFormSection = initCollapsible('config:relay-form',
+  document.getElementById('relay-form-header'), document.getElementById('relay-form-body'));
+const relayDirty = initDirtyNote($relayForm, document.getElementById('relay-dirty'), $relaySaveNote);
+const relaySecrets = initSecretFields($relayForm, {
+  sectionAttr: 'relay-kind',
+  onDirty: () => relayDirty.markDirty()
+});
+
+let relays = [];
+
+const relayField = (name) => $relayForm.elements.namedItem(name);
+
+function syncRelayKind() {
+  toggleByData($relayForm, 'relay-kind', $relayKind.value);
+  toggleByData($relayForm, 'relay-ssh-auth', relayField('ssh_auth_method').value);
+  $relayTestResult.textContent = '';
+}
+
+$relayKind.addEventListener('change', () => {
+  // Switching type makes the other type's command meaningless, so follow it —
+  // but never overwrite something the user typed themselves.
+  const cmd = relayField('wake_command');
+  if (!cmd.value || Object.values(DEFAULT_WAKE_COMMAND).includes(cmd.value)) {
+    cmd.value = DEFAULT_WAKE_COMMAND[$relayKind.value];
+  }
+  syncRelayKind();
+});
+relayField('ssh_auth_method').addEventListener('change', syncRelayKind);
+document.getElementById('relay-cmd-reset').addEventListener('click', () => {
+  relayField('wake_command').value = DEFAULT_WAKE_COMMAND[$relayKind.value];
+  relayDirty.markDirty();
+});
+wireFileUpload(
+  document.getElementById('relay-key-upload-btn'),
+  document.getElementById('relay-key-upload'),
+  relayField('ssh_private_key')
+);
+
+function collectRelayConfig(kind) {
+  return kind === 'ssh'
+    ? {
+        host: relayField('ssh_host').value,
+        port: Number(relayField('ssh_port').value) || 22,
+        username: relayField('ssh_username').value,
+        auth_method: relayField('ssh_auth_method').value
+      }
+    : {
+        host: relayField('winrm_host').value,
+        port: Number(relayField('winrm_port').value) || 5985,
+        domain: relayField('winrm_domain').value,
+        username: relayField('winrm_username').value
+      };
+}
+
+const relayForm = initEntityForm({
+  form: $relayForm,
+  els: {
+    title: document.getElementById('relay-form-title'),
+    error: $relayError,
+    submit: document.getElementById('relay-submit'),
+    cancel: document.getElementById('relay-cancel'),
+    reset: document.getElementById('relay-reset'),
+    saveNote: $relaySaveNote
+  },
+  section: relayFormSection,
+  dirty: relayDirty,
+  noun: 'relay',
+  api: relaysApi,
+  reset: () => {
+    relayField('wake_command').value = DEFAULT_WAKE_COMMAND[$relayKind.value];
+    relaySecrets.render('none', []);
+    syncRelayKind();
+  },
+  fill: (r) => {
+    relayField('name').value = r.name;
+    $relayKind.value = r.kind;
+    relayField('enabled').checked = !!r.enabled;
+    relayField('wake_command').value = r.wake_command ?? '';
+    relayField('network').value = r.network ?? '';
+
+    const c = r.config;
+    if (r.kind === 'ssh') {
+      relayField('ssh_host').value = c.host ?? '';
+      relayField('ssh_port').value = String(c.port ?? 22);
+      relayField('ssh_username').value = c.username ?? '';
+      relayField('ssh_auth_method').value = c.auth_method ?? 'password';
+    } else {
+      relayField('winrm_host').value = c.host ?? '';
+      relayField('winrm_port').value = String(c.port ?? 5985);
+      relayField('winrm_domain').value = c.domain ?? '';
+      relayField('winrm_username').value = c.username ?? '';
+    }
+
+    relaySecrets.render(r.kind, r.secret_fields);
+    syncRelayKind();
+  },
+  collect: () => {
+    const kind = $relayKind.value;
+    return {
+      name: relayField('name').value,
+      kind,
+      config: collectRelayConfig(kind),
+      wake_command: relayField('wake_command').value,
+      network: relayField('network').value,
+      secrets: relaySecrets.collect(RELAY_SECRET_INPUTS[kind]),
+      enabled: relayField('enabled').checked
+    };
+  },
+  findSaved: (id) => relays.find((r) => r.id === id),
+  refresh: loadRelays
+});
+
+$relayTest.addEventListener('click', () => {
+  void (async () => {
+    const kind = $relayKind.value;
+    $relayTestResult.className = 'note';
+    $relayTestResult.textContent = 'Testing…';
+    $relayError.textContent = '';
+    try {
+      const result = await relaysApi.test({
+        id: relayForm.editingId ?? undefined,
+        kind,
+        config: collectRelayConfig(kind),
+        secrets: relaySecrets.collect(RELAY_SECRET_INPUTS[kind])
+      });
+      $relayTestResult.className = result.ok ? 'note' : 'error';
+      $relayTestResult.textContent = `${result.ok ? '✓' : '✕'} ${result.message}`;
+    } catch (err) {
+      $relayTestResult.className = 'error';
+      $relayTestResult.textContent = err.message;
+    }
+  })();
+});
+
+function relayConnection(r) {
+  const c = r.config;
+  return r.kind === 'winrm'
+    ? `${c.domain ? c.domain + '\\' : ''}${c.username}@${c.host}:${c.port}`
+    : `${c.username}@${c.host}:${c.port}`;
+}
+
+function renderRelayTable() {
+  renderTable($relayTable, {
+    headers: ['Status', 'Name', 'Type', 'Connection', 'Network', 'Wake command', 'Credentials', ''],
+    rows: relays,
+    empty: ['No relays yet',
+      'Add one only if you need to wake machines on a network Flatline is not attached to.'],
+    cells: (r) => {
+      const credentials = r.secret_fields.length ? `🔒 ${r.secret_fields.join(', ')}` : '—';
+      return [
+        el('td', {}, enabledPill(r.enabled)),
+        el('td', { class: 'truncate', title: r.name }, el('strong', {}, r.name)),
+        el('td', {}, RELAY_KIND_LABELS[r.kind] ?? r.kind),
+        el('td', { class: 'target-cell', title: relayConnection(r) }, relayConnection(r)),
+        el('td', { class: 'mono' }, r.network),
+        el('td', { class: 'target-cell mono', title: r.wake_command }, r.wake_command),
+        el('td', { class: 'truncate', title: credentials }, credentials),
+        actionsCell(editDeleteButtons({
+          onEdit: () => relayForm.toEditMode(r),
+          confirm: {
+            title: 'Delete relay?',
+            body: [`"${r.name}" and its stored credentials will be permanently deleted.`,
+              'Any action target set to wake through this relay will stop waking until you point it at another one.'],
+            confirmText: 'Delete relay'
+          },
+          onDelete: async () => {
+            await relaysApi.remove(r.id);
+            relayForm.forgetIfEditing(r.id);
+            await loadRelays();
+          }
+        }))
+      ];
+    }
+  });
+}
+
+async function loadRelays() {
+  relays = await relaysApi.list();
+  renderRelayTable();
+}
+
+// ---------- site URL ----------
+// Consumed by notification templates as {url}. FLATLINE_BASE_URL wins when set,
+// in which case the field is shown read-only rather than hidden — an operator
+// looking for it should find it and see why it can't be edited here.
+
+const $baseUrlForm = document.getElementById('baseurl-form');
+const $baseUrlStatus = document.getElementById('baseurl-status');
+const $baseUrlNote = document.getElementById('baseurl-note');
+const $baseUrlError = document.getElementById('baseurl-error');
+const $baseUrlSave = document.getElementById('baseurl-save');
+const baseUrlDirty = initDirtyNote($baseUrlForm, document.getElementById('baseurl-dirty'), $baseUrlNote);
+
+function applyBaseUrl(s) {
+  const input = $baseUrlForm.elements.namedItem('base_url');
+  input.value = s.base_url ?? '';
+  const fromEnv = s.base_url_source === 'env';
+  input.disabled = fromEnv;
+  $baseUrlSave.disabled = fromEnv;
+  $baseUrlStatus.textContent = fromEnv
+    ? 'Set by the FLATLINE_BASE_URL environment variable — unset it to edit here.'
+    : s.base_url
+      ? 'Notifications link back to this address.'
+      : 'Not set — notifications carry no link.';
+  baseUrlDirty.markClean();
+}
+
+$baseUrlForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  void (async () => {
+    $baseUrlError.textContent = '';
+    $baseUrlNote.textContent = '';
+    try {
+      applyBaseUrl(await putSettings({ base_url: $baseUrlForm.elements.namedItem('base_url').value }));
+      $baseUrlNote.textContent = 'Saved ✓';
+      setTimeout(() => { $baseUrlNote.textContent = ''; }, 2500);
+    } catch (err) {
+      $baseUrlError.textContent = err.message;
     }
   })();
 });
@@ -754,6 +931,7 @@ $dbRestore.addEventListener('change', () => {
       await restoreBackup(file);
       $dbNote.textContent = 'Database restored ✓';
       await refreshChannels();
+      await loadRelays();
       await loadSettings();
       await refreshKeyStatus();
       await refreshSecurity();
@@ -782,6 +960,7 @@ $appReset.addEventListener('click', () => {
       await resetApp();
       $dbNote.textContent = 'Flatline reset to a clean start ✓';
       await refreshChannels();
+      await loadRelays();
       await loadSettings();
       await refreshKeyStatus();
       await refreshSecurity();
@@ -793,8 +972,10 @@ $appReset.addEventListener('click', () => {
 
 // ---------- boot ----------
 
-resetChannelForm();
+channelForm.toAddMode();
+relayForm.toAddMode();
 void refreshChannels();
+void loadRelays();
 void loadSettings();
 void refreshKeyStatus();
 void refreshSecurity();

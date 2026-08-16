@@ -1,35 +1,56 @@
 import {
-  listActionTargets, createActionTarget, updateActionTarget, deleteActionTarget, testActionTarget, runActionTarget,
-  restoreActionTarget,
-  listActionGroups, createActionGroup, updateActionGroup, deleteActionGroup,
-  listGroups, updateGroup
+  actionTargets, actionGroups, groups as flatlineGroupsApi, relays as relaysApi,
+  runActionTarget, restoreActionTarget, getRestoreStatus
 } from './api.js';
-import { el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog } from './dom.js';
+import {
+  el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, wireFileUpload,
+  confirmDialog, alertDialog, initHelp, toggleByData
+} from './dom.js';
+import {
+  initEntityForm, initSecretFields, renderTable, editDeleteButtons, actionsCell
+} from './crud.js';
 import { initHeaderAuth } from './header.js';
+import { hostInNetwork } from '/shared/net.js';
+import { RESTORE_SECRET_FIELDS } from '/shared/restoreSecrets.js';
 
 initHeaderAuth();
+initHelp();
 
 let targets = [];
 let igroups = [];
 let flatlineGroups = [];
+let relays = [];
 
 const KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'Kubernetes', http: 'HTTP(S)' };
-const K8S_ACTION_LABELS = { drain: 'cordon + drain all nodes', custom: 'custom command' };
+const K8S_ACTION_LABELS = { drain: 'drain all nodes', custom: 'custom request' };
 
-// Shown in the Restore confirm dialog — what "undo" actually means per kind.
-const RESTORE_HINTS = {
-  ssh: 'This runs the configured restore command over SSH.',
-  winrm: 'This runs the configured restore command over WinRM.',
-  http: 'This sends the configured restore request.',
-  k8s: 'For "cordon + drain" this uncordons every node. For a custom command, it runs the configured restore request.'
-};
-
-// Maps a kind's secret field -> form input name.
+// Maps a kind's secret field -> form input name, for the target's own connection.
 const SECRET_INPUTS = {
-  ssh:  { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase', sudo_password: 'ssh_sudo_password' },
+  ssh:  { password: 'ssh_password', private_key: 'ssh_private_key', passphrase: 'ssh_passphrase',
+          sudo_password: 'ssh_sudo_password' },
   winrm: { password: 'winrm_password' },
   k8s:  { token: 'k8s_token', kubeconfig: 'k8s_kubeconfig' },
-  http: { token: 'http_token', password: 'http_password' }
+  http: { token: 'http_token', password: 'http_password', login_password: 'http_login_password' }
+};
+
+// RESTORE_SECRET_FIELDS (imported above) is the restore's own credentials, used
+// only when it does not inherit the target's. One panel serves every kind, so
+// the input names are the field names — no per-kind prefix to map through.
+
+const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
+const DEFAULT_RESTORE_WAIT = 300;
+/** Methods offered to the restore request, per method. Kubernetes takes PATCH;
+ *  the HTTP kind does not. One select serves both, repopulated on change. */
+const RESTORE_REQUEST_METHODS = {
+  k8s: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  http: ['GET', 'POST', 'PUT', 'DELETE']
+};
+/** Which of the restore's connection selects names its sub-auth, per method —
+ *  the second axis the connection fields are shown on (see syncRestoreFields). */
+const RESTORE_AUTH_FIELD = {
+  ssh: 'restore_auth_method',
+  k8s: 'restore_k8s_auth',
+  http: 'restore_auth_scheme'
 };
 
 function targetById(id) {
@@ -39,11 +60,7 @@ function targetById(id) {
 // ---------- target form ----------
 
 const $form = document.getElementById('target-form');
-const $formTitle = document.getElementById('target-form-title');
 const $formError = document.getElementById('target-error');
-const $formSubmit = document.getElementById('target-submit');
-const $formCancel = document.getElementById('target-cancel');
-const $formReset = document.getElementById('target-reset');
 const $formTest = document.getElementById('target-test');
 const $formTestResult = document.getElementById('target-test-result');
 const $formSaveNote = document.getElementById('target-save-note');
@@ -53,64 +70,230 @@ const $targetTable = document.getElementById('target-table');
 const $sshAuthMethod = $form.elements.namedItem('ssh_auth_method');
 const $k8sAuthMethod = $form.elements.namedItem('k8s_auth_method');
 const $k8sAction = $form.elements.namedItem('k8s_action');
+const $restoreKind = document.getElementById('restore-kind');
+const $restoreInherit = document.getElementById('restore-inherit');
+const $restoreEnabled = $form.elements.namedItem('restore_enabled');
+const $restoreSummary = document.getElementById('restore-summary');
+const $restoreRequestMethod = document.getElementById('restore-request-method');
 const targetFormSection = initCollapsible('actions:target-form',
   document.getElementById('target-form-header'), document.getElementById('target-form-body'));
+// The Restore panel is the longest part of the form and most targets never
+// change it after setup, so it folds away on its own.
+initCollapsible('actions:restore',
+  document.getElementById('restore-header'), document.getElementById('restore-body'));
 const targetDirty = initDirtyNote($form, document.getElementById('target-dirty'), $formSaveNote);
-
-let editingTargetId = null;
-/** Secret fields the user asked to clear on this edit. */
-let clearedSecrets = new Set();
+/** One Restore panel serves all four kinds, so its credentials sit outside every
+ *  .kind-section — hence unsectionedIsGlobal. */
+const targetSecrets = initSecretFields($form, {
+  sectionAttr: 'kind',
+  unsectionedIsGlobal: true,
+  onDirty: () => targetDirty.markDirty()
+});
 
 function field(name) {
   return $form.elements.namedItem(name);
 }
 
 function syncKindSections() {
-  const kind = $kind.value;
-  for (const section of $form.querySelectorAll('.kind-section')) {
-    section.style.display = section.dataset.kind === kind ? '' : 'none';
-  }
+  toggleByData($form, 'kind', $kind.value);
   syncHttpAuthFields();
   syncSshAuthFields();
   syncK8sAuthFields();
   syncK8sActionFields();
+  syncRestoreFields();
   $formTestResult.textContent = '';
 }
 
-function syncHttpAuthFields() {
-  const scheme = $httpScheme.value;
-  for (const node of $form.querySelectorAll('[data-http]')) {
-    const schemes = node.dataset.http.split(' ');
-    node.style.display = schemes.includes(scheme) ? '' : 'none';
+/**
+ * The whole Restore panel: whether it is on at all, which method it uses, and —
+ * when it connects somewhere of its own — that method's connection fields.
+ *
+ * A field shows when its `data-rk` names the chosen method and, where present,
+ * its `data-rauth` names that method's current sub-auth (SSH's password/key,
+ * the cluster's token/kubeconfig, HTTP's scheme). Everything inside
+ * #restore-connection is additionally hidden while the restore inherits, since
+ * then there is nothing of its own to fill in.
+ */
+function syncRestoreFields() {
+  const on = $restoreEnabled.checked;
+  document.getElementById('restore-config').style.display = on ? '' : 'none';
+
+  // Inheriting means "the same machine, reached the same way", which only
+  // exists when the method is the target's own kind.
+  const restoreKind = $restoreKind.value;
+  const canInherit = restoreKind === $kind.value;
+  document.getElementById('restore-inherit-field').style.display = canInherit ? '' : 'none';
+  if (!canInherit) $restoreInherit.value = '0';
+  const inherits = canInherit && $restoreInherit.value === '1';
+
+  document.getElementById('restore-connection').style.display =
+    restoreKind !== 'none' && !inherits ? '' : 'none';
+
+  // Two axes here rather than one, so this stays a hand-rolled loop: a field
+  // shows only when its method AND that method's sub-auth both match.
+  const authField = RESTORE_AUTH_FIELD[restoreKind];
+  const auth = authField ? field(authField).value : null;
+  for (const node of $form.querySelectorAll('[data-rk]')) {
+    const kindMatch = node.dataset.rk.split(' ').includes(restoreKind);
+    const authMatch = node.dataset.rauth == null || node.dataset.rauth.split(' ').includes(auth);
+    node.style.display = kindMatch && authMatch ? '' : 'none';
   }
+
+  renderRestoreRequestMethods(restoreKind);
+  // Left blank the port falls back to the method's default, so say which one
+  // that would be rather than showing SSH's on a WinRM restore.
+  if (restoreKind === 'ssh' || restoreKind === 'winrm') {
+    field('restore_port').placeholder = restoreKind === 'ssh' ? '22' : '5985';
+  }
+
+  toggleByData($form, 'wake-mode', field('wake_mode').value);
+  renderRelayWarning();
+  renderRestoreSummary();
+}
+
+/** The request-method select is shared by the Kubernetes and HTTP methods,
+ *  which do not accept the same verbs. Repopulated rather than duplicated, so
+ *  there is only ever one `restore_method` input in the form. */
+function renderRestoreRequestMethods(restoreKind) {
+  const methods = RESTORE_REQUEST_METHODS[restoreKind];
+  if (!methods) return;
+  const chosen = $restoreRequestMethod.value;
+  clear($restoreRequestMethod);
+  for (const m of methods) $restoreRequestMethod.append(el('option', { value: m }, m));
+  $restoreRequestMethod.value = methods.includes(chosen) ? chosen : (restoreKind === 'k8s' ? 'PATCH' : 'POST');
+}
+
+/** A folded panel still has to say whether a restore exists, and roughly what
+ *  it does — it is the one part of the form that is off by default. */
+function renderRestoreSummary() {
+  if (!$restoreEnabled.checked) {
+    $restoreSummary.textContent = 'off';
+    return;
+  }
+  const parts = [];
+  if (field('wol_mac').value.trim()) parts.push('wake');
+  const restoreKind = $restoreKind.value;
+  parts.push(restoreKind === 'none' ? 'no action' : KIND_LABELS[restoreKind]);
+  if (field('auto_restore').checked) parts.push('auto');
+  $restoreSummary.textContent = parts.join(' · ');
+}
+
+/** The address the woken machine is expected to answer on, for the relay check
+ *  below. That is whatever the restore is about to connect to; for a method
+ *  that names no host (Kubernetes, HTTP) it falls back to the target's own. */
+function wakeHost() {
+  const restoreKind = $restoreKind.value;
+  if (restoreKind === 'ssh' || restoreKind === 'winrm') {
+    return $restoreInherit.value === '1' && restoreKind === $kind.value
+      ? field(`${$kind.value}_host`).value.trim()
+      : field('restore_host').value.trim();
+  }
+  const kind = $kind.value;
+  if (kind === 'ssh' || kind === 'winrm') return field(`${kind}_host`).value.trim();
+  try {
+    return new URL(kind === 'k8s' ? field('k8s_api_url').value : field('http_url').value).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Warns when the chosen relay cannot reach the address the target answers on. A
+ * magic packet sent to the wrong network fails silently — nothing ever answers
+ * one — so this is the only point at which the mistake is visible.
+ */
+function renderRelayWarning() {
+  const note = document.getElementById('relay-note');
+  clear(note);
+  note.className = 'hint-row';
+
+  const relayId = field('wake_relay_id').value;
+  if (field('wake_mode').value !== 'relay' || !relayId) return;
+
+  const relay = relays.find((r) => String(r.id) === relayId);
+  if (!relay) return;
+
+  const host = wakeHost();
+  const inside = hostInNetwork(host, relay.network);
+  if (inside === true) {
+    note.textContent = `✓ ${host} is inside this relay's network (${relay.network}).`;
+  } else if (inside === false) {
+    note.className = 'error';
+    note.textContent = `⚠ ${host} is not inside this relay's network (${relay.network}) — `
+      + 'a magic packet sent from there will not reach it. Pick a relay on the target\'s own network.';
+  } else if (host) {
+    note.textContent = `This relay reaches ${relay.network}. "${host}" is a name, not an address, `
+      + 'so Flatline cannot check it here — make sure it resolves inside that network.';
+  }
+}
+
+/** Fills the relay picker. Kept as its own pass so the relay list can refresh
+ *  without disturbing an edit in progress — the current selection is restored
+ *  when the relay still exists, and a relay that has since been deleted stays
+ *  visible as a marked option rather than silently becoming "the first one". */
+function renderRelayOptions() {
+  for (const select of $form.querySelectorAll('[data-relay-picker]')) {
+    const chosen = select.value;
+    clear(select);
+    if (relays.length === 0) {
+      select.append(el('option', { value: '' }, 'no relays configured yet'));
+    } else {
+      select.append(el('option', { value: '' }, 'select a relay…'));
+      for (const r of relays) {
+        select.append(el('option', { value: String(r.id) },
+          `${r.name} (${KIND_LABELS[r.kind] ?? r.kind})${r.enabled ? '' : ' — disabled'}`));
+      }
+    }
+    if (chosen && !relays.some((r) => String(r.id) === chosen)) {
+      select.append(el('option', { value: chosen }, `deleted relay ${chosen}`));
+    }
+    select.value = chosen;
+  }
+}
+
+function syncHttpAuthFields() {
+  toggleByData($form, 'http', $httpScheme.value);
+  syncHttpTokenFields();
+}
+
+/** Inside the login block, the one field that names where the token is — a path
+ *  into the body, a response header, or a cookie. */
+function syncHttpTokenFields() {
+  toggleByData($form, 'token-source', field('http_token_source').value);
 }
 
 function syncSshAuthFields() {
-  const method = $sshAuthMethod.value;
-  for (const node of $form.querySelectorAll('[data-ssh-auth]')) {
-    node.style.display = node.dataset.sshAuth === method ? '' : 'none';
-  }
+  toggleByData($form, 'ssh-auth', $sshAuthMethod.value);
 }
 
 function syncK8sAuthFields() {
-  const method = $k8sAuthMethod.value;
-  for (const node of $form.querySelectorAll('[data-k8s-auth]')) {
-    node.style.display = node.dataset.k8sAuth === method ? '' : 'none';
-  }
+  toggleByData($form, 'k8s-auth', $k8sAuthMethod.value);
 }
 
 function syncK8sActionFields() {
-  const action = $k8sAction.value;
-  for (const node of $form.querySelectorAll('[data-k8s-action]')) {
-    node.style.display = node.dataset.k8sAction === action ? '' : 'none';
-  }
+  toggleByData($form, 'k8s-action', $k8sAction.value);
 }
 
 $kind.addEventListener('change', syncKindSections);
 $httpScheme.addEventListener('change', syncHttpAuthFields);
+$form.querySelector('[data-token-source-select]').addEventListener('change', syncHttpTokenFields);
 $sshAuthMethod.addEventListener('change', syncSshAuthFields);
 $k8sAuthMethod.addEventListener('change', syncK8sAuthFields);
 $k8sAction.addEventListener('change', syncK8sActionFields);
+// Everything the Restore panel's visibility depends on, in one pass.
+for (const name of ['restore_enabled', 'restore_kind', 'restore_inherit', 'wake_mode',
+  'restore_auth_method', 'restore_k8s_auth', 'restore_auth_scheme', 'auto_restore']) {
+  field(name).addEventListener('change', syncRestoreFields);
+}
+// The summary line and the relay-reach warning both follow typed text, not just
+// the selects: the MAC decides whether a wake is part of the summary, and the
+// warning compares the relay's network against whichever host the restore will
+// connect to.
+field('wol_mac').addEventListener('input', renderRestoreSummary);
+field('wake_relay_id').addEventListener('change', renderRelayWarning);
+for (const name of ['restore_host', 'ssh_host', 'winrm_host', 'k8s_api_url', 'http_url']) {
+  field(name).addEventListener('input', renderRelayWarning);
+}
 
 // The file inputs live inside $form, so their change events bubble up and mark
 // the form dirty via initDirtyNote — no explicit markDirty needed here.
@@ -124,36 +307,98 @@ wireFileUpload(
   document.getElementById('k8s-kubeconfig-upload'),
   $form.elements.namedItem('k8s_kubeconfig')
 );
+wireFileUpload(
+  document.getElementById('restore-key-upload-btn'),
+  document.getElementById('restore-key-upload'),
+  $form.elements.namedItem('restore_private_key')
+);
+wireFileUpload(
+  document.getElementById('restore-kubeconfig-upload-btn'),
+  document.getElementById('restore-kubeconfig-upload'),
+  $form.elements.namedItem('restore_kubeconfig')
+);
 
-/** Shows "stored" state + a clear toggle next to each secret input. */
-function renderSecretStates(kind, storedFields) {
-  clearedSecrets = new Set();
-  for (const label of $form.querySelectorAll('label.secret')) {
-    const state = label.querySelector('.secret-state');
-    clear(state);
-    const name = label.dataset.secret;
-    const isStored = storedFields.includes(name) && label.closest('.kind-section')?.dataset.kind === kind;
-    if (!isStored) continue;
-
-    const clearBtn = el('button', { type: 'button', class: 'link-btn' }, 'clear');
-    clearBtn.addEventListener('click', () => {
-      if (clearedSecrets.has(name)) {
-        clearedSecrets.delete(name);
-        clearBtn.textContent = 'clear';
-        hint.textContent = '· stored ✓ (leave blank to keep) ';
-      } else {
-        clearedSecrets.add(name);
-        clearBtn.textContent = 'undo';
-        hint.textContent = '· will be removed on save ';
-      }
-      targetDirty.markDirty();
-    });
-    const hint = el('span', {}, '· stored ✓ (leave blank to keep) ');
-    state.append(hint, clearBtn);
-  }
+/**
+ * The Restore panel, which is the same for every kind of target. Everything is
+ * sent whatever the method is; the server keeps what the chosen one uses and
+ * drops the rest, so switching method twice cannot leave the blob carrying a
+ * host or a URL that nothing reads.
+ */
+function collectRestore() {
+  return {
+    restore_enabled: $restoreEnabled.checked,
+    auto_restore: field('auto_restore').checked,
+    restore_kind: $restoreKind.value,
+    restore_inherit: $restoreInherit.value === '1',
+    wol_mac: field('wol_mac').value,
+    wake_mode: field('wake_mode').value,
+    wake_relay_id: Number(field('wake_relay_id').value) || null,
+    wol_broadcast: field('wol_broadcast').value,
+    restore_wait_seconds: Number(field('restore_wait_seconds').value) || 0,
+    // ssh / winrm method
+    restore_host: field('restore_host').value,
+    restore_port: Number(field('restore_port').value) || null,
+    restore_domain: field('restore_domain').value,
+    restore_username: field('restore_username').value,
+    restore_auth_method: field('restore_auth_method').value,
+    restore_command: field('restore_command').value,
+    // kubernetes method
+    restore_api_url: field('restore_api_url').value,
+    restore_k8s_auth: field('restore_k8s_auth').value,
+    restore_uncordon: field('restore_uncordon').checked,
+    restore_restart_deployments: field('restore_restart_deployments').checked,
+    restore_path: field('restore_path').value,
+    // http method
+    restore_url: field('restore_url').value,
+    restore_auth_scheme: field('restore_auth_scheme').value,
+    restore_header_name: field('restore_header_name').value,
+    restore_insecure_tls: field('restore_insecure_tls').checked,
+    restore_ca_cert: field('restore_ca_cert').value,
+    // shared by the kubernetes and http methods
+    restore_method: $restoreRequestMethod.value,
+    restore_body: field('restore_body').value
+  };
 }
 
+function fillRestore(c) {
+  $restoreEnabled.checked = !!c.restore_enabled;
+  field('auto_restore').checked = !!c.auto_restore;
+  $restoreKind.value = c.restore_kind ?? 'none';
+  $restoreInherit.value = c.restore_inherit ? '1' : '0';
+  field('wol_mac').value = c.wol_mac ?? '';
+  field('wake_mode').value = c.wake_mode ?? 'packet';
+  field('wake_relay_id').value = c.wake_relay_id != null ? String(c.wake_relay_id) : '';
+  field('wol_broadcast').value = c.wol_broadcast ?? '';
+  field('restore_wait_seconds').value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
+  field('restore_host').value = c.restore_host ?? '';
+  field('restore_port').value = c.restore_port != null ? String(c.restore_port) : '';
+  field('restore_domain').value = c.restore_domain ?? '';
+  field('restore_username').value = c.restore_username ?? '';
+  field('restore_auth_method').value = c.restore_auth_method ?? 'password';
+  field('restore_command').value = c.restore_command ?? '';
+  field('restore_api_url').value = c.restore_api_url ?? '';
+  field('restore_k8s_auth').value = c.restore_k8s_auth ?? 'token';
+  // Both default on for a new target, so an existing one saved before the
+  // field existed must fall back to off, not on.
+  field('restore_uncordon').checked = !!c.restore_uncordon;
+  field('restore_restart_deployments').checked = !!c.restore_restart_deployments;
+  field('restore_path').value = c.restore_path ?? '';
+  field('restore_url').value = c.restore_url ?? '';
+  field('restore_auth_scheme').value = c.restore_auth_scheme ?? 'none';
+  field('restore_header_name').value = c.restore_header_name ?? '';
+  field('restore_insecure_tls').checked = !!c.restore_insecure_tls;
+  field('restore_ca_cert').value = c.restore_ca_cert ?? '';
+  // The method select's options depend on restore_kind, so populate them before
+  // trying to select one.
+  renderRestoreRequestMethods(c.restore_kind ?? 'none');
+  if (c.restore_method) $restoreRequestMethod.value = c.restore_method;
+  field('restore_body').value = c.restore_body ?? '';
+}
+
+/** The target's own connection and trigger action. The Restore panel is spread
+ *  in on top of every kind, since it is the same for all of them. */
 function collectConfig(kind) {
+  const restore = collectRestore();
   switch (kind) {
     case 'ssh': return {
       host: field('ssh_host').value,
@@ -161,7 +406,7 @@ function collectConfig(kind) {
       username: field('ssh_username').value,
       auth_method: field('ssh_auth_method').value,
       command: field('ssh_command').value,
-      restore_command: field('ssh_restore_command').value
+      ...restore
     };
     case 'winrm': return {
       host: field('winrm_host').value,
@@ -169,7 +414,7 @@ function collectConfig(kind) {
       domain: field('winrm_domain').value,
       username: field('winrm_username').value,
       command: field('winrm_command').value,
-      restore_command: field('winrm_restore_command').value
+      ...restore
     };
     case 'k8s': return {
       api_url: field('k8s_api_url').value,
@@ -178,9 +423,7 @@ function collectConfig(kind) {
       command_method: field('k8s_command_method').value,
       command_path: field('k8s_command_path').value,
       command_body: field('k8s_command_body').value,
-      restore_method: field('k8s_restore_method').value,
-      restore_path: field('k8s_restore_path').value,
-      restore_body: field('k8s_restore_body').value
+      ...restore
     };
     case 'http': return {
       url: field('http_url').value,
@@ -189,40 +432,38 @@ function collectConfig(kind) {
       header_name: field('http_header_name').value,
       username: field('http_username').value,
       body: field('http_body').value,
-      restore_url: field('http_restore_url').value,
-      restore_method: field('http_restore_method').value,
-      restore_body: field('http_restore_body').value
+      login_url: field('http_login_url').value,
+      login_method: field('http_login_method').value,
+      login_auth: field('http_login_auth').value,
+      login_content_type: field('http_login_content_type').value,
+      login_body: field('http_login_body').value,
+      login_username: field('http_login_username').value,
+      token_source: field('http_token_source').value,
+      token_json_path: field('http_token_json_path').value,
+      token_response_header: field('http_token_response_header').value,
+      token_cookie: field('http_token_cookie').value,
+      token_header: field('http_token_header').value,
+      session_cookie_name: field('http_session_cookie_name').value,
+      session_cookie_json_path: field('http_session_cookie_json_path').value,
+      send_cookies: field('http_send_cookies').checked,
+      insecure_tls: field('http_insecure_tls').checked,
+      ca_cert: field('http_ca_cert').value,
+      ...restore
     };
   }
 }
 
-function collectSecrets(kind) {
-  const secrets = {};
-  for (const [secretName, inputName] of Object.entries(SECRET_INPUTS[kind])) {
-    const v = field(inputName).value;
-    if (clearedSecrets.has(secretName)) secrets[secretName] = null;
-    else if (v) secrets[secretName] = v;
-  }
-  return secrets;
-}
-
-function resetTargetForm() {
-  editingTargetId = null;
-  $form.reset();
-  $formTitle.textContent = 'Add action target';
-  $formSubmit.textContent = 'Add target';
-  $formCancel.style.display = 'none';
-  $formReset.style.display = '';
-  $formError.textContent = '';
-  $formSaveNote.textContent = '';
-  targetDirty.markClean();
-  renderSecretStates('none', []);
-  syncKindSections();
+/** The target's own credentials plus the restore's, if it has any. Both are
+ *  sent whatever the restore method is; the server keeps only the fields that
+ *  method actually connects with. The restore's inputs are named for the fields
+ *  themselves, so they map to themselves. */
+function targetSecretInputs(kind) {
+  const inputs = { ...SECRET_INPUTS[kind] };
+  for (const name of RESTORE_SECRET_FIELDS) inputs[name] = name;
+  return inputs;
 }
 
 function fillTargetForm(t) {
-  resetTargetForm();
-  editingTargetId = t.id;
   field('name').value = t.name;
   $kind.value = t.kind;
   field('enabled').checked = !!t.enabled;
@@ -235,7 +476,6 @@ function fillTargetForm(t) {
       field('ssh_username').value = c.username ?? '';
       field('ssh_auth_method').value = c.auth_method ?? 'password';
       field('ssh_command').value = c.command ?? '';
-      field('ssh_restore_command').value = c.restore_command ?? '';
       break;
     case 'winrm':
       field('winrm_host').value = c.host ?? '';
@@ -243,7 +483,6 @@ function fillTargetForm(t) {
       field('winrm_domain').value = c.domain ?? '';
       field('winrm_username').value = c.username ?? '';
       field('winrm_command').value = c.command ?? '';
-      field('winrm_restore_command').value = c.restore_command ?? '';
       break;
     case 'k8s':
       field('k8s_api_url').value = c.api_url ?? '';
@@ -252,9 +491,6 @@ function fillTargetForm(t) {
       field('k8s_command_method').value = c.command_method ?? 'PATCH';
       field('k8s_command_path').value = c.command_path ?? '';
       field('k8s_command_body').value = c.command_body ?? '';
-      field('k8s_restore_method').value = c.restore_method ?? 'PATCH';
-      field('k8s_restore_path').value = c.restore_path ?? '';
-      field('k8s_restore_body').value = c.restore_body ?? '';
       break;
     case 'http':
       field('http_url').value = c.url ?? '';
@@ -263,70 +499,82 @@ function fillTargetForm(t) {
       field('http_header_name').value = c.header_name ?? '';
       field('http_username').value = c.username ?? '';
       field('http_body').value = c.body ?? '';
-      field('http_restore_url').value = c.restore_url ?? '';
-      field('http_restore_method').value = c.restore_method ?? 'POST';
-      field('http_restore_body').value = c.restore_body ?? '';
+      field('http_login_url').value = c.login_url ?? '';
+      field('http_login_method').value = c.login_method ?? 'POST';
+      field('http_login_auth').value = c.login_auth ?? 'body';
+      field('http_login_content_type').value = c.login_content_type ?? 'json';
+      field('http_login_body').value = c.login_body ?? '';
+      field('http_login_username').value = c.login_username ?? '';
+      field('http_token_source').value = c.token_source ?? 'json';
+      field('http_token_json_path').value = c.token_json_path ?? '';
+      field('http_token_response_header').value = c.token_response_header ?? '';
+      field('http_token_cookie').value = c.token_cookie ?? '';
+      field('http_token_header').value = c.token_header ?? '';
+      field('http_session_cookie_name').value = c.session_cookie_name ?? '';
+      field('http_session_cookie_json_path').value = c.session_cookie_json_path ?? '';
+      // Ticked by default for a new target, so an existing one that has never
+      // been saved with the field must fall back to on, not off.
+      field('http_send_cookies').checked = c.send_cookies ?? true;
+      field('http_insecure_tls').checked = !!c.insecure_tls;
+      field('http_ca_cert').value = c.ca_cert ?? '';
       break;
   }
+  fillRestore(c);
 
-  renderSecretStates(t.kind, t.secret_fields);
+  targetSecrets.render(t.kind, t.secret_fields);
   syncKindSections();
-  $formTitle.textContent = `Edit target: ${t.name}`;
-  $formSubmit.textContent = 'Save changes';
-  $formCancel.style.display = '';
-  $formReset.style.display = 'none';
-  targetFormSection.expand();
-  igroupFormSection.collapse(); // one edit form open at a time
-  $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-$formCancel.addEventListener('click', (e) => {
-  e.preventDefault();
-  resetTargetForm();
-});
-
-$formReset.addEventListener('click', () => resetTargetForm());
-
-$form.addEventListener('submit', (e) => {
-  e.preventDefault();
-  void (async () => {
+const targetForm = initEntityForm({
+  form: $form,
+  els: {
+    title: document.getElementById('target-form-title'),
+    error: $formError,
+    submit: document.getElementById('target-submit'),
+    cancel: document.getElementById('target-cancel'),
+    reset: document.getElementById('target-reset'),
+    saveNote: $formSaveNote
+  },
+  section: targetFormSection,
+  siblingSection: () => igroupFormSection,
+  dirty: targetDirty,
+  noun: 'action target',
+  itemLabel: 'target',
+  api: actionTargets,
+  reset: () => {
+    targetSecrets.render('none', []);
+    syncKindSections();
+  },
+  fill: fillTargetForm,
+  collect: () => {
     const kind = $kind.value;
-    const input = {
+    return {
       name: field('name').value,
       kind,
       config: collectConfig(kind),
-      secrets: collectSecrets(kind),
+      secrets: targetSecrets.collect(targetSecretInputs(kind)),
       enabled: field('enabled').checked
     };
-    const wasEditing = editingTargetId != null;
-    try {
-      const saved = wasEditing ? await updateActionTarget(editingTargetId, input) : await createActionTarget(input);
-      $formError.textContent = '';
-      await refreshAll();
-      if (wasEditing) {
-        fillTargetForm(targetById(saved.id) ?? saved);
-        $formSaveNote.textContent = 'Saved ✓';
-      } else {
-        resetTargetForm();
-      }
-    } catch (err) {
-      $formError.textContent = err.message;
-    }
-  })();
+  },
+  findSaved: targetById,
+  refresh: refreshAll
 });
 
 $formTest.addEventListener('click', () => {
   void (async () => {
     const kind = $kind.value;
     $formTestResult.className = 'note';
-    $formTestResult.textContent = kind === 'http' ? 'Sending test request…' : 'Testing…';
+    // A login-scheme http target has a safe test — the login itself. Every other
+    // http target's test IS its real request, so say so before it goes.
+    $formTestResult.textContent = kind !== 'http' ? 'Testing…'
+      : $httpScheme.value === 'login' ? 'Logging in…' : 'Sending test request…';
     $formError.textContent = '';
     try {
-      const result = await testActionTarget({
-        id: editingTargetId ?? undefined,
+      const result = await actionTargets.test({
+        id: targetForm.editingId ?? undefined,
         kind,
         config: collectConfig(kind),
-        secrets: collectSecrets(kind)
+        secrets: targetSecrets.collect(targetSecretInputs(kind))
       });
       $formTestResult.className = result.ok ? 'note' : 'error';
       $formTestResult.textContent = `${result.ok ? '✓' : '✕'} ${result.message}`;
@@ -383,138 +631,240 @@ function targetActivityText(t) {
   return `${fmtDateTime(t.last_activity.ts)} (${labels[t.last_activity.trigger] ?? t.last_activity.trigger})`;
 }
 
-function renderTargetTable() {
-  clear($targetTable);
-  if (targets.length === 0) {
-    $targetTable.append(el('div', { class: 'empty' },
-      el('div', { class: 'big' }, 'No action targets yet'),
-      el('div', {}, 'Add the machines and services to act on using the form below.')));
-    return;
+/**
+ * The activity cell. A restore in flight replaces the last-activity line for as
+ * long as it runs: it opens by waiting minutes for a host to boot, and a row
+ * that showed only the previous run's timestamp gave no sign anything was
+ * happening at all.
+ */
+function targetActivityCell(t) {
+  const p = t.restore_progress;
+  if (!p) return el('td', { class: 'truncate' }, targetActivityText(t));
+
+  // Not truncated: the phase is the whole point of the cell while a restore is
+  // running, and this column is too narrow to hold it on one line. It wraps
+  // under the pill instead, and the row goes back to one line when it finishes.
+  const elapsed = Math.max(0, Math.round((Date.now() - p.startedAt) / 1000));
+  return el('td', { class: 'restoring-cell', title: `${p.phase} — ${elapsed}s elapsed` },
+    el('div', { class: 'elapsed' },
+      el('span', { class: 'pill working' }, el('span', { class: 'dot' }), 'restoring'),
+      el('span', { class: 'time' }, fmtElapsed(elapsed))),
+    el('div', { class: 'phase' }, p.phase));
+}
+
+/** Elapsed seconds as the shortest thing that reads right — a restore can run
+ *  for minutes, and "312s" is harder to glance at than "5m 12s". */
+function fmtElapsed(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/**
+ * The target's restore spelled out, one sentence per step — shown in the Restore
+ * button's tooltip and in its confirm dialog, which describe the same thing.
+ *
+ * The shape is the same whatever the target's kind: an optional wake, the wait,
+ * then whatever the chosen method does.
+ */
+function restoreSteps(t) {
+  const c = t.config;
+  if (!c.restore_enabled) return [];
+  const steps = [];
+
+  if (c.wol_mac) {
+    const relay = relays.find((r) => r.id === c.wake_relay_id);
+    steps.push(c.wake_mode === 'relay'
+      ? `1. Ask relay "${relay?.name ?? `#${c.wake_relay_id}`}" to wake ${c.wol_mac}.`
+      : `1. Wake ${c.wol_mac} with a magic packet to ${c.wol_broadcast || 'every attached network'}.`);
   }
 
-  const tbody = el('tbody', {});
-  for (const t of targets) {
-    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
-    editBtn.addEventListener('click', () => fillTargetForm(t));
-    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
-    delBtn.addEventListener('click', () => {
-      void (async () => {
-        const ok = await confirmDialog({
-          title: 'Delete action target?',
-          body: `"${t.name}" and its stored credentials will be permanently deleted. Any action group step that runs it will stop working.`,
-          confirmText: 'Delete target',
-          danger: true
-        });
-        if (!ok) return;
-        await deleteActionTarget(t.id);
-        if (editingTargetId === t.id) resetTargetForm();
-        await refreshAll();
-      })();
-    });
+  const wait = c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT;
+  switch (c.restore_kind) {
+    case 'ssh':
+    case 'winrm': {
+      const proto = PROTO_LABELS[c.restore_kind];
+      steps.push(`${steps.length + 1}. Wait up to ${wait}s for ${proto} to answer.`);
+      steps.push(`${steps.length + 1}. Then run over ${proto}: ${c.restore_command}`);
+      break;
+    }
+    case 'k8s':
+      steps.push(`${steps.length + 1}. Wait up to ${wait}s for the API server to answer.`);
+      if (c.restore_uncordon) steps.push(`${steps.length + 1}. Uncordon every node.`);
+      if (c.restore_path) steps.push(`${steps.length + 1}. Send ${c.restore_method ?? 'PATCH'} ${c.restore_path}`);
+      if (c.restore_restart_deployments) steps.push(`${steps.length + 1}. Restart every Deployment outside kube-system.`);
+      break;
+    case 'http':
+      // Only a target that logs in has a probe safe to retry; every other HTTP
+      // restore is the one request, sent once.
+      if (c.restore_inherit && c.auth_scheme === 'login' && wait > 0) {
+        steps.push(`${steps.length + 1}. Wait up to ${wait}s for ${c.login_url} to accept the login.`);
+      }
+      steps.push(`${steps.length + 1}. Send ${c.restore_method ?? 'POST'} ${c.restore_url}`);
+      break;
+    default:
+      // A wake with no method behind it.
+      if (!c.wol_mac) return [];
+      steps.push(`${steps.length + 1}. Nothing further — being back up is the whole restore.`);
+      break;
+  }
+  return steps;
+}
 
-    const runBtn = el('button', { class: 'btn danger-soft small' }, 'Run');
-    runBtn.addEventListener('click', () => {
+/** Whether the target has a restore configured at all. The server refuses to
+ *  store one that would do nothing, so the toggle is the whole test. */
+function hasRestore(t) {
+  return !!t.config.restore_enabled;
+}
+
+function renderTargetTable() {
+  renderTable($targetTable, {
+    className: 'endpoints target-table',
+    colWidths: ['9%', '15%', '8%', '15%', '15%', '11%', '11%', '16%'],
+    headers: ['Status', 'Name', 'Type', 'Connection', 'Runs on trigger', 'Credentials', 'Last activity', ''],
+    rows: targets,
+    empty: ['No action targets yet', 'Add the machines and services to act on using the form below.'],
+    cells: (t) => targetRowCells(t)
+  });
+
+  // Whatever put a restore on screen — this page starting one, an auto-restore
+  // the watcher started, or another browser — keeps the phase line moving.
+  if (targets.some((t) => t.restore_progress)) scheduleRestorePoll();
+}
+
+function targetRowCells(t) {
+  const [editBtn, delBtn] = editDeleteButtons({
+    onEdit: () => targetForm.toEditMode(t),
+    confirm: {
+      title: 'Delete action target?',
+      body: `"${t.name}" and its stored credentials will be permanently deleted. Any action group step that runs it will stop working.`,
+      confirmText: 'Delete target'
+    },
+    onDelete: async () => {
+      await actionTargets.remove(t.id);
+      targetForm.forgetIfEditing(t.id);
+      await refreshAll();
+    }
+  });
+
+  const runBtn = el('button', { class: 'btn danger-soft small' }, 'Run');
+  runBtn.addEventListener('click', () => {
+    void (async () => {
+      const whatRuns = t.kind === 'http'
+        ? `This sends the real request configured for "${t.name}" immediately.`
+        : `This runs the real command configured for "${t.name}" immediately.`;
+      const ok = await confirmDialog({
+        title: 'Run this action now?',
+        body: [whatRuns, 'This runs the action selected and CANNOT be undone!'],
+        confirmText: 'Run now',
+        danger: true
+      });
+      if (!ok) return;
+      runBtn.disabled = true;
+      try {
+        const result = await runActionTarget(t.id);
+        await alertDialog({ title: result.ok ? 'Action completed' : 'Action failed', body: result.message });
+      } catch (err) {
+        await alertDialog({ title: 'Action failed', body: err.message });
+      } finally {
+        await refreshAll();
+      }
+    })();
+  });
+
+  const restoreBtn = el('button', { class: 'btn ghost small' }, t.restore_progress ? 'Restoring…' : 'Restore');
+  if (t.restore_progress) {
+    // Already coming back — starting a second pass would send the restore
+    // request twice, and it need not be idempotent. The server refuses it
+    // too; this is so the button never offers it.
+    restoreBtn.disabled = true;
+    restoreBtn.title = `Restore in progress: ${t.restore_progress.phase}`;
+  } else if (!hasRestore(t)) {
+    restoreBtn.disabled = true;
+    restoreBtn.title = 'No restore configured for this target — set one up in the edit form';
+  } else {
+    const steps = restoreSteps(t);
+    restoreBtn.title = [
+      t.config.auto_restore ? 'Auto-restore is ON for this target.' : null,
+      ...steps
+    ].filter(Boolean).join('\n');
+    restoreBtn.addEventListener('click', () => {
       void (async () => {
-        const whatRuns = t.kind === 'http'
-          ? `This sends the real request configured for "${t.name}" immediately.`
-          : `This runs the real command configured for "${t.name}" immediately.`;
         const ok = await confirmDialog({
-          title: 'Run this action now?',
-          body: [whatRuns, 'This runs the action selected and CANNOT be undone!'],
-          confirmText: 'Run now',
-          danger: true
+          title: 'Run restore now?',
+          body: [`This runs the restore sequence for "${t.name}" immediately:`, ...steps],
+          confirmText: 'Restore now'
         });
         if (!ok) return;
-        runBtn.disabled = true;
+        restoreBtn.disabled = true;
         try {
-          const result = await runActionTarget(t.id);
-          await alertDialog({ title: result.ok ? 'Action completed' : 'Action failed', body: result.message });
+          const result = await restoreActionTarget(t.id);
+          // The ssh/winrm sequence waits for the host to boot, so the server
+          // answers as soon as it starts — the outcome shows up in Last activity.
+          await alertDialog({
+            title: result.started ? 'Restore started' : result.ok ? 'Restore completed' : 'Restore failed',
+            body: result.message
+          });
         } catch (err) {
-          await alertDialog({ title: 'Action failed', body: err.message });
+          await alertDialog({ title: 'Restore failed', body: err.message });
         } finally {
           await refreshAll();
         }
       })();
     });
-
-    const restoreBtn = el('button', { class: 'btn ghost small' }, 'Restore');
-    const hasRestore = t.kind === 'k8s'
-      || (t.kind === 'ssh' && !!t.config.restore_command)
-      || (t.kind === 'winrm' && !!t.config.restore_command)
-      || (t.kind === 'http' && !!t.config.restore_url);
-    if (!hasRestore) {
-      restoreBtn.disabled = true;
-      restoreBtn.title = 'No restore command configured for this target — add one in the edit form';
-    } else {
-      restoreBtn.addEventListener('click', () => {
-        void (async () => {
-          const ok = await confirmDialog({
-            title: 'Run restore now?',
-            body: [`This runs the restore/undo action for "${t.name}".`, RESTORE_HINTS[t.kind] ?? ''],
-            confirmText: 'Restore now'
-          });
-          if (!ok) return;
-          restoreBtn.disabled = true;
-          try {
-            const result = await restoreActionTarget(t.id);
-            await alertDialog({ title: result.ok ? 'Restore completed' : 'Restore failed', body: result.message });
-          } catch (err) {
-            await alertDialog({ title: 'Restore failed', body: err.message });
-          } finally {
-            await refreshAll();
-          }
-        })();
-      });
-    }
-
-    const credentials = t.secret_fields.length ? `🔒 ${t.secret_fields.join(', ')}` : '—';
-
-    tbody.append(el('tr', {},
-      el('td', {}, targetStatusPill(t)),
-      el('td', { class: 'truncate', title: t.name }, el('strong', {}, t.name)),
-      el('td', { class: 'truncate' }, KIND_LABELS[t.kind] ?? t.kind),
-      el('td', { class: 'target-cell', title: targetConnection(t) }, targetConnection(t)),
-      el('td', { class: 'target-cell', title: targetAction(t) }, targetAction(t)),
-      el('td', { class: 'truncate', title: credentials }, credentials),
-      el('td', { class: 'truncate' }, targetActivityText(t)),
-      el('td', { class: 'actions-cell' }, editBtn, delBtn, runBtn, restoreBtn)
-    ));
   }
 
-  const table = el('table', { class: 'endpoints target-table' });
-  table.append(
-    el('colgroup', {},
-      el('col', { style: 'width:9%' }), el('col', { style: 'width:15%' }), el('col', { style: 'width:8%' }),
-      el('col', { style: 'width:15%' }), el('col', { style: 'width:15%' }), el('col', { style: 'width:11%' }),
-      el('col', { style: 'width:11%' }), el('col', { style: 'width:16%' })),
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Name'), el('th', {}, 'Type'), el('th', {}, 'Connection'),
-      el('th', {}, 'Runs on trigger'), el('th', {}, 'Credentials'), el('th', {}, 'Last activity'), el('th', {}, ''))),
-    tbody
-  );
-  $targetTable.append(table);
+  const credentials = t.secret_fields.length ? `🔒 ${t.secret_fields.join(', ')}` : '—';
+
+  return [
+    el('td', {}, targetStatusPill(t)),
+    el('td', { class: 'truncate', title: t.name }, el('strong', {}, t.name)),
+    el('td', { class: 'truncate' }, KIND_LABELS[t.kind] ?? t.kind),
+    el('td', { class: 'target-cell', title: targetConnection(t) }, targetConnection(t)),
+    el('td', { class: 'target-cell', title: targetAction(t) }, targetAction(t)),
+    el('td', { class: 'truncate', title: credentials }, credentials),
+    targetActivityCell(t),
+    // Not actionsCell(): this row's four buttons have their own cell class.
+    el('td', { class: 'actions-cell' }, editBtn, delBtn, runBtn, restoreBtn)
+  ];
 }
 
 // ---------- action groups (ordered stages of parallel steps) ----------
 
 const $igForm = document.getElementById('igroup-form');
-const $igFormTitle = document.getElementById('igroup-form-title');
-const $igError = document.getElementById('igroup-error');
-const $igSubmit = document.getElementById('igroup-submit');
-const $igCancel = document.getElementById('igroup-cancel');
-const $igReset = document.getElementById('igroup-reset');
-const $igSaveNote = document.getElementById('igroup-save-note');
 const $igTable = document.getElementById('igroup-table');
 const $stageList = document.getElementById('stage-list');
 const $stageAddBtn = document.getElementById('stage-add-btn');
 const $igFlatlineGroupChecks = document.getElementById('ig-flatline-group-checks');
 const igroupFormSection = initCollapsible('actions:igroup-form',
   document.getElementById('igroup-form-header'), document.getElementById('igroup-form-body'));
-const igDirty = initDirtyNote($igForm, document.getElementById('igroup-dirty'), $igSaveNote);
+const igDirty = initDirtyNote($igForm, document.getElementById('igroup-dirty'),
+  document.getElementById('igroup-save-note'));
 
-let editingIgId = null;
-/** Ordered stages being edited: [{ pass_rule, on_failure, steps: [{ target_id, timeout_seconds }] }] */
+/** The gap held before every stage but the first — server default, mirrored here. */
+const DEFAULT_STAGE_WAIT = 5;
+
+/**
+ * Ordered stages being edited:
+ * [{ pass_rule, on_failure, wait_seconds, steps: [...] }], where a step is
+ * either { target_id, timeout_seconds } or a wait: { wait_seconds }.
+ */
 let stages = [];
+
+const isWaitStep = (step) => step.target_id == null;
+
+/**
+ * The longest a stage can take. Its wait steps split it into batches that run
+ * one after another, so that is every wait plus, per batch, its slowest target.
+ */
+function stageWorstCase(stage) {
+  let total = 0;
+  let batch = 0;
+  for (const step of stage.steps) {
+    if (isWaitStep(step)) { total += batch + step.wait_seconds; batch = 0; }
+    else batch = Math.max(batch, step.timeout_seconds);
+  }
+  return total + batch;
+}
 
 /** target_id -> [1-based stage numbers it appears in]. A target may be reused
  *  across stages, so this drives the "Appears in Stage …" indicator. */
@@ -522,6 +872,7 @@ function targetStageMap() {
   const map = new Map();
   stages.forEach((st, si) => {
     for (const s of st.steps) {
+      if (isWaitStep(s)) continue;
       const arr = map.get(s.target_id) ?? [];
       arr.push(si + 1);
       map.set(s.target_id, arr);
@@ -537,8 +888,31 @@ function renderStages() {
       'No stages yet — add one, then add targets to it. Stages run top to bottom.'));
   }
   const stageMap = targetStageMap();
-  stages.forEach((stage, si) => $stageList.append(renderStage(stage, si, stageMap)));
+  stages.forEach((stage, si) => {
+    // The gap belongs between two cards, so the first stage never shows one —
+    // a triggered run starts acting straight away.
+    if (si > 0) $stageList.append(renderStageWait(stage, si));
+    $stageList.append(renderStage(stage, si, stageMap));
+  });
   $stageAddBtn.disabled = targets.length === 0;
+}
+
+/** The pause held between two stages: editable, 0 for none. */
+function renderStageWait(stage, si) {
+  const input = el('input', {
+    type: 'number', min: '0', max: '3600', value: String(stage.wait_seconds),
+    class: 'step-timeout',
+    title: 'How long Flatline holds before starting this stage. 0 runs it as soon as the stage above finishes.'
+  });
+  input.addEventListener('change', () => {
+    stage.wait_seconds = Math.min(3600, Math.max(0, Number(input.value) || 0));
+    renderStages();
+  });
+  return el('div', { class: 'stage-wait' },
+    el('span', { class: 'hint' }, '⏱ wait'), input,
+    el('span', { class: 'hint' }, stage.wait_seconds === 0
+      ? `s — no pause before Stage ${si + 1}`
+      : `s before Stage ${si + 1}`));
 }
 
 function renderStage(stage, si, stageMap) {
@@ -560,18 +934,16 @@ function renderStage(stage, si, stageMap) {
     renderStages();
   });
 
-  // Targets in a stage start together, so the slowest "give up after" is the
-  // longest this stage can take — spelled out so the limits don't read as delays.
-  const worstCase = stage.steps.length ? Math.max(...stage.steps.map((s) => s.timeout_seconds)) : 0;
-  const parallelNote = el('span', { class: 'hint' },
-    (stage.steps.length > 1 ? ` · ${stage.steps.length} targets run at once` : ' · single target')
-    + (worstCase ? ` · takes up to ${worstCase}s` : ''));
+  const worstCase = stageWorstCase(stage);
+  const timingNote = el('span', { class: 'hint' }, worstCase ? ` · takes up to ${worstCase}s` : '');
 
   const stepList = el('div', { class: 'step-list' });
   if (stage.steps.length === 0) {
     stepList.append(el('div', { class: 'hint-row', style: 'margin:4px 0' }, 'No targets yet — add one below.'));
   }
-  stage.steps.forEach((step, pi) => stepList.append(renderStageStep(stage, step, pi, stageMap)));
+  stage.steps.forEach((step, pi) => stepList.append(isWaitStep(step)
+    ? renderWaitStep(stage, step, pi)
+    : renderStageStep(stage, step, pi, stageMap)));
 
   // Add-target row: any target not already in THIS stage (reuse across stages is allowed).
   const inThisStage = new Set(stage.steps.map((s) => s.target_id));
@@ -595,13 +967,75 @@ function renderStage(stage, si, stageMap) {
     renderStages();
   });
 
+  const addWaitBtn = el('button', { type: 'button', class: 'btn ghost small',
+    title: 'Split this stage — the steps below the wait start only once it is up' },
+    '+ Add wait');
+  addWaitBtn.addEventListener('click', () => {
+    stage.steps.push({ wait_seconds: DEFAULT_STAGE_WAIT });
+    renderStages();
+  });
+
   return el('div', { class: 'stage-card' },
     el('div', { class: 'stage-head' },
-      el('span', { class: 'stage-title' }, `Stage ${si + 1}`, parallelNote),
+      el('span', { class: 'stage-title' }, `Stage ${si + 1}`, timingNote),
       el('span', { class: 'stage-btns' }, up, down, removeStage)),
     stepList,
-    el('div', { class: 'step-add' }, select, addBtn),
+    el('div', { class: 'step-add' }, select, addBtn, addWaitBtn),
     renderStageFailure(stage)
+  );
+}
+
+/** Move buttons for a step within its stage, matching the stage cards' own ↑ ↓.
+ *  Lets a wait be dropped in beside the targets it belongs with, without
+ *  removing and re-adding everything below it. */
+function stepMoveButtons(stage, pi) {
+  const up = el('button', { type: 'button', class: 'btn ghost small', title: 'Move up within this stage' }, '↑');
+  up.disabled = pi === 0;
+  up.addEventListener('click', () => {
+    [stage.steps[pi - 1], stage.steps[pi]] = [stage.steps[pi], stage.steps[pi - 1]];
+    renderStages();
+  });
+
+  const down = el('button', { type: 'button', class: 'btn ghost small', title: 'Move down within this stage' }, '↓');
+  down.disabled = pi === stage.steps.length - 1;
+  down.addEventListener('click', () => {
+    [stage.steps[pi], stage.steps[pi + 1]] = [stage.steps[pi + 1], stage.steps[pi]];
+    renderStages();
+  });
+
+  return [up, down];
+}
+
+/** A wait step: no target, no outcome — it splits the stage at its place in the
+ *  order, holding everything below it until the time is up. */
+function renderWaitStep(stage, step, pi) {
+  const gates = pi < stage.steps.length - 1;
+  const seconds = el('input', {
+    type: 'number', min: '1', max: '3600', value: String(step.wait_seconds),
+    class: 'step-timeout',
+    title: gates
+      ? 'How long to hold before the steps below this one start. Whatever is above it has already run.'
+      : 'How long to hold the stage open after its targets are done, before the next stage.'
+  });
+  seconds.addEventListener('change', () => {
+    step.wait_seconds = Math.min(3600, Math.max(1, Number(seconds.value) || DEFAULT_STAGE_WAIT));
+    renderStages(); // the stage's "takes up to Ns" note follows this value
+  });
+
+  const remove = el('button', { type: 'button', class: 'btn danger-ghost small', title: 'Remove wait' }, '✕');
+  remove.addEventListener('click', () => {
+    stage.steps.splice(pi, 1);
+    renderStages();
+  });
+
+  return el('div', { class: 'step-row wait' },
+    el('span', { class: 'step-name' }, '⏱ Wait',
+      el('span', { class: 'hint' }, gates
+        ? ' (everything below starts after this)'
+        : ' (holds the stage open at the end)')),
+    el('span', { class: 'step-timeout-wrap' },
+      el('span', { class: 'hint' }, 'for'), seconds, el('span', { class: 'hint' }, 's')),
+    el('span', { class: 'step-btns' }, ...stepMoveButtons(stage, pi), remove)
   );
 }
 
@@ -636,7 +1070,7 @@ function renderStageStep(stage, step, pi, stageMap) {
         : null),
     el('span', { class: 'step-timeout-wrap' },
       el('span', { class: 'hint' }, 'give up after'), timeout, el('span', { class: 'hint' }, 's')),
-    el('span', { class: 'step-btns' }, remove)
+    el('span', { class: 'step-btns' }, ...stepMoveButtons(stage, pi), remove)
   );
 }
 
@@ -690,55 +1124,9 @@ function selectedIgFlatlineGroupIds() {
 }
 
 $stageAddBtn.addEventListener('click', () => {
-  stages.push({ pass_rule: 'any', on_failure: null, steps: [] });
+  stages.push({ pass_rule: 'any', on_failure: null, wait_seconds: DEFAULT_STAGE_WAIT, steps: [] });
   renderStages();
 });
-
-function resetIgForm() {
-  editingIgId = null;
-  stages = [];
-  $igForm.reset();
-  $igFormTitle.textContent = 'Add action group';
-  $igSubmit.textContent = 'Add group';
-  $igCancel.style.display = 'none';
-  $igReset.style.display = '';
-  $igError.textContent = '';
-  $igSaveNote.textContent = '';
-  renderStages();
-  renderIgFlatlineGroupChecks();
-}
-
-function fillIgForm(g) {
-  editingIgId = g.id;
-  stages = g.stages.map((st) => ({
-    pass_rule: st.pass_rule,
-    on_failure: st.on_failure ?? null,
-    steps: st.steps.map((s) => ({ ...s }))
-  }));
-  $igForm.elements.namedItem('name').value = g.name;
-  $igForm.elements.namedItem('on_failure').value = g.on_failure;
-  $igForm.elements.namedItem('enabled').checked = !!g.enabled;
-  renderStages();
-  const assignedIds = flatlineGroups.filter((fg) => fg.action_group_ids.includes(g.id)).map((fg) => fg.id);
-  renderIgFlatlineGroupChecks(assignedIds);
-  $igFormTitle.textContent = `Edit group: ${g.name}`;
-  $igSubmit.textContent = 'Save changes';
-  $igCancel.style.display = '';
-  $igReset.style.display = 'none';
-  $igError.textContent = '';
-  $igSaveNote.textContent = '';
-  igDirty.markClean();
-  igroupFormSection.expand();
-  targetFormSection.collapse(); // one edit form open at a time
-  $igForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-$igCancel.addEventListener('click', (e) => {
-  e.preventDefault();
-  resetIgForm();
-});
-
-$igReset.addEventListener('click', () => resetIgForm());
 
 /** Applies the checked Flatline groups for this action group by updating each
  *  affected Flatline group's own action_group_ids (the assignment is stored
@@ -751,117 +1139,180 @@ async function applyFlatlineGroupAssignments(actionGroupId, desiredIds) {
 
   for (const id of toAdd) {
     const fg = flatlineGroups.find((g) => g.id === id);
-    await updateGroup(fg.id, { ...fg, action_group_ids: [...fg.action_group_ids, actionGroupId] });
+    await flatlineGroupsApi.update(fg.id, { ...fg, action_group_ids: [...fg.action_group_ids, actionGroupId] });
   }
   for (const id of toRemove) {
     const fg = flatlineGroups.find((g) => g.id === id);
-    await updateGroup(fg.id, { ...fg, action_group_ids: fg.action_group_ids.filter((x) => x !== actionGroupId) });
+    await flatlineGroupsApi.update(fg.id, { ...fg, action_group_ids: fg.action_group_ids.filter((x) => x !== actionGroupId) });
   }
 }
 
-$igForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  void (async () => {
-    const input = {
-      name: $igForm.elements.namedItem('name').value,
-      on_failure: $igForm.elements.namedItem('on_failure').value,
-      enabled: $igForm.elements.namedItem('enabled').checked,
-      stages: stages.filter((st) => st.steps.length > 0)
-    };
-    const wasEditing = editingIgId != null;
-    try {
-      const saved = wasEditing ? await updateActionGroup(editingIgId, input) : await createActionGroup(input);
-      await applyFlatlineGroupAssignments(saved.id, selectedIgFlatlineGroupIds());
-      $igError.textContent = '';
-      await refreshAll();
-      if (wasEditing) {
-        fillIgForm(igroups.find((g) => g.id === saved.id) ?? saved);
-        $igSaveNote.textContent = 'Saved ✓';
-      } else {
-        resetIgForm();
-      }
-    } catch (err) {
-      $igError.textContent = err.message;
-    }
-  })();
+const igForm = initEntityForm({
+  form: $igForm,
+  els: {
+    title: document.getElementById('igroup-form-title'),
+    error: document.getElementById('igroup-error'),
+    submit: document.getElementById('igroup-submit'),
+    cancel: document.getElementById('igroup-cancel'),
+    reset: document.getElementById('igroup-reset'),
+    saveNote: document.getElementById('igroup-save-note')
+  },
+  section: igroupFormSection,
+  siblingSection: () => targetFormSection,
+  dirty: igDirty,
+  noun: 'action group',
+  itemLabel: 'group',
+  api: actionGroups,
+  reset: () => {
+    stages = [];
+    renderStages();
+    renderIgFlatlineGroupChecks();
+  },
+  fill: (g) => {
+    stages = g.stages.map((st) => ({
+      pass_rule: st.pass_rule,
+      on_failure: st.on_failure ?? null,
+      wait_seconds: st.wait_seconds ?? DEFAULT_STAGE_WAIT,
+      steps: st.steps.map((s) => ({ ...s }))
+    }));
+    $igForm.elements.namedItem('name').value = g.name;
+    $igForm.elements.namedItem('on_failure').value = g.on_failure;
+    $igForm.elements.namedItem('enabled').checked = !!g.enabled;
+    renderStages();
+    renderIgFlatlineGroupChecks(
+      flatlineGroups.filter((fg) => fg.action_group_ids.includes(g.id)).map((fg) => fg.id));
+  },
+  collect: () => ({
+    name: $igForm.elements.namedItem('name').value,
+    on_failure: $igForm.elements.namedItem('on_failure').value,
+    enabled: $igForm.elements.namedItem('enabled').checked,
+    stages: stages.filter((st) => st.steps.length > 0)
+  }),
+  // The assignment lives on each Flatline group, so it is written separately —
+  // before the reload, so the refreshed list already reflects it.
+  refresh: async (saved) => {
+    await applyFlatlineGroupAssignments(saved.id, selectedIgFlatlineGroupIds());
+    await refreshAll();
+  },
+  findSaved: (id) => igroups.find((g) => g.id === id)
 });
 
+/** One stage as text: "k8s + NAS, wait 10s, Windows" — batch, wait, batch. */
+function stageStepText(stage) {
+  const parts = [];
+  let batch = [];
+  for (const s of stage.steps) {
+    if (s.target_id != null) {
+      batch.push(targetById(s.target_id)?.name ?? '?');
+      continue;
+    }
+    if (batch.length) parts.push(batch.join(' + '));
+    batch = [];
+    parts.push(`wait ${s.wait_seconds}s`);
+  }
+  if (batch.length) parts.push(batch.join(' + '));
+  return parts.join(', ');
+}
+
 function renderIgTable() {
-  clear($igTable);
-  if (igroups.length === 0) {
-    $igTable.append(el('div', { class: 'empty' },
-      el('div', { class: 'big' }, 'No action groups yet'),
-      el('div', {}, 'Create an ordered sequence of targets using the form below.')));
-    return;
-  }
+  renderTable($igTable, {
+    headers: ['Status', 'Group', 'Stages (in order)', 'On stage failure', 'Assigned to', ''],
+    rows: igroups,
+    empty: ['No action groups yet', 'Create an ordered sequence of targets using the form below.'],
+    cells: (g) => {
+      // "+" joins what runs at once, "," what follows it once a wait is up, and
+      // "→" separates stages, carrying the gap held between them.
+      const stageText = g.stages.length
+        ? g.stages.map((st, i) => {
+            const gap = i === 0 ? '' : st.wait_seconds > 0 ? `  →(${st.wait_seconds}s)→  ` : '  →  ';
+            return `${gap}${i + 1}. ${stageStepText(st)}`;
+          }).join('')
+        : '—';
+      const hasOverride = g.stages.some((st) => st.on_failure);
 
-  const tbody = el('tbody', {});
-  for (const g of igroups) {
-    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
-    editBtn.addEventListener('click', () => fillIgForm(g));
-    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
-    delBtn.addEventListener('click', () => {
-      void (async () => {
-        const ok = await confirmDialog({
-          title: 'Delete action group?',
-          body: `"${g.name}" will be deleted. The action targets it uses are still available, only this sequence of steps is removed.`,
-          confirmText: 'Delete group',
-          danger: true
-        });
-        if (!ok) return;
-        await deleteActionGroup(g.id);
-        if (editingIgId === g.id) resetIgForm();
-        await refreshAll();
-      })();
-    });
+      return [
+        el('td', {}, enabledPill(g.enabled)),
+        el('td', {}, el('strong', {}, g.name)),
+        el('td', { class: 'target-cell', title: stageText }, stageText),
+        el('td', {},
+          g.on_failure === 'stop' ? 'stop sequence' : 'continue',
+          hasOverride ? el('span', { class: 'hint', title: 'Some stages override this' }, ' · overrides') : null),
+        el('td', { class: 'mono' }, `${g.assigned_count} Flatline group(s)`),
+        actionsCell(editDeleteButtons({
+          onEdit: () => igForm.toEditMode(g),
+          confirm: {
+            title: 'Delete action group?',
+            body: `"${g.name}" will be deleted. The action targets it uses are still available, only this sequence of steps is removed.`,
+            confirmText: 'Delete group'
+          },
+          onDelete: async () => {
+            await actionGroups.remove(g.id);
+            igForm.forgetIfEditing(g.id);
+            await refreshAll();
+          }
+        }))
+      ];
+    }
+  });
+}
 
-    // "+" joins targets that run at once within a stage; "→" separates stages.
-    const stageText = g.stages.length
-      ? g.stages.map((st, i) =>
-          `${i + 1}. ${st.steps.map((s) => targetById(s.target_id)?.name ?? '?').join(' + ')}`).join('  →  ')
-      : '—';
-    const hasOverride = g.stages.some((st) => st.on_failure);
+// ---------- live restore progress ----------
+// A restore opens by waiting minutes for a host to boot, so the 20s refresh
+// below is far too slow to read as progress. While one is running this polls
+// just the restore status and re-renders only the targets table — a full
+// refresh would rebuild the forms and the relay pickers every few seconds for
+// one line of text.
 
-    tbody.append(el('tr', {},
-      el('td', {}, enabledPill(g.enabled)),
-      el('td', {}, el('strong', {}, g.name)),
-      el('td', { class: 'target-cell', title: stageText }, stageText),
-      el('td', {},
-        g.on_failure === 'stop' ? 'stop sequence' : 'continue',
-        hasOverride ? el('span', { class: 'hint', title: 'Some stages override this' }, ' · overrides') : null),
-      el('td', { class: 'mono' }, `${g.assigned_count} Flatline group(s)`),
-      el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, editBtn, delBtn))
-    ));
-  }
+const RESTORE_POLL_MS = 3000;
+let restoreTimer = null;
 
-  const table = el('table', { class: 'endpoints' });
-  table.append(
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Group'), el('th', {}, 'Stages (in order)'), el('th', {}, 'On stage failure'),
-      el('th', {}, 'Assigned to'), el('th', {}, ''))),
-    tbody
-  );
-  $igTable.append(table);
+function scheduleRestorePoll() {
+  if (restoreTimer !== null) return;
+  restoreTimer = setTimeout(() => void pollRestores(), RESTORE_POLL_MS);
+}
+
+async function pollRestores() {
+  restoreTimer = null;
+  const live = targets.filter((t) => t.restore_progress);
+  if (live.length === 0) return;
+
+  const statuses = await Promise.all(live.map((t) => getRestoreStatus(t.id).catch(() => null)));
+
+  let settled = false;
+  live.forEach((t, i) => {
+    const status = statuses[i];
+    if (!status) return; // a failed poll: leave the row as it was and try again
+    t.restore_progress = status.running ? status.progress : null;
+    if (!status.running) {
+      t.last_activity = status.last_activity;
+      settled = true;
+    }
+  });
+
+  renderTargetTable(); // schedules the next poll if anything is still running
+  // The last one finished: a full refresh picks up the health dot it moved.
+  if (settled && !targets.some((t) => t.restore_progress)) void refreshAll();
 }
 
 // ---------- boot ----------
 
 async function refreshAll() {
-  [targets, igroups, flatlineGroups] = await Promise.all([listActionTargets(), listActionGroups(), listGroups()]);
+  [targets, igroups, flatlineGroups, relays] = await Promise.all([
+    actionTargets.list(), actionGroups.list(), flatlineGroupsApi.list(), relaysApi.list()
+  ]);
+  renderRelayOptions();
   renderTargetTable();
   renderIgTable();
   renderStages();
   // Keep the checklist valid without clobbering an in-progress edit.
-  if (editingIgId == null) {
-    renderIgFlatlineGroupChecks(selectedIgFlatlineGroupIds());
-  } else {
-    const assignedIds = flatlineGroups.filter((fg) => fg.action_group_ids.includes(editingIgId)).map((fg) => fg.id);
-    renderIgFlatlineGroupChecks(assignedIds);
-  }
+  const editingIg = igForm.editingId;
+  renderIgFlatlineGroupChecks(editingIg == null
+    ? selectedIgFlatlineGroupIds()
+    : flatlineGroups.filter((fg) => fg.action_group_ids.includes(editingIg)).map((fg) => fg.id));
 }
 
-resetTargetForm();
-resetIgForm();
+targetForm.toAddMode();
+igForm.toAddMode();
 void refreshAll();
 // Picks up the background connectivity dot (server rechecks targets ~every minute).
 setInterval(() => void refreshAll(), 20_000);

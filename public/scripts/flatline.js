@@ -1,33 +1,25 @@
-import {
-  listEndpoints, createEndpoint, updateEndpoint, deleteEndpoint, testEndpoint,
-  listGroups, createGroup, updateGroup, deleteGroup,
-  listActionGroups
-} from './api.js';
-import { el, clear, enabledPill, initCollapsible, initDirtyNote, confirmDialog } from './dom.js';
+import { endpoints as endpointsApi, groups as groupsApi, actionGroups } from './api.js';
+import { el, clear, enabledPill, initCollapsible, initDirtyNote, initHelp } from './dom.js';
+import { initEntityForm, renderTable, editDeleteButtons, actionsCell } from './crud.js';
 import { initHeaderAuth } from './header.js';
 
 initHeaderAuth();
+initHelp();
 
 let groups = [];
-let actionGroups = [];
+let actionGroupList = [];
 let endpoints = [];
 
 // ---------- Flatline groups ----------
 
 const $groupForm = document.getElementById('group-form');
-const $groupFormTitle = document.getElementById('group-form-title');
-const $groupError = document.getElementById('group-error');
-const $groupSubmit = document.getElementById('group-submit');
-const $groupCancel = document.getElementById('group-cancel');
-const $groupReset = document.getElementById('group-reset');
-const $groupSaveNote = document.getElementById('group-save-note');
 const $groupEndpointChecks = document.getElementById('group-endpoint-checks');
 const $groupTable = document.getElementById('group-table');
 const groupFormSection = initCollapsible('flatline:group-form',
   document.getElementById('group-form-header'), document.getElementById('group-form-body'));
-const groupDirty = initDirtyNote($groupForm, document.getElementById('group-dirty'), $groupSaveNote);
+const groupDirty = initDirtyNote($groupForm, document.getElementById('group-dirty'),
+  document.getElementById('group-save-note'));
 
-let editingGroupId = null;
 /** action_group_ids of the group being edited — preserved as-is since that
  *  assignment is now managed from the Actions page, not this form. */
 let editingGroupActionIds = [];
@@ -46,7 +38,7 @@ function renderGroupEndpointChecks(selectedIds = []) {
     const cb = el('input', { type: 'checkbox', value: String(ep.id) });
     cb.checked = selectedIds.includes(ep.id);
     cb.dataset.endpoint = '1';
-    const otherNames = ep.group_names.filter((_, i) => ep.group_ids[i] !== editingGroupId);
+    const otherNames = ep.group_names.filter((_, i) => ep.group_ids[i] !== groupForm.editingId);
     $groupEndpointChecks.append(el('label', { class: 'check' }, cb,
       el('span', {}, ep.name),
       otherNames.length ? el('span', { class: 'hint' }, `(also in ${otherNames.join(', ')})`) : null));
@@ -59,150 +51,96 @@ function selectedEndpointIds() {
     .map((cb) => Number(cb.value));
 }
 
-function resetGroupForm() {
-  editingGroupId = null;
-  editingGroupActionIds = [];
-  $groupForm.reset();
-  $groupFormTitle.textContent = 'Add Flatline group';
-  $groupSubmit.textContent = 'Add group';
-  $groupCancel.style.display = 'none';
-  $groupReset.style.display = '';
-  $groupError.textContent = '';
-  $groupSaveNote.textContent = '';
-  groupDirty.markClean();
-  renderGroupEndpointChecks();
-}
-
-function fillGroupForm(g) {
-  editingGroupId = g.id;
-  editingGroupActionIds = g.action_group_ids ?? [];
-  gField('name').value = g.name;
-  gField('mode').value = g.mode;
-  gField('grace_minutes').value = String(g.grace_minutes);
-  gField('enabled').checked = !!g.enabled;
-  renderGroupEndpointChecks(g.endpoint_ids);
-  $groupFormTitle.textContent = `Edit group: ${g.name}`;
-  $groupSubmit.textContent = 'Save changes';
-  $groupCancel.style.display = '';
-  $groupReset.style.display = 'none';
-  $groupError.textContent = '';
-  $groupSaveNote.textContent = '';
-  groupDirty.markClean();
-  groupFormSection.expand();
-  endpointFormSection.collapse(); // one edit form open at a time
-  $groupForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-$groupCancel.addEventListener('click', (e) => {
-  e.preventDefault();
-  resetGroupForm();
-});
-
-$groupReset.addEventListener('click', () => resetGroupForm());
-
-$groupForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  void (async () => {
-    const input = {
-      name: gField('name').value,
-      mode: gField('mode').value,
-      grace_minutes: Number(gField('grace_minutes').value),
-      enabled: gField('enabled').checked,
-      action_group_ids: editingGroupActionIds,
-      endpoint_ids: selectedEndpointIds()
-    };
-    const wasEditing = editingGroupId != null;
-    try {
-      const saved = wasEditing ? await updateGroup(editingGroupId, input) : await createGroup(input);
-      $groupError.textContent = '';
-      await refreshAll();
-      if (wasEditing) {
-        fillGroupForm(groups.find((g) => g.id === saved.id) ?? saved);
-        $groupSaveNote.textContent = 'Saved ✓';
-      } else {
-        resetGroupForm();
-      }
-    } catch (err) {
-      $groupError.textContent = err.message;
-    }
-  })();
+const groupForm = initEntityForm({
+  form: $groupForm,
+  els: {
+    title: document.getElementById('group-form-title'),
+    error: document.getElementById('group-error'),
+    submit: document.getElementById('group-submit'),
+    cancel: document.getElementById('group-cancel'),
+    reset: document.getElementById('group-reset'),
+    saveNote: document.getElementById('group-save-note')
+  },
+  section: groupFormSection,
+  siblingSection: () => endpointFormSection,
+  dirty: groupDirty,
+  noun: 'Flatline group',
+  itemLabel: 'group',
+  api: groupsApi,
+  reset: () => {
+    editingGroupActionIds = [];
+    renderGroupEndpointChecks();
+  },
+  fill: (g) => {
+    editingGroupActionIds = g.action_group_ids ?? [];
+    gField('name').value = g.name;
+    gField('mode').value = g.mode;
+    gField('grace_minutes').value = String(g.grace_minutes);
+    gField('enabled').checked = !!g.enabled;
+    renderGroupEndpointChecks(g.endpoint_ids);
+  },
+  collect: () => ({
+    name: gField('name').value,
+    mode: gField('mode').value,
+    grace_minutes: Number(gField('grace_minutes').value),
+    enabled: gField('enabled').checked,
+    action_group_ids: editingGroupActionIds,
+    endpoint_ids: selectedEndpointIds()
+  }),
+  findSaved: (id) => groups.find((g) => g.id === id),
+  refresh: refreshAll
 });
 
 function renderGroupTable() {
-  clear($groupTable);
-  if (groups.length === 0) {
-    $groupTable.append(el('div', { class: 'empty' },
-      'No Flatline groups yet. Endpoints can be monitored without one, but only grouped endpoints can trigger actions.'));
-    return;
-  }
+  renderTable($groupTable, {
+    headers: ['Status', 'Group', 'Fails when', 'Grace', 'Endpoints', 'Runs actions', ''],
+    rows: groups,
+    empty: 'No Flatline groups yet. Endpoints can be monitored without one, but only grouped endpoints can trigger actions.',
+    cells: (g) => {
+      const epNames = g.endpoint_ids
+        .map((id) => endpoints.find((e) => e.id === id)?.name)
+        .filter(Boolean);
+      const agNames = g.action_group_ids
+        .map((id) => actionGroupList.find((ag) => ag.id === id)?.name)
+        .filter(Boolean);
 
-  const tbody = el('tbody', {});
-  for (const g of groups) {
-    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
-    editBtn.addEventListener('click', () => fillGroupForm(g));
-    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
-    delBtn.addEventListener('click', () => {
-      void (async () => {
-        const ok = await confirmDialog({
-          title: 'Delete Flatline group?',
-          body: `"${g.name}" will be deleted. Its endpoints keep running — they just stop belonging to this group and can no longer trigger its actions.`,
-          confirmText: 'Delete group',
-          danger: true
-        });
-        if (!ok) return;
-        await deleteGroup(g.id);
-        if (editingGroupId === g.id) resetGroupForm();
-        await refreshAll();
-      })();
-    });
-
-    const epNames = g.endpoint_ids
-      .map((id) => endpoints.find((e) => e.id === id)?.name)
-      .filter(Boolean);
-    const agNames = g.action_group_ids
-      .map((id) => actionGroups.find((ag) => ag.id === id)?.name)
-      .filter(Boolean);
-
-    tbody.append(el('tr', {},
-      el('td', {}, enabledPill(g.enabled)),
-      el('td', {}, el('strong', {}, g.name)),
-      el('td', {}, g.mode === 'all' ? 'all down' : 'any down'),
-      el('td', { class: 'mono' }, `${g.grace_minutes} min`),
-      el('td', { class: 'target-cell', title: epNames.join(', ') }, epNames.length ? epNames.join(', ') : '—'),
-      el('td', {}, agNames.length ? agNames.join(', ') : '—'),
-      el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, editBtn, delBtn))
-    ));
-  }
-
-  const table = el('table', { class: 'endpoints' });
-  table.append(
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Group'), el('th', {}, 'Fails when'), el('th', {}, 'Grace'),
-      el('th', {}, 'Endpoints'), el('th', {}, 'Runs actions'), el('th', {}, ''))),
-    tbody
-  );
-  $groupTable.append(table);
+      return [
+        el('td', {}, enabledPill(g.enabled)),
+        el('td', {}, el('strong', {}, g.name)),
+        el('td', {}, g.mode === 'all' ? 'all down' : 'any down'),
+        el('td', { class: 'mono' }, `${g.grace_minutes} min`),
+        el('td', { class: 'target-cell', title: epNames.join(', ') }, epNames.length ? epNames.join(', ') : '—'),
+        el('td', {}, agNames.length ? agNames.join(', ') : '—'),
+        actionsCell(editDeleteButtons({
+          onEdit: () => groupForm.toEditMode(g),
+          confirm: {
+            title: 'Delete Flatline group?',
+            body: `"${g.name}" will be deleted. Its endpoints keep running — they just stop belonging to this group and can no longer trigger its actions.`,
+            confirmText: 'Delete group'
+          },
+          onDelete: async () => {
+            await groupsApi.remove(g.id);
+            groupForm.forgetIfEditing(g.id);
+            await refreshAll();
+          }
+        }))
+      ];
+    }
+  });
 }
 
 // ---------- Flatline endpoints ----------
 
 const $form = document.getElementById('endpoint-form');
-const $formTitle = document.getElementById('form-title');
-const $formError = document.getElementById('form-error');
-const $formSubmit = document.getElementById('form-submit');
-const $formCancel = document.getElementById('form-cancel');
-const $formReset = document.getElementById('form-reset');
-const $formTest = document.getElementById('form-test');
 const $formTestResult = document.getElementById('form-test-result');
-const $formSaveNote = document.getElementById('form-save-note');
+const $formError = document.getElementById('form-error');
 const $table = document.getElementById('endpoint-table');
 const $typeSelect = document.getElementById('f-type');
 const $httpFields = document.getElementById('http-fields');
 const endpointFormSection = initCollapsible('flatline:endpoint-form',
   document.getElementById('form-header'), document.getElementById('form-body'));
-const formDirty = initDirtyNote($form, document.getElementById('form-dirty'), $formSaveNote);
-
-let editingId = null;
+const formDirty = initDirtyNote($form, document.getElementById('form-dirty'),
+  document.getElementById('form-save-note'));
 
 function syncTypeFields() {
   $httpFields.style.display = $typeSelect.value === 'http' ? '' : 'none';
@@ -228,81 +166,52 @@ function collectEndpointInput() {
   };
 }
 
-function resetForm() {
-  editingId = null;
-  $form.reset();
-  $formTitle.textContent = 'Add Flatline endpoint';
-  $formSubmit.textContent = 'Add endpoint';
-  $formCancel.style.display = 'none';
-  $formReset.style.display = '';
-  $formError.textContent = '';
-  $formTestResult.textContent = '';
-  $formSaveNote.textContent = '';
-  formDirty.markClean();
-  syncTypeFields();
-}
-
-function fillForm(ep) {
-  editingId = ep.id;
-  field('name').value = ep.name;
-  $typeSelect.value = ep.type;
-  field('target').value = ep.target;
-  field('interval_seconds').value = String(ep.interval_seconds);
-  field('timeout_ms').value = String(ep.timeout_ms);
-  field('down_threshold').value = String(ep.down_threshold);
-  field('up_threshold').value = String(ep.up_threshold);
-  field('expect_status').value = ep.expect_status == null ? '' : String(ep.expect_status);
-  field('expect_json').value = ep.expect_json ?? '';
-  field('enabled').checked = !!ep.enabled;
-  $formTitle.textContent = `Edit: ${ep.name}`;
-  $formSubmit.textContent = 'Save changes';
-  $formCancel.style.display = '';
-  $formReset.style.display = 'none';
-  $formError.textContent = '';
-  $formTestResult.textContent = '';
-  $formSaveNote.textContent = '';
-  formDirty.markClean();
-  syncTypeFields();
-  endpointFormSection.expand();
-  groupFormSection.collapse(); // one edit form open at a time
-  $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-$formCancel.addEventListener('click', (e) => {
-  e.preventDefault();
-  resetForm();
+const endpointForm = initEntityForm({
+  form: $form,
+  els: {
+    title: document.getElementById('form-title'),
+    error: $formError,
+    submit: document.getElementById('form-submit'),
+    cancel: document.getElementById('form-cancel'),
+    reset: document.getElementById('form-reset'),
+    saveNote: document.getElementById('form-save-note'),
+    testResult: $formTestResult
+  },
+  section: endpointFormSection,
+  siblingSection: () => groupFormSection,
+  dirty: formDirty,
+  noun: 'Flatline endpoint',
+  itemLabel: 'endpoint',
+  // This form's edit heading is just "Edit: NAME" — it is the page's primary
+  // form and the extra words crowd it.
+  editLabel: '',
+  api: endpointsApi,
+  reset: syncTypeFields,
+  fill: (ep) => {
+    field('name').value = ep.name;
+    $typeSelect.value = ep.type;
+    field('target').value = ep.target;
+    field('interval_seconds').value = String(ep.interval_seconds);
+    field('timeout_ms').value = String(ep.timeout_ms);
+    field('down_threshold').value = String(ep.down_threshold);
+    field('up_threshold').value = String(ep.up_threshold);
+    field('expect_status').value = ep.expect_status == null ? '' : String(ep.expect_status);
+    field('expect_json').value = ep.expect_json ?? '';
+    field('enabled').checked = !!ep.enabled;
+    syncTypeFields();
+  },
+  collect: collectEndpointInput,
+  findSaved: (id) => endpoints.find((e) => e.id === id),
+  refresh: refreshAll
 });
 
-$formReset.addEventListener('click', () => resetForm());
-
-$form.addEventListener('submit', (e) => {
-  e.preventDefault();
-  void (async () => {
-    const input = collectEndpointInput();
-    const wasEditing = editingId != null;
-    try {
-      const saved = wasEditing ? await updateEndpoint(editingId, input) : await createEndpoint(input);
-      $formError.textContent = '';
-      await refreshAll();
-      if (wasEditing) {
-        fillForm(endpoints.find((e) => e.id === saved.id) ?? saved);
-        $formSaveNote.textContent = 'Saved ✓';
-      } else {
-        resetForm();
-      }
-    } catch (err) {
-      $formError.textContent = err.message;
-    }
-  })();
-});
-
-$formTest.addEventListener('click', () => {
+document.getElementById('form-test').addEventListener('click', () => {
   void (async () => {
     $formTestResult.className = 'note';
     $formTestResult.textContent = 'Testing…';
     $formError.textContent = '';
     try {
-      const result = await testEndpoint(collectEndpointInput());
+      const result = await endpointsApi.test(collectEndpointInput());
       $formTestResult.className = result.ok ? 'note' : 'error';
       $formTestResult.textContent = result.ok
         ? `✓ up${result.latencyMs != null ? ` (${Math.round(result.latencyMs)} ms)` : ''}`
@@ -323,72 +232,54 @@ function endpointCheckSummary(ep) {
 }
 
 function renderEndpointTable() {
-  clear($table);
+  renderTable($table, {
+    headers: ['Status', 'Name', 'Check', 'Target', 'Interval', 'Group', ''],
+    rows: endpoints,
+    empty: ['No endpoints configured',
+      'Add the router, UPS, or service you want to watch using the endpoint form below.'],
+    cells: (ep) => {
+      const pillCls = !ep.enabled ? 'disabled' : ep.last_state === 'up' ? 'up' : ep.last_state === 'down' ? 'down' : 'unknown';
+      const pillText = !ep.enabled ? 'DISABLED' : ep.last_state === 'up' ? 'UP' : ep.last_state === 'down' ? 'DOWN' : 'PENDING';
 
-  if (endpoints.length === 0) {
-    $table.append(el('div', { class: 'empty' },
-      el('div', { class: 'big' }, 'No endpoints configured'),
-      el('div', {}, 'Add the router, UPS, or service you want to watch using the endpoint form below.')
-    ));
-    return;
-  }
-
-  const tbody = el('tbody', {});
-  for (const ep of endpoints) {
-    const pillCls = !ep.enabled ? 'disabled' : ep.last_state === 'up' ? 'up' : ep.last_state === 'down' ? 'down' : 'unknown';
-    const pillText = !ep.enabled ? 'DISABLED' : ep.last_state === 'up' ? 'UP' : ep.last_state === 'down' ? 'DOWN' : 'PENDING';
-
-    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
-    editBtn.addEventListener('click', () => fillForm(ep));
-    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
-    delBtn.addEventListener('click', () => {
-      void (async () => {
-        const ok = await confirmDialog({
-          title: 'Delete endpoint?',
-          body: `"${ep.name}" and all of its check history will be permanently deleted. This CANNOT be undone.`,
-          confirmText: 'Delete endpoint',
-          danger: true
-        });
-        if (!ok) return;
-        await deleteEndpoint(ep.id);
-        if (editingId === ep.id) resetForm();
-        await refreshAll();
-      })();
-    });
-
-    tbody.append(el('tr', {},
-      el('td', {}, el('span', { class: `pill ${pillCls}` }, el('span', { class: 'dot' }), pillText)),
-      el('td', {}, el('strong', {}, ep.name)),
-      el('td', {}, endpointCheckSummary(ep)),
-      el('td', { class: 'target-cell', title: ep.target }, ep.target),
-      el('td', { class: 'mono' }, `${ep.interval_seconds}s`),
-      el('td', {}, ep.group_names.length ? ep.group_names.join(', ') : '—'),
-      el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, editBtn, delBtn))
-    ));
-  }
-
-  const table = el('table', { class: 'endpoints' });
-  table.append(
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Name'), el('th', {}, 'Check'),
-      el('th', {}, 'Target'), el('th', {}, 'Interval'), el('th', {}, 'Group'), el('th', {}, ''))),
-    tbody
-  );
-  $table.append(table);
+      return [
+        el('td', {}, el('span', { class: `pill ${pillCls}` }, el('span', { class: 'dot' }), pillText)),
+        el('td', {}, el('strong', {}, ep.name)),
+        el('td', {}, endpointCheckSummary(ep)),
+        el('td', { class: 'target-cell', title: ep.target }, ep.target),
+        el('td', { class: 'mono' }, `${ep.interval_seconds}s`),
+        el('td', {}, ep.group_names.length ? ep.group_names.join(', ') : '—'),
+        actionsCell(editDeleteButtons({
+          onEdit: () => endpointForm.toEditMode(ep),
+          confirm: {
+            title: 'Delete endpoint?',
+            body: `"${ep.name}" and all of its check history will be permanently deleted. This CANNOT be undone.`,
+            confirmText: 'Delete endpoint'
+          },
+          onDelete: async () => {
+            await endpointsApi.remove(ep.id);
+            endpointForm.forgetIfEditing(ep.id);
+            await refreshAll();
+          }
+        }))
+      ];
+    }
+  });
 }
 
 // ---------- boot ----------
 
 async function refreshAll() {
-  [groups, actionGroups, endpoints] = await Promise.all([listGroups(), listActionGroups(), listEndpoints()]);
+  [groups, actionGroupList, endpoints] = await Promise.all([
+    groupsApi.list(), actionGroups.list(), endpointsApi.list()
+  ]);
   renderGroupTable();
   renderEndpointTable();
   // Keep form selection valid without clobbering an in-progress edit.
-  if (editingGroupId == null) {
+  if (groupForm.editingId == null) {
     renderGroupEndpointChecks(selectedEndpointIds());
   }
 }
 
-resetGroupForm();
-resetForm();
+groupForm.toAddMode();
+endpointForm.toAddMode();
 void refreshAll();

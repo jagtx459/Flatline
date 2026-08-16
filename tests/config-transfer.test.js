@@ -9,6 +9,7 @@ import path from 'node:path';
 // import (a static import would evaluate db.js too early).
 process.env.FLATLINE_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'flatline-test-'));
 const store = await import('../server/db.js');
+const { encryptSecrets, decryptSecrets, rotateKey } = await import('../server/secrets.js');
 
 /** Builds a small but relational config: endpoint -> flatline group -> action group -> target. */
 function seed() {
@@ -24,7 +25,12 @@ function seed() {
   });
   const ag = store.createActionGroup({
     name: 'graceful', on_failure: 'continue', enabled: 1,
-    stages: [{ pass_rule: 'any', on_failure: null, steps: [{ target_id: target.id, timeout_seconds: 60 }] }]
+    stages: [
+      { pass_rule: 'any', on_failure: null, wait_seconds: 0,
+        steps: [{ target_id: target.id, timeout_seconds: 60 }] },
+      // A wait step and a non-default gap, so the export carries both.
+      { pass_rule: 'any', on_failure: null, wait_seconds: 20, steps: [{ wait_seconds: 90 }] }
+    ]
   });
   const fg = store.createFlatlineGroup({
     name: 'grid', grace_minutes: 5, mode: 'all', enabled: 1,
@@ -34,7 +40,15 @@ function seed() {
     name: 'discord', kind: 'discord',
     config: JSON.stringify({ events: ['group_triggered'] }), secret_enc: null, enabled: 1
   });
-  return { ep, target, ag, fg };
+  // A relay carries an encrypted credential of its own, so the transfer paths
+  // have to treat it like an action target rather than like plain config.
+  const relay = store.createRelay({
+    name: 'garage-pi', kind: 'ssh',
+    config: JSON.stringify({ host: '10.1.20.5', username: 'pi', port: 22, auth_method: 'password' }),
+    wake_command: 'wakeonlan {mac}', network: '10.1.20.0/24',
+    secret_enc: encryptSecrets({ password: 'relay-pw' }), enabled: 1
+  });
+  return { ep, target, ag, fg, relay };
 }
 
 test('exportConfig -> replaceConfig -> exportConfig round-trips', () => {
@@ -55,7 +69,49 @@ test('export includes the relational join rows', () => {
   const cfg = store.exportConfig();
   assert.equal(cfg.flatline_group_endpoints.length, 1);
   assert.equal(cfg.flatline_group_actions.length, 1);
-  assert.equal(cfg.action_group_members.length, 1);
+  assert.equal(cfg.action_group_members.length, 2);
+});
+
+test('export carries the waits, so an imported group keeps its timing', () => {
+  const cfg = store.exportConfig();
+  assert.deepEqual(cfg.action_group_stages.map((s) => s.wait_seconds), [0, 20]);
+  // The wait step travels as a member with no target and a duration of its own.
+  const wait = cfg.action_group_members.find((m) => m.target_id === null);
+  assert.equal(wait.wait_seconds, 90);
+});
+
+test('a relay survives export and import with its credential intact', () => {
+  // The blob travels verbatim, so it only decrypts on an instance holding the
+  // same key — but it must arrive byte-for-byte, or the relay is unusable.
+  const before = store.listRelays()[0];
+  const cfg = store.exportConfig();
+  assert.equal(cfg.relays.length, 1);
+
+  store.replaceConfig({ flatline_config: 1, ...cfg });
+
+  const after = store.listRelays()[0];
+  assert.equal(after.secret_enc, before.secret_enc);
+  assert.deepEqual(decryptSecrets(after.secret_enc), { password: 'relay-pw' });
+  // The two fields that make a relay a relay, and are on no other table.
+  assert.equal(after.wake_command, 'wakeonlan {mac}');
+  assert.equal(after.network, '10.1.20.0/24');
+});
+
+test('rotating the key re-encrypts relay credentials too', () => {
+  // A relay's secret lives in its own table; a rotation that walked only
+  // action_targets and notification_channels would leave it decryptable by a
+  // key that is meant to be retired.
+  const relay = store.listRelays()[0];
+  const oldBlob = relay.secret_enc;
+
+  rotateKey(Buffer.alloc(32, 7), (reencrypt) => {
+    const rows = store.allEncryptedRows().map((r) => ({ ...r, secret_enc: reencrypt(r.secret_enc) }));
+    store.updateEncryptedRows(rows);
+  });
+
+  const after = store.listRelays()[0];
+  assert.notEqual(after.secret_enc, oldBlob, 'the stored ciphertext changed');
+  assert.deepEqual(decryptSecrets(after.secret_enc), { password: 'relay-pw' }, 'and still decrypts');
 });
 
 test('replaceConfig rejects a file without the marker', () => {

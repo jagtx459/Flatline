@@ -26,6 +26,8 @@ RUN npm ci --omit=dev --ignore-scripts \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY server ./server
 COPY public ./public
+# Imported by server/ and served to the browser at /shared/* — both need it.
+COPY shared ./shared
 
 ENV NODE_ENV=production \
     PORT=3131 \
