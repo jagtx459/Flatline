@@ -18,6 +18,35 @@ async function request(path, init) {
   return body;
 }
 
+const post = (path, input) => request(path, { method: 'POST', body: JSON.stringify(input) });
+
+/**
+ * The calls a CRUD resource answers to, mirroring the RESOURCES table the server
+ * routes them with (see server/index.js). The shape is deliberately what
+ * initEntityForm in crud.js expects, so a form can be handed one of these whole.
+ *
+ * `test` only exists on the resources whose server route has one — the others
+ * simply never call it.
+ */
+function resource(base) {
+  return {
+    list: () => request(base),
+    create: (input) => post(base, input),
+    update: (id, input) => request(`${base}/${id}`, { method: 'PUT', body: JSON.stringify(input) }),
+    remove: (id) => request(`${base}/${id}`, { method: 'DELETE' }),
+    test: (input) => post(`${base}/test`, input)
+  };
+}
+
+export const endpoints = resource('/api/endpoints');
+export const groups = resource('/api/groups');            // Flatline groups
+export const actionTargets = resource('/api/actions/targets');
+export const actionGroups = resource('/api/actions/groups');
+export const notificationChannels = resource('/api/notifications');
+export const relays = resource('/api/relays');
+
+// ---- beyond plain CRUD ----
+
 export function getDashboard(hours) {
   return request(`/api/dashboard?hours=${encodeURIComponent(hours)}`);
 }
@@ -26,91 +55,33 @@ export function getVersion() {
   return request('/api/version');
 }
 
-// endpoints
-export function listEndpoints() {
-  return request('/api/endpoints');
-}
-export function createEndpoint(input) {
-  return request('/api/endpoints', { method: 'POST', body: JSON.stringify(input) });
-}
-export function updateEndpoint(id, input) {
-  return request(`/api/endpoints/${id}`, { method: 'PUT', body: JSON.stringify(input) });
-}
-export function deleteEndpoint(id) {
-  return request(`/api/endpoints/${id}`, { method: 'DELETE' });
-}
-export function testEndpoint(input) {
-  return request('/api/endpoints/test', { method: 'POST', body: JSON.stringify(input) });
-}
-
-// Flatline groups
-export function listGroups() {
-  return request('/api/groups');
-}
-export function createGroup(input) {
-  return request('/api/groups', { method: 'POST', body: JSON.stringify(input) });
-}
-export function updateGroup(id, input) {
-  return request(`/api/groups/${id}`, { method: 'PUT', body: JSON.stringify(input) });
-}
-export function deleteGroup(id) {
-  return request(`/api/groups/${id}`, { method: 'DELETE' });
-}
-
-// action targets
-export function listActionTargets() {
-  return request('/api/actions/targets');
-}
-export function createActionTarget(input) {
-  return request('/api/actions/targets', { method: 'POST', body: JSON.stringify(input) });
-}
-export function updateActionTarget(id, input) {
-  return request(`/api/actions/targets/${id}`, { method: 'PUT', body: JSON.stringify(input) });
-}
-export function deleteActionTarget(id) {
-  return request(`/api/actions/targets/${id}`, { method: 'DELETE' });
-}
-export function testActionTarget(input) {
-  return request('/api/actions/targets/test', { method: 'POST', body: JSON.stringify(input) });
-}
+/** Runs a target's real configured action now, outside any group or grace period. */
 export function runActionTarget(id) {
-  return request(`/api/actions/targets/${id}/run`, { method: 'POST' });
+  return post(`/api/actions/targets/${id}/run`);
 }
+/** Runs a target's restore sequence now. */
 export function restoreActionTarget(id) {
-  return request(`/api/actions/targets/${id}/restore`, { method: 'POST' });
+  return post(`/api/actions/targets/${id}/restore`);
 }
 /** Which part of its restore sequence a target is on, while one is running. */
 export function getRestoreStatus(id) {
   return request(`/api/actions/targets/${id}/restore`);
 }
-
-// action groups
-export function listActionGroups() {
-  return request('/api/actions/groups');
-}
-export function createActionGroup(input) {
-  return request('/api/actions/groups', { method: 'POST', body: JSON.stringify(input) });
-}
-export function updateActionGroup(id, input) {
-  return request(`/api/actions/groups/${id}`, { method: 'PUT', body: JSON.stringify(input) });
-}
-export function deleteActionGroup(id) {
-  return request(`/api/actions/groups/${id}`, { method: 'DELETE' });
-}
+/** Runs a whole action group now. */
 export function runActionGroup(id) {
-  return request(`/api/actions/groups/${id}/run`, { method: 'POST' });
+  return post(`/api/actions/groups/${id}/run`);
 }
 
 // action runs (an execution of an action group) — the list itself rides along
 // on the dashboard payload; these are the controls.
 export function pauseActionRun(id) {
-  return request(`/api/actions/runs/${id}/pause`, { method: 'POST' });
+  return post(`/api/actions/runs/${id}/pause`);
 }
 export function resumeActionRun(id) {
-  return request(`/api/actions/runs/${id}/resume`, { method: 'POST' });
+  return post(`/api/actions/runs/${id}/resume`);
 }
 export function cancelActionRun(id) {
-  return request(`/api/actions/runs/${id}/cancel`, { method: 'POST' });
+  return post(`/api/actions/runs/${id}/cancel`);
 }
 
 // settings
@@ -126,10 +97,10 @@ export function getAuthStatus() {
   return request('/api/auth');
 }
 export function login(password) {
-  return request('/api/login', { method: 'POST', body: JSON.stringify({ password }) });
+  return post('/api/login', { password });
 }
 export function logout() {
-  return request('/api/logout', { method: 'POST' });
+  return post('/api/logout');
 }
 
 // site security (password + allowed hosts)
@@ -148,7 +119,7 @@ export function getKeyStatus() {
   return request('/api/config/key');
 }
 export function rotateKey() {
-  return request('/api/config/key/rotate', { method: 'POST' });
+  return post('/api/config/key/rotate');
 }
 export function setKey(key) {
   return request('/api/config/key', { method: 'PUT', body: JSON.stringify({ key }) });
@@ -159,10 +130,10 @@ export function exportConfig() {
   return request('/api/config/export');
 }
 export function importConfig(data) {
-  return request('/api/config/import', { method: 'POST', body: JSON.stringify(data) });
+  return post('/api/config/import', data);
 }
 export function resetApp() {
-  return request('/api/config/reset', { method: 'POST' });
+  return post('/api/config/reset');
 }
 
 /** Shared 401->login + error handling for the non-JSON (binary) backup routes. */
@@ -185,7 +156,7 @@ export async function downloadBackup() {
   return res.blob();
 }
 
-/** Uploads a DB file (File/Blob) to restore; the server restarts on success. */
+/** Uploads a DB file (File/Blob) to restore; the server reopens the DB in place. */
 export async function restoreBackup(file) {
   const res = await binaryRequest('/api/config/restore', {
     method: 'POST',
@@ -195,38 +166,4 @@ export async function restoreBackup(file) {
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error ?? `request failed (${res.status})`);
   return body;
-}
-
-// notification channels
-export function listNotificationChannels() {
-  return request('/api/notifications');
-}
-export function createNotificationChannel(input) {
-  return request('/api/notifications', { method: 'POST', body: JSON.stringify(input) });
-}
-export function updateNotificationChannel(id, input) {
-  return request(`/api/notifications/${id}`, { method: 'PUT', body: JSON.stringify(input) });
-}
-export function deleteNotificationChannel(id) {
-  return request(`/api/notifications/${id}`, { method: 'DELETE' });
-}
-export function testNotificationChannel(input) {
-  return request('/api/notifications/test', { method: 'POST', body: JSON.stringify(input) });
-}
-
-// wake-on-lan relays
-export function listRelays() {
-  return request('/api/relays');
-}
-export function createRelay(input) {
-  return request('/api/relays', { method: 'POST', body: JSON.stringify(input) });
-}
-export function updateRelay(id, input) {
-  return request(`/api/relays/${id}`, { method: 'PUT', body: JSON.stringify(input) });
-}
-export function deleteRelay(id) {
-  return request(`/api/relays/${id}`, { method: 'DELETE' });
-}
-export function testRelay(input) {
-  return request('/api/relays/test', { method: 'POST', body: JSON.stringify(input) });
 }

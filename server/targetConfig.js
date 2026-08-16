@@ -1,5 +1,7 @@
 import * as store from './db.js';
 import { intInRange, cleanString } from './inputs.js';
+import { ipToInt, intToIp, prefixMask } from '../shared/net.js';
+import { RESTORE_SECRETS_BY_KIND } from '../shared/restoreSecrets.js';
 
 /**
  * Validation for everything the Actions page configures: an action target's
@@ -57,20 +59,6 @@ const RESTORE_FIELDS = [...new Set([
   ...Object.values(RESTORE_CONNECTION_FIELDS).flat(),
   ...Object.values(RESTORE_ACTION_FIELDS).flat()
 ])];
-
-/** Credentials a restore carries when it connects somewhere of its own. The
- *  names are deliberately the method's own field names with a `restore_` prefix,
- *  so resolving them is a rename and nothing more (see connectors.js
- *  restoreConnection). */
-const RESTORE_SECRETS_BY_KIND = {
-  none: [],
-  ssh: ['restore_password', 'restore_private_key', 'restore_passphrase', 'restore_sudo_password'],
-  winrm: ['restore_password'],
-  k8s: ['restore_token', 'restore_kubeconfig'],
-  http: ['restore_token', 'restore_password']
-};
-
-export const RESTORE_SECRET_FIELDS = [...new Set(Object.values(RESTORE_SECRETS_BY_KIND).flat())];
 
 // The http kind's 'login' auth scheme — see parseHttpLogin(). The credentials
 // themselves are not here: the username is `login_username` (plaintext, like
@@ -574,25 +562,6 @@ export function parseRelayConfig(kind, raw) {
   return cfg;
 }
 
-/** Dotted-quad -> unsigned 32-bit, or null when it isn't four 0-255 octets. */
-function ipToInt(ip) {
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  let out = 0;
-  for (const part of parts) {
-    // Reject '', '1e2', '01x' and anything else Number() would be lenient about.
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const n = Number(part);
-    if (n > 255) return null;
-    out = (out * 256) + n;
-  }
-  return out;
-}
-
-function intToIp(n) {
-  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
-}
-
 /**
  * The broadcast domain a relay can reach, as CIDR. Stored normalised to the
  * network address, so 10.1.20.7/24 is kept as 10.1.20.0/24 — the host bits a
@@ -610,8 +579,7 @@ export function parseRelayNetwork(raw) {
   if (addr === null) return { error: 'network address must be four octets of 0-255' };
   if (bits > 32) return { error: 'network prefix must be /0 to /32' };
 
-  const mask = bits === 0 ? 0 : (0xffff_ffff << (32 - bits)) >>> 0;
-  return { network: `${intToIp((addr & mask) >>> 0)}/${bits}` };
+  return { network: `${intToIp((addr & prefixMask(bits)) >>> 0)}/${bits}` };
 }
 
 /** The command the relay runs. Must carry {mac}, or it would wake nothing (or

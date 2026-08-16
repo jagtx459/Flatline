@@ -556,7 +556,7 @@ Cookies        leave "send login cookies" ticked</pre>
                         </span></span></span>
                       <input type="text" name="wol_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF"></label>
                     <label class="field"><span class="cap">Send via</span>
-                      <select name="wake_mode" id="wake-mode">
+                      <select name="wake_mode">
                         <option value="packet">Flatline</option>
                         <option value="relay">Relay</option>
                       </select>
@@ -643,7 +643,7 @@ Cookies        leave "send login cookies" ticked</pre>
                       <label class="field" data-rk="winrm"><span class="cap">Domain</span>
                         <input type="text" name="restore_domain" maxlength="2000" placeholder="optional"></label>
                       <label class="field" data-rk="ssh"><span class="cap">Auth</span>
-                        <select name="restore_auth_method" id="restore-auth-method">
+                        <select name="restore_auth_method">
                           <option value="password">Password</option>
                           <option value="key">Private key</option>
                         </select>
@@ -651,13 +651,13 @@ Cookies        leave "send login cookies" ticked</pre>
                       <label class="field" data-rk="k8s"><span class="cap">API URL</span>
                         <input type="text" name="restore_api_url" maxlength="2000" placeholder="https://10.0.0.10:6443"></label>
                       <label class="field" data-rk="k8s"><span class="cap">Auth</span>
-                        <select name="restore_k8s_auth" id="restore-k8s-auth">
+                        <select name="restore_k8s_auth">
                           <option value="token">Token</option>
                           <option value="kubeconfig">Kubeconfig</option>
                         </select>
                       </label>
                       <label class="field" data-rk="http"><span class="cap">Auth</span>
-                        <select name="restore_auth_scheme" id="restore-auth-scheme">
+                        <select name="restore_auth_scheme">
                           <option value="none">None</option>
                           <option value="bearer">Bearer</option>
                           <option value="header">Header</option>

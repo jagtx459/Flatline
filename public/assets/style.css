@@ -624,7 +624,6 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* group/action forms */
 .hint-row { color: var(--text-secondary); font-size: 12.5px; margin: 0 0 12px; }
-.check-grid { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 6px; }
 .check-scroll {
   display: flex;
   flex-direction: column;

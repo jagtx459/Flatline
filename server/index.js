@@ -45,6 +45,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const SHARED_DIR = path.join(__dirname, '..', 'shared');
 const PORT = Number(process.env.PORT ?? 3131);
 const PKG_VERSION = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
 // Config imports can carry many large encrypted secrets (kubeconfigs, keys), so
@@ -222,6 +223,9 @@ function parseFlatlineGroupInput(body) {
  * Per field: non-empty string replaces, null clears, absent/empty keeps —
  * so an edit form can leave credential inputs blank without wiping them.
  * `allowed` is the field whitelist for the kind (action target or channel).
+ *
+ * Returns { enc } or { error } — the two cannot be told apart from a bare
+ * string, since the ciphertext is one too.
  */
 function mergeSecrets(allowed, existingEnc, submitted) {
   const current = existingEnc ? decryptSecrets(existingEnc) : {};
@@ -229,7 +233,7 @@ function mergeSecrets(allowed, existingEnc, submitted) {
   for (const field of allowed) {
     const v = submitted?.[field];
     if (typeof v === 'string' && v.length > 0) {
-      if (v.length > MAX_SECRET_LEN) return `secret field '${field}' is too large`;
+      if (v.length > MAX_SECRET_LEN) return { error: `secret field '${field}' is too large` };
       next[field] = v;
     } else if (v === null) {
       // explicit clear — drop the field
@@ -237,13 +241,13 @@ function mergeSecrets(allowed, existingEnc, submitted) {
       next[field] = current[field];
     }
   }
-  return encryptSecrets(next);
+  return { enc: encryptSecrets(next) };
 }
 
 /**
  * Sanitizes an unsaved (draft) secrets object from a test request: only the
- * kind's allowed fields, strings only, length-capped. Returns a string error
- * when a field is too large.
+ * kind's allowed fields, strings only, length-capped.
+ * Returns { secrets } or { error }.
  */
 function pickSecrets(allowed, raw) {
   const src = typeof raw === 'object' && raw !== null ? raw : {};
@@ -251,10 +255,26 @@ function pickSecrets(allowed, raw) {
   for (const field of allowed) {
     const v = src[field];
     if (typeof v !== 'string' || v.length === 0) continue;
-    if (v.length > MAX_SECRET_LEN) return `secret field '${field}' is too large`;
+    if (v.length > MAX_SECRET_LEN) return { error: `secret field '${field}' is too large` };
     out[field] = v;
   }
-  return out;
+  return { secrets: out };
+}
+
+/**
+ * The plaintext credentials a /test request should run with. A saved entity
+ * keeps its stored credentials where the form left the inputs blank; an unsaved
+ * draft can only use what was submitted. `baseEnc` is the stored blob to merge
+ * over, or null when there is nothing to inherit (a draft, or a kind change —
+ * a different kind has a different field set).
+ *
+ * Returns { secrets } or { error }.
+ */
+function resolveSecrets(allowed, baseEnc, submitted, isSaved) {
+  if (!isSaved) return pickSecrets(allowed, submitted);
+  const merged = mergeSecrets(allowed, baseEnc, submitted);
+  if (merged.error) return merged;
+  return { secrets: decryptSecrets(merged.enc) };
 }
 
 /** Strips secret material before a target leaves the process. */
@@ -469,75 +489,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // /api/endpoints and /api/endpoints/:id
-  if (parts[1] === 'endpoints') {
-    if (method === 'GET' && parts.length === 2) {
-      sendJson(res, 200, store.listEndpoints());
-      return;
-    }
-    if (method === 'POST' && parts.length === 2) {
-      const input = parseEndpointInput(await readJsonBody(req));
-      if (typeof input === 'string') { sendError(res, 400, input); return; }
-      const created = store.createEndpoint(input);
-      reschedule();
-      sendJson(res, 201, created);
-      return;
-    }
-    if (parts.length === 3) {
-      const id = Number(parts[2]);
-      const existing = Number.isInteger(id) ? store.getEndpoint(id) : undefined;
-      if (!existing) { sendError(res, 404, 'endpoint not found'); return; }
-
-      if (method === 'PUT') {
-        const input = parseEndpointInput(await readJsonBody(req));
-        if (typeof input === 'string') { sendError(res, 400, input); return; }
-        const updated = store.updateEndpoint(id, input);
-        reschedule();
-        sendJson(res, 200, updated);
-        return;
-      }
-      if (method === 'DELETE') {
-        store.deleteEndpoint(id);
-        reschedule();
-        sendJson(res, 200, { deleted: id });
-        return;
-      }
-    }
-  }
-
-  // /api/groups and /api/groups/:id  (Flatline groups)
-  if (parts[1] === 'groups') {
-    if (method === 'GET' && parts.length === 2) {
-      sendJson(res, 200, store.listFlatlineGroups());
-      return;
-    }
-    if (method === 'POST' && parts.length === 2) {
-      const input = parseFlatlineGroupInput(await readJsonBody(req));
-      if (typeof input === 'string') { sendError(res, 400, input); return; }
-      const created = tryWrite(res, () => store.createFlatlineGroup(input));
-      if (created) sendJson(res, 201, created);
-      return;
-    }
-    if (parts.length === 3) {
-      const id = Number(parts[2]);
-      const existing = Number.isInteger(id) ? store.getFlatlineGroup(id) : undefined;
-      if (!existing) { sendError(res, 404, 'group not found'); return; }
-
-      if (method === 'PUT') {
-        const input = parseFlatlineGroupInput(await readJsonBody(req));
-        if (typeof input === 'string') { sendError(res, 400, input); return; }
-        const updated = tryWrite(res, () => store.updateFlatlineGroup(id, input));
-        if (updated) sendJson(res, 200, updated);
-        return;
-      }
-      if (method === 'DELETE') {
-        store.deleteFlatlineGroup(id);
-        sendJson(res, 200, { deleted: id });
-        return;
-      }
-    }
-  }
-
   // POST /api/actions/targets/test — connectivity test for a saved (id) or unsaved (draft) target.
   // Doesn't run the target's configured command/action — see connectors.js testTarget() — except
   // for HTTP targets, whose action IS a specific request; there's no separate no-op to send instead.
@@ -548,21 +499,21 @@ async function handleApi(req, res, url) {
     const cfg = parseInfraConfig(kind, body.config);
     if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
 
-    let secrets = {};
     const id = Number(body.id);
-    if (Number.isInteger(id)) {
-      const existing = store.getActionTarget(id);
+    const isSaved = Number.isInteger(id);
+    let existing;
+    if (isSaved) {
+      existing = store.getActionTarget(id);
       if (!existing) { sendError(res, 404, 'target not found'); return; }
-      const baseEnc = kind === existing.kind ? existing.secret_enc : null;
-      const merged = mergeSecrets(secretFieldsFor(kind, cfg), baseEnc, body.secrets);
-      if (typeof merged === 'string' && !merged.startsWith('v1:')) { sendError(res, 400, merged); return; }
-      secrets = decryptSecrets(merged);
-    } else {
-      secrets = pickSecrets(secretFieldsFor(kind, cfg), body.secrets);
-      if (typeof secrets === 'string') { sendError(res, 400, secrets); return; }
     }
+    const resolved = resolveSecrets(
+      secretFieldsFor(kind, cfg),
+      existing && kind === existing.kind ? existing.secret_enc : null,
+      body.secrets, isSaved
+    );
+    if (resolved.error) { sendError(res, 400, resolved.error); return; }
 
-    const result = await testTarget(kind, cfg, secrets);
+    const result = await testTarget(kind, cfg, resolved.secrets);
     recordTargetActivity(Number.isInteger(id) ? id : undefined, result, 'test');
     sendJson(res, 200, result);
     return;
@@ -644,66 +595,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // /api/actions/targets and /api/actions/targets/:id
-  if (parts[1] === 'actions' && parts[2] === 'targets') {
-    if (method === 'GET' && parts.length === 3) {
-      sendJson(res, 200, store.listActionTargets().map(publicTarget));
-      return;
-    }
-    if (method === 'POST' && parts.length === 3) {
-      const body = await readJsonBody(req);
-      const name = cleanString(body?.name, 100);
-      if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
-      const kind = body?.kind;
-      if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'winrm', 'k8s', or 'http'"); return; }
-      const cfg = parseInfraConfig(kind, body.config);
-      if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
-      const secretEnc = mergeSecrets(secretFieldsFor(kind, cfg), null, body.secrets);
-      if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
-      const created = store.createActionTarget({
-        name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc,
-        enabled: body.enabled === undefined || body.enabled ? 1 : 0
-      });
-      void checkTargetNow(created.id);
-      sendJson(res, 201, publicTarget(created));
-      return;
-    }
-    if (parts.length === 4) {
-      const id = Number(parts[3]);
-      const existing = Number.isInteger(id) ? store.getActionTarget(id) : undefined;
-      if (!existing) { sendError(res, 404, 'target not found'); return; }
-
-      if (method === 'PUT') {
-        const body = await readJsonBody(req);
-        const name = cleanString(body?.name, 100);
-        if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
-        const kind = body?.kind;
-        if (!KIND_CONFIG_FIELDS[kind]) { sendError(res, 400, "kind must be 'ssh', 'winrm', 'k8s', or 'http'"); return; }
-        const cfg = parseInfraConfig(kind, body.config);
-        if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
-        // Changing kind invalidates old secrets (different field set). Changing
-        // the restore method narrows the list the same way, so a credential the
-        // restore no longer connects with is dropped rather than left encrypted.
-        const baseEnc = kind === existing.kind ? existing.secret_enc : null;
-        const secretEnc = mergeSecrets(secretFieldsFor(kind, cfg), baseEnc, body.secrets);
-        if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
-        const updated = store.updateActionTarget(id, {
-          name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc,
-          enabled: body.enabled === undefined || body.enabled ? 1 : 0
-        });
-        void checkTargetNow(updated.id);
-        sendJson(res, 200, publicTarget(updated));
-        return;
-      }
-      if (method === 'DELETE') {
-        store.deleteActionTarget(id);
-        clearTargetActivity(id);
-        sendJson(res, 200, { deleted: id });
-        return;
-      }
-    }
-  }
-
   // POST /api/actions/groups/:id/run — runs the whole action group now, outside any
   // Flatline group or grace period. Real execution; the UI confirms first.
   if (parts[1] === 'actions' && parts[2] === 'groups' && parts.length === 5 && parts[4] === 'run' && method === 'POST') {
@@ -736,40 +627,6 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // /api/actions/groups and /api/actions/groups/:id
-  if (parts[1] === 'actions' && parts[2] === 'groups') {
-    if (method === 'GET' && parts.length === 3) {
-      sendJson(res, 200, store.listActionGroups());
-      return;
-    }
-    if (method === 'POST' && parts.length === 3) {
-      const body = await readJsonBody(req);
-      const input = parseActionGroupInput(body);
-      if (typeof input === 'string') { sendError(res, 400, input); return; }
-      const created = tryWrite(res, () => store.createActionGroup(input));
-      if (created) sendJson(res, 201, created);
-      return;
-    }
-    if (parts.length === 4) {
-      const id = Number(parts[3]);
-      const existing = Number.isInteger(id) ? store.getActionGroup(id) : undefined;
-      if (!existing) { sendError(res, 404, 'group not found'); return; }
-
-      if (method === 'PUT') {
-        const input = parseActionGroupInput(await readJsonBody(req));
-        if (typeof input === 'string') { sendError(res, 400, input); return; }
-        const updated = tryWrite(res, () => store.updateActionGroup(id, input));
-        if (updated) sendJson(res, 200, updated);
-        return;
-      }
-      if (method === 'DELETE') {
-        store.deleteActionGroup(id);
-        sendJson(res, 200, { deleted: id });
-        return;
-      }
-    }
-  }
-
   // POST /api/relays/test — prove a relay's credentials/reachability. The same
   // safe connectivity check the action targets use; it never runs the wake
   // command, which would actually power a machine on.
@@ -780,88 +637,22 @@ async function handleApi(req, res, url) {
     const cfg = parseRelayConfig(kind, body.config);
     if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
 
-    // A saved relay keeps its stored credentials when the form leaves them
-    // blank; an unsaved draft can only use what was submitted.
     const id = Number(body.id);
-    let secrets;
-    if (Number.isInteger(id)) {
-      const existing = store.getRelay(id);
+    const isSaved = Number.isInteger(id);
+    let existing;
+    if (isSaved) {
+      existing = store.getRelay(id);
       if (!existing) { sendError(res, 404, 'relay not found'); return; }
-      const merged = mergeSecrets(RELAY_SECRET_FIELDS[kind], kind === existing.kind ? existing.secret_enc : null, body.secrets);
-      if (typeof merged === 'string' && !merged.startsWith('v1:')) { sendError(res, 400, merged); return; }
-      secrets = decryptSecrets(merged);
-    } else {
-      secrets = pickSecrets(RELAY_SECRET_FIELDS[kind], body.secrets);
-      if (typeof secrets === 'string') { sendError(res, 400, secrets); return; }
     }
+    const resolved = resolveSecrets(
+      RELAY_SECRET_FIELDS[kind],
+      existing && kind === existing.kind ? existing.secret_enc : null,
+      body.secrets, isSaved
+    );
+    if (resolved.error) { sendError(res, 400, resolved.error); return; }
 
-    sendJson(res, 200, await testTarget(kind, cfg, secrets));
+    sendJson(res, 200, await testTarget(kind, cfg, resolved.secrets));
     return;
-  }
-
-  // /api/relays and /api/relays/:id
-  if (parts[1] === 'relays') {
-    if (method === 'GET' && parts.length === 2) {
-      sendJson(res, 200, store.listRelays().map(publicRelay));
-      return;
-    }
-    if (method === 'POST' && parts.length === 2) {
-      const body = await readJsonBody(req);
-      const name = cleanString(body?.name, 100);
-      if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
-      const kind = body?.kind;
-      if (!RELAY_KINDS.includes(kind)) { sendError(res, 400, "kind must be 'ssh' or 'winrm'"); return; }
-      const cfg = parseRelayConfig(kind, body.config);
-      if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
-      const wake = parseWakeCommand(body?.wake_command);
-      if (wake.error) { sendError(res, 400, wake.error); return; }
-      const net = parseRelayNetwork(body?.network);
-      if (net.error) { sendError(res, 400, net.error); return; }
-      const secretEnc = mergeSecrets(RELAY_SECRET_FIELDS[kind], null, body.secrets);
-      if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
-
-      const created = store.createRelay({
-        name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc, wake_command: wake.command,
-        network: net.network,
-        enabled: body.enabled === undefined || body.enabled ? 1 : 0
-      });
-      sendJson(res, 201, publicRelay(created));
-      return;
-    }
-    if (parts.length === 3) {
-      const id = Number(parts[2]);
-      const existing = Number.isInteger(id) ? store.getRelay(id) : undefined;
-      if (!existing) { sendError(res, 404, 'relay not found'); return; }
-
-      if (method === 'PUT') {
-        const body = await readJsonBody(req);
-        const name = cleanString(body?.name, 100);
-        if (!name) { sendError(res, 400, 'name is required (max 100 chars)'); return; }
-        const kind = body?.kind;
-        if (!RELAY_KINDS.includes(kind)) { sendError(res, 400, "kind must be 'ssh' or 'winrm'"); return; }
-        const cfg = parseRelayConfig(kind, body.config);
-        if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
-        const wake = parseWakeCommand(body?.wake_command);
-        if (wake.error) { sendError(res, 400, wake.error); return; }
-        const net = parseRelayNetwork(body?.network);
-        if (net.error) { sendError(res, 400, net.error); return; }
-        // Changing kind invalidates the old secrets (different field set).
-        const baseEnc = kind === existing.kind ? existing.secret_enc : null;
-        const secretEnc = mergeSecrets(RELAY_SECRET_FIELDS[kind], baseEnc, body.secrets);
-        if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) { sendError(res, 400, secretEnc); return; }
-
-        sendJson(res, 200, publicRelay(store.updateRelay(id, {
-          name, kind, config: JSON.stringify(cfg), secret_enc: secretEnc, wake_command: wake.command, network: net.network,
-          enabled: body.enabled === undefined || body.enabled ? 1 : 0
-        })));
-        return;
-      }
-      if (method === 'DELETE') {
-        store.deleteRelay(id);
-        sendJson(res, 200, { deleted: id });
-        return;
-      }
-    }
   }
 
   // GET /api/events?limit=50
@@ -981,57 +772,25 @@ async function handleApi(req, res, url) {
     const cfg = parseChannelConfig(kind, body.config, body.config?.events, body.config);
     if (typeof cfg === 'string') { sendError(res, 400, cfg); return; }
 
-    let secrets;
     const id = Number(body.id);
-    if (Number.isInteger(id)) {
-      const existing = store.getNotificationChannel(id);
+    const isSaved = Number.isInteger(id);
+    let existing;
+    if (isSaved) {
+      existing = store.getNotificationChannel(id);
       if (!existing) { sendError(res, 404, 'channel not found'); return; }
-      const baseEnc = kind === existing.kind ? existing.secret_enc : null;
-      const merged = mergeSecrets(NOTIFY_SECRET_FIELDS[kind], baseEnc, body.secrets);
-      if (typeof merged === 'string' && !merged.startsWith('v1:')) { sendError(res, 400, merged); return; }
-      secrets = decryptSecrets(merged);
-    } else {
-      secrets = pickSecrets(NOTIFY_SECRET_FIELDS[kind], body.secrets);
-      if (typeof secrets === 'string') { sendError(res, 400, secrets); return; }
     }
-    const secretErr = checkChannelSecrets(kind, cfg, secrets);
+    const resolved = resolveSecrets(
+      NOTIFY_SECRET_FIELDS[kind],
+      existing && kind === existing.kind ? existing.secret_enc : null,
+      body.secrets, isSaved
+    );
+    if (resolved.error) { sendError(res, 400, resolved.error); return; }
+
+    const secretErr = checkChannelSecrets(kind, cfg, resolved.secrets);
     if (secretErr) { sendError(res, 400, secretErr); return; }
 
-    sendJson(res, 200, await sendTest(kind, cfg, secrets, Number.isInteger(id) ? id : undefined));
+    sendJson(res, 200, await sendTest(kind, cfg, resolved.secrets, isSaved ? id : undefined));
     return;
-  }
-
-  // /api/notifications and /api/notifications/:id
-  if (parts[1] === 'notifications') {
-    if (method === 'GET' && parts.length === 2) {
-      sendJson(res, 200, store.listNotificationChannels().map(publicChannel));
-      return;
-    }
-    if (method === 'POST' && parts.length === 2) {
-      const body = await readJsonBody(req);
-      const input = parseNotificationInput(body, null);
-      if (typeof input === 'string') { sendError(res, 400, input); return; }
-      sendJson(res, 201, publicChannel(store.createNotificationChannel(input)));
-      return;
-    }
-    if (parts.length === 3) {
-      const id = Number(parts[2]);
-      const existing = Number.isInteger(id) ? store.getNotificationChannel(id) : undefined;
-      if (!existing) { sendError(res, 404, 'channel not found'); return; }
-
-      if (method === 'PUT') {
-        const input = parseNotificationInput(await readJsonBody(req), existing);
-        if (typeof input === 'string') { sendError(res, 400, input); return; }
-        sendJson(res, 200, publicChannel(store.updateNotificationChannel(id, input)));
-        return;
-      }
-      if (method === 'DELETE') {
-        store.deleteNotificationChannel(id);
-        clearChannelResult(id);
-        sendJson(res, 200, { deleted: id });
-        return;
-      }
-    }
   }
 
   // ---- site security config (password + allowed hosts) ----
@@ -1140,6 +899,11 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // List/create/update/delete for the plain CRUD resources. Last, so every
+  // sub-route above (/test, /:id/run, /:id/restore, …) keeps precedence — each
+  // of those returns before reaching here.
+  if (await handleResource(req, res, method, url.pathname)) return;
+
   sendError(res, 404, 'not found');
 }
 
@@ -1236,17 +1000,81 @@ function parseNotificationInput(body, existing) {
 
   // Changing kind invalidates old secrets (different field set).
   const baseEnc = existing && kind === existing.kind ? existing.secret_enc : null;
-  const secretEnc = mergeSecrets(NOTIFY_SECRET_FIELDS[kind], baseEnc, body.secrets);
-  if (typeof secretEnc === 'string' && !secretEnc.startsWith('v1:')) return secretEnc;
+  const merged = mergeSecrets(NOTIFY_SECRET_FIELDS[kind], baseEnc, body.secrets);
+  if (merged.error) return merged.error;
 
-  const secretErr = checkChannelSecrets(kind, cfg, decryptSecrets(secretEnc));
+  const secretErr = checkChannelSecrets(kind, cfg, decryptSecrets(merged.enc));
   if (secretErr) return secretErr;
 
   return {
     name,
     kind,
     config: JSON.stringify(cfg),
-    secret_enc: secretEnc,
+    secret_enc: merged.enc,
+    enabled: body.enabled === undefined || body.enabled ? 1 : 0
+  };
+}
+
+/** Validates an action-target payload; returns row values or a string error. */
+function parseActionTargetInput(body, existing) {
+  if (typeof body !== 'object' || body === null) return 'invalid body';
+
+  const name = cleanString(body.name, 100);
+  if (!name) return 'name is required (max 100 chars)';
+
+  const kind = body.kind;
+  if (!KIND_CONFIG_FIELDS[kind]) return "kind must be 'ssh', 'winrm', 'k8s', or 'http'";
+
+  const cfg = parseInfraConfig(kind, body.config);
+  if (typeof cfg === 'string') return cfg;
+
+  // Changing kind invalidates old secrets (different field set). Changing the
+  // restore method narrows the list the same way, so a credential the restore no
+  // longer connects with is dropped rather than left encrypted.
+  const baseEnc = existing && kind === existing.kind ? existing.secret_enc : null;
+  const merged = mergeSecrets(secretFieldsFor(kind, cfg), baseEnc, body.secrets);
+  if (merged.error) return merged.error;
+
+  return {
+    name,
+    kind,
+    config: JSON.stringify(cfg),
+    secret_enc: merged.enc,
+    enabled: body.enabled === undefined || body.enabled ? 1 : 0
+  };
+}
+
+/** Validates a wake-on-lan relay payload; returns row values or a string error. */
+function parseRelayInput(body, existing) {
+  if (typeof body !== 'object' || body === null) return 'invalid body';
+
+  const name = cleanString(body.name, 100);
+  if (!name) return 'name is required (max 100 chars)';
+
+  const kind = body.kind;
+  if (!RELAY_KINDS.includes(kind)) return "kind must be 'ssh' or 'winrm'";
+
+  const cfg = parseRelayConfig(kind, body.config);
+  if (typeof cfg === 'string') return cfg;
+
+  const wake = parseWakeCommand(body.wake_command);
+  if (wake.error) return wake.error;
+
+  const net = parseRelayNetwork(body.network);
+  if (net.error) return net.error;
+
+  // Changing kind invalidates the old secrets (different field set).
+  const baseEnc = existing && kind === existing.kind ? existing.secret_enc : null;
+  const merged = mergeSecrets(RELAY_SECRET_FIELDS[kind], baseEnc, body.secrets);
+  if (merged.error) return merged.error;
+
+  return {
+    name,
+    kind,
+    config: JSON.stringify(cfg),
+    secret_enc: merged.enc,
+    wake_command: wake.command,
+    network: net.network,
     enabled: body.enabled === undefined || body.enabled ? 1 : 0
   };
 }
@@ -1265,6 +1093,140 @@ function publicChannel(c) {
   };
 }
 
+// ---------- generic CRUD resources ----------
+
+/**
+ * The six resources that are pure CRUD. They differ only in their store
+ * functions, their validator, whether a duplicate name is a 400 rather than a
+ * crash, and a couple of side effects — so they are described here rather than
+ * written out six times.
+ *
+ * Keyed by path prefix instead of a single path segment because the depth
+ * varies: /api/endpoints/:id has one segment ahead of the id, while
+ * /api/actions/targets/:id has two.
+ *
+ * `parse` returns row values or a string error, and takes the existing row on
+ * update (null on create) — several validators need it to decide whether stored
+ * credentials still apply. `guardUnique` is set for the two tables that declare
+ * `name TEXT NOT NULL UNIQUE` (flatline_groups, action_groups).
+ */
+const RESOURCES = {
+  endpoints: {
+    notFound: 'endpoint not found',
+    list: store.listEndpoints, get: store.getEndpoint,
+    create: store.createEndpoint, update: store.updateEndpoint, remove: store.deleteEndpoint,
+    parse: parseEndpointInput,
+    // The poller's schedule is built from the endpoint set, so every write to it
+    // has to rebuild the timers — a delete included.
+    afterWrite: reschedule,
+    afterDelete: reschedule
+  },
+  groups: {
+    notFound: 'group not found',
+    list: store.listFlatlineGroups, get: store.getFlatlineGroup,
+    create: store.createFlatlineGroup, update: store.updateFlatlineGroup, remove: store.deleteFlatlineGroup,
+    parse: parseFlatlineGroupInput,
+    guardUnique: true
+  },
+  'actions/targets': {
+    notFound: 'target not found',
+    list: store.listActionTargets, get: store.getActionTarget,
+    create: store.createActionTarget, update: store.updateActionTarget, remove: store.deleteActionTarget,
+    parse: parseActionTargetInput,
+    public: publicTarget,
+    // A new or edited target gets its connectivity dot straight away rather than
+    // waiting out the background poll.
+    afterWrite: (row) => void checkTargetNow(row.id),
+    afterDelete: clearTargetActivity
+  },
+  'actions/groups': {
+    notFound: 'group not found',
+    list: store.listActionGroups, get: store.getActionGroup,
+    create: store.createActionGroup, update: store.updateActionGroup, remove: store.deleteActionGroup,
+    parse: parseActionGroupInput,
+    guardUnique: true
+  },
+  relays: {
+    notFound: 'relay not found',
+    list: store.listRelays, get: store.getRelay,
+    create: store.createRelay, update: store.updateRelay, remove: store.deleteRelay,
+    parse: parseRelayInput,
+    public: publicRelay
+  },
+  notifications: {
+    notFound: 'channel not found',
+    list: store.listNotificationChannels, get: store.getNotificationChannel,
+    create: store.createNotificationChannel, update: store.updateNotificationChannel,
+    remove: store.deleteNotificationChannel,
+    parse: parseNotificationInput,
+    public: publicChannel,
+    afterDelete: clearChannelResult
+  }
+};
+
+/**
+ * List/create/update/delete for whichever resource the path names. Returns true
+ * when it answered the request and false when it did not, so the caller can fall
+ * through to its 404 — which is also what an unsupported method on a real
+ * resource does, matching the hand-written routes this replaced.
+ */
+async function handleResource(req, res, method, pathname) {
+  const rest = pathname.slice('/api/'.length);
+  const found = Object.entries(RESOURCES)
+    .find(([prefix]) => rest === prefix || rest.startsWith(`${prefix}/`));
+  if (!found) return false;
+
+  const [prefix, r] = found;
+  const tail = rest === prefix ? '' : rest.slice(prefix.length + 1);
+  // Anything deeper is a sub-route (/:id/run, /:id/restore), matched earlier.
+  if (tail.includes('/')) return false;
+  const toPublic = r.public ?? ((row) => row);
+
+  // A duplicate name is a user error on the two tables that forbid one; on the
+  // rest it cannot happen, and a raw throw would be the honest answer.
+  const write = (fn) => (r.guardUnique ? tryWrite(res, fn) : fn());
+
+  if (tail === '') {
+    if (method === 'GET') {
+      sendJson(res, 200, r.list().map(toPublic));
+      return true;
+    }
+    if (method === 'POST') {
+      const input = r.parse(await readJsonBody(req), null);
+      if (typeof input === 'string') { sendError(res, 400, input); return true; }
+      const created = write(() => r.create(input));
+      if (created) {
+        r.afterWrite?.(created);
+        sendJson(res, 201, toPublic(created));
+      }
+      return true;
+    }
+    return false;
+  }
+
+  const id = Number(tail);
+  const existing = Number.isInteger(id) ? r.get(id) : undefined;
+  if (!existing) { sendError(res, 404, r.notFound); return true; }
+
+  if (method === 'PUT') {
+    const input = r.parse(await readJsonBody(req), existing);
+    if (typeof input === 'string') { sendError(res, 400, input); return true; }
+    const updated = write(() => r.update(id, input));
+    if (updated) {
+      r.afterWrite?.(updated);
+      sendJson(res, 200, toPublic(updated));
+    }
+    return true;
+  }
+  if (method === 'DELETE') {
+    r.remove(id);
+    r.afterDelete?.(id);
+    sendJson(res, 200, { deleted: id });
+    return true;
+  }
+  return false;
+}
+
 // ---------- static files ----------
 
 const PAGE_ROUTES = {
@@ -1278,7 +1240,7 @@ const PAGE_ROUTES = {
 // Text assets are worth precompressing; PNG/ico are already compressed.
 const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
 
-// The public/ tree is small and never changes at runtime, so we read it once
+// The served tree is small and never changes at runtime, so we read it once
 // into memory at startup with a content-hash ETag and precomputed brotli+gzip
 // variants. Requests then get cheap 304s (no re-download on every page nav) and
 // the smallest encoding the client accepts — the latter matters over a VPN.
@@ -1287,12 +1249,13 @@ const STATIC_CACHE = buildStaticCache();
 
 function buildStaticCache() {
   const cache = new Map();
-  const walk = (dir) => {
+
+  const walk = (base, dir, urlPrefix) => {
     for (const name of readdirSync(dir)) {
       const abs = path.join(dir, name);
-      if (statSync(abs).isDirectory()) { walk(abs); continue; }
+      if (statSync(abs).isDirectory()) { walk(base, abs, urlPrefix); continue; }
       const data = readFileSync(abs);
-      const key = '/' + path.relative(PUBLIC_DIR, abs).split(path.sep).join('/');
+      const key = urlPrefix + '/' + path.relative(base, abs).split(path.sep).join('/');
       const ext = path.extname(abs).toLowerCase();
       const entry = {
         data,
@@ -1309,7 +1272,11 @@ function buildStaticCache() {
       cache.set(key, entry);
     }
   };
-  walk(PUBLIC_DIR);
+
+  walk(PUBLIC_DIR, PUBLIC_DIR, '');
+  // shared/ is imported by both sides: Node reads it off disk, the browser needs
+  // it over HTTP, so it is served at /shared/* alongside the public tree.
+  walk(SHARED_DIR, SHARED_DIR, '/shared');
   return cache;
 }
 
