@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { fmtLatency, fmtUptime } from '../public/scripts/dom.js';
-import { hostInNetwork } from '../public/scripts/net.js';
+import { hostInNetwork } from '../shared/net.js';
 
 test('fmtLatency formats by magnitude', () => {
   assert.equal(fmtLatency(null), '—');

@@ -30,6 +30,22 @@ export function clear(node) {
     while (node.firstChild)
         node.removeChild(node.firstChild);
 }
+/**
+ * Shows the descendants of `root` whose `data-<attr>` names `value` and hides
+ * the rest — the one move every "which fields does this choice need?" toggle on
+ * the forms makes (target kind, SSH auth method, ntfy scheme, wake mode, …).
+ *
+ * The attribute may list several values separated by spaces
+ * (`data-http="bearer basic"`), for a field that more than one choice needs; a
+ * single value is just the one-element case, so both read the same here.
+ */
+export function toggleByData(root, attr, value) {
+    // data-ssh-auth -> dataset.sshAuth
+    const key = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    for (const node of root.querySelectorAll(`[data-${attr}]`)) {
+        node.style.display = node.dataset[key].split(' ').includes(value) ? '' : 'none';
+    }
+}
 /** Plain enabled/disabled label for things with no live health/state to show
  *  (Flatline groups, action groups) — just the on/off switch, no dot. */
 export function enabledPill(enabled) {

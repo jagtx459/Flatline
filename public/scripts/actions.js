@@ -1,12 +1,17 @@
 import {
-  listActionTargets, createActionTarget, updateActionTarget, deleteActionTarget, testActionTarget, runActionTarget,
-  restoreActionTarget, getRestoreStatus,
-  listActionGroups, createActionGroup, updateActionGroup, deleteActionGroup,
-  listGroups, updateGroup, listRelays
+  actionTargets, actionGroups, groups as flatlineGroupsApi, relays as relaysApi,
+  runActionTarget, restoreActionTarget, getRestoreStatus
 } from './api.js';
-import { el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, wireFileUpload, confirmDialog, alertDialog, initHelp } from './dom.js';
+import {
+  el, clear, fmtDateTime, enabledPill, initCollapsible, initDirtyNote, wireFileUpload,
+  confirmDialog, alertDialog, initHelp, toggleByData
+} from './dom.js';
+import {
+  initEntityForm, initSecretFields, renderTable, editDeleteButtons, actionsCell
+} from './crud.js';
 import { initHeaderAuth } from './header.js';
-import { hostInNetwork } from './net.js';
+import { hostInNetwork } from '/shared/net.js';
+import { RESTORE_SECRET_FIELDS } from '/shared/restoreSecrets.js';
 
 initHeaderAuth();
 initHelp();
@@ -28,11 +33,9 @@ const SECRET_INPUTS = {
   http: { token: 'http_token', password: 'http_password', login_password: 'http_login_password' }
 };
 
-/** The restore's own credentials, used only when it does not inherit the
- *  target's. One panel serves every kind, so the input names are the field
- *  names — no per-kind prefix to map through. */
-const RESTORE_SECRET_FIELDS = ['restore_password', 'restore_private_key', 'restore_passphrase',
-  'restore_sudo_password', 'restore_token', 'restore_kubeconfig'];
+// RESTORE_SECRET_FIELDS (imported above) is the restore's own credentials, used
+// only when it does not inherit the target's. One panel serves every kind, so
+// the input names are the field names — no per-kind prefix to map through.
 
 const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
 const DEFAULT_RESTORE_WAIT = 300;
@@ -57,11 +60,7 @@ function targetById(id) {
 // ---------- target form ----------
 
 const $form = document.getElementById('target-form');
-const $formTitle = document.getElementById('target-form-title');
 const $formError = document.getElementById('target-error');
-const $formSubmit = document.getElementById('target-submit');
-const $formCancel = document.getElementById('target-cancel');
-const $formReset = document.getElementById('target-reset');
 const $formTest = document.getElementById('target-test');
 const $formTestResult = document.getElementById('target-test-result');
 const $formSaveNote = document.getElementById('target-save-note');
@@ -83,20 +82,20 @@ const targetFormSection = initCollapsible('actions:target-form',
 initCollapsible('actions:restore',
   document.getElementById('restore-header'), document.getElementById('restore-body'));
 const targetDirty = initDirtyNote($form, document.getElementById('target-dirty'), $formSaveNote);
-
-let editingTargetId = null;
-/** Secret fields the user asked to clear on this edit. */
-let clearedSecrets = new Set();
+/** One Restore panel serves all four kinds, so its credentials sit outside every
+ *  .kind-section — hence unsectionedIsGlobal. */
+const targetSecrets = initSecretFields($form, {
+  sectionAttr: 'kind',
+  unsectionedIsGlobal: true,
+  onDirty: () => targetDirty.markDirty()
+});
 
 function field(name) {
   return $form.elements.namedItem(name);
 }
 
 function syncKindSections() {
-  const kind = $kind.value;
-  for (const section of $form.querySelectorAll('.kind-section')) {
-    section.style.display = section.dataset.kind === kind ? '' : 'none';
-  }
+  toggleByData($form, 'kind', $kind.value);
   syncHttpAuthFields();
   syncSshAuthFields();
   syncK8sAuthFields();
@@ -130,6 +129,8 @@ function syncRestoreFields() {
   document.getElementById('restore-connection').style.display =
     restoreKind !== 'none' && !inherits ? '' : 'none';
 
+  // Two axes here rather than one, so this stays a hand-rolled loop: a field
+  // shows only when its method AND that method's sub-auth both match.
   const authField = RESTORE_AUTH_FIELD[restoreKind];
   const auth = authField ? field(authField).value : null;
   for (const node of $form.querySelectorAll('[data-rk]')) {
@@ -145,10 +146,7 @@ function syncRestoreFields() {
     field('restore_port').placeholder = restoreKind === 'ssh' ? '22' : '5985';
   }
 
-  const wakeMode = field('wake_mode').value;
-  for (const node of $form.querySelectorAll('[data-wake-mode]')) {
-    node.style.display = node.dataset.wakeMode === wakeMode ? '' : 'none';
-  }
+  toggleByData($form, 'wake-mode', field('wake_mode').value);
   renderRelayWarning();
   renderRestoreSummary();
 }
@@ -254,42 +252,26 @@ function renderRelayOptions() {
 }
 
 function syncHttpAuthFields() {
-  const scheme = $httpScheme.value;
-  for (const node of $form.querySelectorAll('[data-http]')) {
-    const schemes = node.dataset.http.split(' ');
-    node.style.display = schemes.includes(scheme) ? '' : 'none';
-  }
+  toggleByData($form, 'http', $httpScheme.value);
   syncHttpTokenFields();
 }
 
 /** Inside the login block, the one field that names where the token is — a path
  *  into the body, a response header, or a cookie. */
 function syncHttpTokenFields() {
-  const source = field('http_token_source').value;
-  for (const node of $form.querySelectorAll('[data-token-source]')) {
-    node.style.display = node.dataset.tokenSource === source ? '' : 'none';
-  }
+  toggleByData($form, 'token-source', field('http_token_source').value);
 }
 
 function syncSshAuthFields() {
-  const method = $sshAuthMethod.value;
-  for (const node of $form.querySelectorAll('[data-ssh-auth]')) {
-    node.style.display = node.dataset.sshAuth === method ? '' : 'none';
-  }
+  toggleByData($form, 'ssh-auth', $sshAuthMethod.value);
 }
 
 function syncK8sAuthFields() {
-  const method = $k8sAuthMethod.value;
-  for (const node of $form.querySelectorAll('[data-k8s-auth]')) {
-    node.style.display = node.dataset.k8sAuth === method ? '' : 'none';
-  }
+  toggleByData($form, 'k8s-auth', $k8sAuthMethod.value);
 }
 
 function syncK8sActionFields() {
-  const action = $k8sAction.value;
-  for (const node of $form.querySelectorAll('[data-k8s-action]')) {
-    node.style.display = node.dataset.k8sAction === action ? '' : 'none';
-  }
+  toggleByData($form, 'k8s-action', $k8sAction.value);
 }
 
 $kind.addEventListener('change', syncKindSections);
@@ -335,37 +317,6 @@ wireFileUpload(
   document.getElementById('restore-kubeconfig-upload'),
   $form.elements.namedItem('restore_kubeconfig')
 );
-
-/** Shows "stored" state + a clear toggle next to each secret input. A restore's
- *  credentials sit outside the kind-sections, since one Restore panel serves
- *  every kind — so only a label inside a kind-section is scoped to it. */
-function renderSecretStates(kind, storedFields) {
-  clearedSecrets = new Set();
-  for (const label of $form.querySelectorAll('label.secret')) {
-    const state = label.querySelector('.secret-state');
-    clear(state);
-    const name = label.dataset.secret;
-    const section = label.closest('.kind-section');
-    const isStored = storedFields.includes(name) && (!section || section.dataset.kind === kind);
-    if (!isStored) continue;
-
-    const clearBtn = el('button', { type: 'button', class: 'link-btn' }, 'clear');
-    clearBtn.addEventListener('click', () => {
-      if (clearedSecrets.has(name)) {
-        clearedSecrets.delete(name);
-        clearBtn.textContent = 'clear';
-        hint.textContent = '· stored ✓ (leave blank to keep) ';
-      } else {
-        clearedSecrets.add(name);
-        clearBtn.textContent = 'undo';
-        hint.textContent = '· will be removed on save ';
-      }
-      targetDirty.markDirty();
-    });
-    const hint = el('span', {}, '· stored ✓ (leave blank to keep) ');
-    state.append(hint, clearBtn);
-  }
-}
 
 /**
  * The Restore panel, which is the same for every kind of target. Everything is
@@ -504,36 +455,15 @@ function collectConfig(kind) {
 
 /** The target's own credentials plus the restore's, if it has any. Both are
  *  sent whatever the restore method is; the server keeps only the fields that
- *  method actually connects with. */
-function collectSecrets(kind) {
-  const secrets = {};
+ *  method actually connects with. The restore's inputs are named for the fields
+ *  themselves, so they map to themselves. */
+function targetSecretInputs(kind) {
   const inputs = { ...SECRET_INPUTS[kind] };
   for (const name of RESTORE_SECRET_FIELDS) inputs[name] = name;
-  for (const [secretName, inputName] of Object.entries(inputs)) {
-    const v = field(inputName).value;
-    if (clearedSecrets.has(secretName)) secrets[secretName] = null;
-    else if (v) secrets[secretName] = v;
-  }
-  return secrets;
-}
-
-function resetTargetForm() {
-  editingTargetId = null;
-  $form.reset();
-  $formTitle.textContent = 'Add action target';
-  $formSubmit.textContent = 'Add target';
-  $formCancel.style.display = 'none';
-  $formReset.style.display = '';
-  $formError.textContent = '';
-  $formSaveNote.textContent = '';
-  targetDirty.markClean();
-  renderSecretStates('none', []);
-  syncKindSections();
+  return inputs;
 }
 
 function fillTargetForm(t) {
-  resetTargetForm();
-  editingTargetId = t.id;
   field('name').value = t.name;
   $kind.value = t.kind;
   field('enabled').checked = !!t.enabled;
@@ -591,50 +521,43 @@ function fillTargetForm(t) {
   }
   fillRestore(c);
 
-  renderSecretStates(t.kind, t.secret_fields);
+  targetSecrets.render(t.kind, t.secret_fields);
   syncKindSections();
-  $formTitle.textContent = `Edit target: ${t.name}`;
-  $formSubmit.textContent = 'Save changes';
-  $formCancel.style.display = '';
-  $formReset.style.display = 'none';
-  targetFormSection.expand();
-  igroupFormSection.collapse(); // one edit form open at a time
-  $form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-$formCancel.addEventListener('click', (e) => {
-  e.preventDefault();
-  resetTargetForm();
-});
-
-$formReset.addEventListener('click', () => resetTargetForm());
-
-$form.addEventListener('submit', (e) => {
-  e.preventDefault();
-  void (async () => {
+const targetForm = initEntityForm({
+  form: $form,
+  els: {
+    title: document.getElementById('target-form-title'),
+    error: $formError,
+    submit: document.getElementById('target-submit'),
+    cancel: document.getElementById('target-cancel'),
+    reset: document.getElementById('target-reset'),
+    saveNote: $formSaveNote
+  },
+  section: targetFormSection,
+  siblingSection: () => igroupFormSection,
+  dirty: targetDirty,
+  noun: 'action target',
+  itemLabel: 'target',
+  api: actionTargets,
+  reset: () => {
+    targetSecrets.render('none', []);
+    syncKindSections();
+  },
+  fill: fillTargetForm,
+  collect: () => {
     const kind = $kind.value;
-    const input = {
+    return {
       name: field('name').value,
       kind,
       config: collectConfig(kind),
-      secrets: collectSecrets(kind),
+      secrets: targetSecrets.collect(targetSecretInputs(kind)),
       enabled: field('enabled').checked
     };
-    const wasEditing = editingTargetId != null;
-    try {
-      const saved = wasEditing ? await updateActionTarget(editingTargetId, input) : await createActionTarget(input);
-      $formError.textContent = '';
-      await refreshAll();
-      if (wasEditing) {
-        fillTargetForm(targetById(saved.id) ?? saved);
-        $formSaveNote.textContent = 'Saved ✓';
-      } else {
-        resetTargetForm();
-      }
-    } catch (err) {
-      $formError.textContent = err.message;
-    }
-  })();
+  },
+  findSaved: targetById,
+  refresh: refreshAll
 });
 
 $formTest.addEventListener('click', () => {
@@ -647,11 +570,11 @@ $formTest.addEventListener('click', () => {
       : $httpScheme.value === 'login' ? 'Logging in…' : 'Sending test request…';
     $formError.textContent = '';
     try {
-      const result = await testActionTarget({
-        id: editingTargetId ?? undefined,
+      const result = await actionTargets.test({
+        id: targetForm.editingId ?? undefined,
         kind,
         config: collectConfig(kind),
-        secrets: collectSecrets(kind)
+        secrets: targetSecrets.collect(targetSecretInputs(kind))
       });
       $formTestResult.className = result.ok ? 'note' : 'error';
       $formTestResult.textContent = `${result.ok ? '✓' : '✕'} ${result.message}`;
@@ -794,154 +717,132 @@ function hasRestore(t) {
 }
 
 function renderTargetTable() {
-  clear($targetTable);
-  if (targets.length === 0) {
-    $targetTable.append(el('div', { class: 'empty' },
-      el('div', { class: 'big' }, 'No action targets yet'),
-      el('div', {}, 'Add the machines and services to act on using the form below.')));
-    return;
-  }
-
-  const tbody = el('tbody', {});
-  for (const t of targets) {
-    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
-    editBtn.addEventListener('click', () => fillTargetForm(t));
-    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
-    delBtn.addEventListener('click', () => {
-      void (async () => {
-        const ok = await confirmDialog({
-          title: 'Delete action target?',
-          body: `"${t.name}" and its stored credentials will be permanently deleted. Any action group step that runs it will stop working.`,
-          confirmText: 'Delete target',
-          danger: true
-        });
-        if (!ok) return;
-        await deleteActionTarget(t.id);
-        if (editingTargetId === t.id) resetTargetForm();
-        await refreshAll();
-      })();
-    });
-
-    const runBtn = el('button', { class: 'btn danger-soft small' }, 'Run');
-    runBtn.addEventListener('click', () => {
-      void (async () => {
-        const whatRuns = t.kind === 'http'
-          ? `This sends the real request configured for "${t.name}" immediately.`
-          : `This runs the real command configured for "${t.name}" immediately.`;
-        const ok = await confirmDialog({
-          title: 'Run this action now?',
-          body: [whatRuns, 'This runs the action selected and CANNOT be undone!'],
-          confirmText: 'Run now',
-          danger: true
-        });
-        if (!ok) return;
-        runBtn.disabled = true;
-        try {
-          const result = await runActionTarget(t.id);
-          await alertDialog({ title: result.ok ? 'Action completed' : 'Action failed', body: result.message });
-        } catch (err) {
-          await alertDialog({ title: 'Action failed', body: err.message });
-        } finally {
-          await refreshAll();
-        }
-      })();
-    });
-
-    const restoreBtn = el('button', { class: 'btn ghost small' }, t.restore_progress ? 'Restoring…' : 'Restore');
-    if (t.restore_progress) {
-      // Already coming back — starting a second pass would send the restore
-      // request twice, and it need not be idempotent. The server refuses it
-      // too; this is so the button never offers it.
-      restoreBtn.disabled = true;
-      restoreBtn.title = `Restore in progress: ${t.restore_progress.phase}`;
-    } else if (!hasRestore(t)) {
-      restoreBtn.disabled = true;
-      restoreBtn.title = 'No restore configured for this target — set one up in the edit form';
-    } else {
-      const steps = restoreSteps(t);
-      restoreBtn.title = [
-        t.config.auto_restore ? 'Auto-restore is ON for this target.' : null,
-        ...steps
-      ].filter(Boolean).join('\n');
-      restoreBtn.addEventListener('click', () => {
-        void (async () => {
-          const ok = await confirmDialog({
-            title: 'Run restore now?',
-            body: [`This runs the restore sequence for "${t.name}" immediately:`, ...steps],
-            confirmText: 'Restore now'
-          });
-          if (!ok) return;
-          restoreBtn.disabled = true;
-          try {
-            const result = await restoreActionTarget(t.id);
-            // The ssh/winrm sequence waits for the host to boot, so the server
-            // answers as soon as it starts — the outcome shows up in Last activity.
-            await alertDialog({
-              title: result.started ? 'Restore started' : result.ok ? 'Restore completed' : 'Restore failed',
-              body: result.message
-            });
-          } catch (err) {
-            await alertDialog({ title: 'Restore failed', body: err.message });
-          } finally {
-            await refreshAll();
-          }
-        })();
-      });
-    }
-
-    const credentials = t.secret_fields.length ? `🔒 ${t.secret_fields.join(', ')}` : '—';
-
-    tbody.append(el('tr', {},
-      el('td', {}, targetStatusPill(t)),
-      el('td', { class: 'truncate', title: t.name }, el('strong', {}, t.name)),
-      el('td', { class: 'truncate' }, KIND_LABELS[t.kind] ?? t.kind),
-      el('td', { class: 'target-cell', title: targetConnection(t) }, targetConnection(t)),
-      el('td', { class: 'target-cell', title: targetAction(t) }, targetAction(t)),
-      el('td', { class: 'truncate', title: credentials }, credentials),
-      targetActivityCell(t),
-      el('td', { class: 'actions-cell' }, editBtn, delBtn, runBtn, restoreBtn)
-    ));
-  }
-
-  const table = el('table', { class: 'endpoints target-table' });
-  table.append(
-    el('colgroup', {},
-      el('col', { style: 'width:9%' }), el('col', { style: 'width:15%' }), el('col', { style: 'width:8%' }),
-      el('col', { style: 'width:15%' }), el('col', { style: 'width:15%' }), el('col', { style: 'width:11%' }),
-      el('col', { style: 'width:11%' }), el('col', { style: 'width:16%' })),
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Name'), el('th', {}, 'Type'), el('th', {}, 'Connection'),
-      el('th', {}, 'Runs on trigger'), el('th', {}, 'Credentials'), el('th', {}, 'Last activity'), el('th', {}, ''))),
-    tbody
-  );
-  $targetTable.append(table);
+  renderTable($targetTable, {
+    className: 'endpoints target-table',
+    colWidths: ['9%', '15%', '8%', '15%', '15%', '11%', '11%', '16%'],
+    headers: ['Status', 'Name', 'Type', 'Connection', 'Runs on trigger', 'Credentials', 'Last activity', ''],
+    rows: targets,
+    empty: ['No action targets yet', 'Add the machines and services to act on using the form below.'],
+    cells: (t) => targetRowCells(t)
+  });
 
   // Whatever put a restore on screen — this page starting one, an auto-restore
   // the watcher started, or another browser — keeps the phase line moving.
   if (targets.some((t) => t.restore_progress)) scheduleRestorePoll();
 }
 
+function targetRowCells(t) {
+  const [editBtn, delBtn] = editDeleteButtons({
+    onEdit: () => targetForm.toEditMode(t),
+    confirm: {
+      title: 'Delete action target?',
+      body: `"${t.name}" and its stored credentials will be permanently deleted. Any action group step that runs it will stop working.`,
+      confirmText: 'Delete target'
+    },
+    onDelete: async () => {
+      await actionTargets.remove(t.id);
+      targetForm.forgetIfEditing(t.id);
+      await refreshAll();
+    }
+  });
+
+  const runBtn = el('button', { class: 'btn danger-soft small' }, 'Run');
+  runBtn.addEventListener('click', () => {
+    void (async () => {
+      const whatRuns = t.kind === 'http'
+        ? `This sends the real request configured for "${t.name}" immediately.`
+        : `This runs the real command configured for "${t.name}" immediately.`;
+      const ok = await confirmDialog({
+        title: 'Run this action now?',
+        body: [whatRuns, 'This runs the action selected and CANNOT be undone!'],
+        confirmText: 'Run now',
+        danger: true
+      });
+      if (!ok) return;
+      runBtn.disabled = true;
+      try {
+        const result = await runActionTarget(t.id);
+        await alertDialog({ title: result.ok ? 'Action completed' : 'Action failed', body: result.message });
+      } catch (err) {
+        await alertDialog({ title: 'Action failed', body: err.message });
+      } finally {
+        await refreshAll();
+      }
+    })();
+  });
+
+  const restoreBtn = el('button', { class: 'btn ghost small' }, t.restore_progress ? 'Restoring…' : 'Restore');
+  if (t.restore_progress) {
+    // Already coming back — starting a second pass would send the restore
+    // request twice, and it need not be idempotent. The server refuses it
+    // too; this is so the button never offers it.
+    restoreBtn.disabled = true;
+    restoreBtn.title = `Restore in progress: ${t.restore_progress.phase}`;
+  } else if (!hasRestore(t)) {
+    restoreBtn.disabled = true;
+    restoreBtn.title = 'No restore configured for this target — set one up in the edit form';
+  } else {
+    const steps = restoreSteps(t);
+    restoreBtn.title = [
+      t.config.auto_restore ? 'Auto-restore is ON for this target.' : null,
+      ...steps
+    ].filter(Boolean).join('\n');
+    restoreBtn.addEventListener('click', () => {
+      void (async () => {
+        const ok = await confirmDialog({
+          title: 'Run restore now?',
+          body: [`This runs the restore sequence for "${t.name}" immediately:`, ...steps],
+          confirmText: 'Restore now'
+        });
+        if (!ok) return;
+        restoreBtn.disabled = true;
+        try {
+          const result = await restoreActionTarget(t.id);
+          // The ssh/winrm sequence waits for the host to boot, so the server
+          // answers as soon as it starts — the outcome shows up in Last activity.
+          await alertDialog({
+            title: result.started ? 'Restore started' : result.ok ? 'Restore completed' : 'Restore failed',
+            body: result.message
+          });
+        } catch (err) {
+          await alertDialog({ title: 'Restore failed', body: err.message });
+        } finally {
+          await refreshAll();
+        }
+      })();
+    });
+  }
+
+  const credentials = t.secret_fields.length ? `🔒 ${t.secret_fields.join(', ')}` : '—';
+
+  return [
+    el('td', {}, targetStatusPill(t)),
+    el('td', { class: 'truncate', title: t.name }, el('strong', {}, t.name)),
+    el('td', { class: 'truncate' }, KIND_LABELS[t.kind] ?? t.kind),
+    el('td', { class: 'target-cell', title: targetConnection(t) }, targetConnection(t)),
+    el('td', { class: 'target-cell', title: targetAction(t) }, targetAction(t)),
+    el('td', { class: 'truncate', title: credentials }, credentials),
+    targetActivityCell(t),
+    // Not actionsCell(): this row's four buttons have their own cell class.
+    el('td', { class: 'actions-cell' }, editBtn, delBtn, runBtn, restoreBtn)
+  ];
+}
+
 // ---------- action groups (ordered stages of parallel steps) ----------
 
 const $igForm = document.getElementById('igroup-form');
-const $igFormTitle = document.getElementById('igroup-form-title');
-const $igError = document.getElementById('igroup-error');
-const $igSubmit = document.getElementById('igroup-submit');
-const $igCancel = document.getElementById('igroup-cancel');
-const $igReset = document.getElementById('igroup-reset');
-const $igSaveNote = document.getElementById('igroup-save-note');
 const $igTable = document.getElementById('igroup-table');
 const $stageList = document.getElementById('stage-list');
 const $stageAddBtn = document.getElementById('stage-add-btn');
 const $igFlatlineGroupChecks = document.getElementById('ig-flatline-group-checks');
 const igroupFormSection = initCollapsible('actions:igroup-form',
   document.getElementById('igroup-form-header'), document.getElementById('igroup-form-body'));
-const igDirty = initDirtyNote($igForm, document.getElementById('igroup-dirty'), $igSaveNote);
+const igDirty = initDirtyNote($igForm, document.getElementById('igroup-dirty'),
+  document.getElementById('igroup-save-note'));
 
 /** The gap held before every stage but the first — server default, mirrored here. */
 const DEFAULT_STAGE_WAIT = 5;
 
-let editingIgId = null;
 /**
  * Ordered stages being edited:
  * [{ pass_rule, on_failure, wait_seconds, steps: [...] }], where a step is
@@ -1227,53 +1128,6 @@ $stageAddBtn.addEventListener('click', () => {
   renderStages();
 });
 
-function resetIgForm() {
-  editingIgId = null;
-  stages = [];
-  $igForm.reset();
-  $igFormTitle.textContent = 'Add action group';
-  $igSubmit.textContent = 'Add group';
-  $igCancel.style.display = 'none';
-  $igReset.style.display = '';
-  $igError.textContent = '';
-  $igSaveNote.textContent = '';
-  renderStages();
-  renderIgFlatlineGroupChecks();
-}
-
-function fillIgForm(g) {
-  editingIgId = g.id;
-  stages = g.stages.map((st) => ({
-    pass_rule: st.pass_rule,
-    on_failure: st.on_failure ?? null,
-    wait_seconds: st.wait_seconds ?? DEFAULT_STAGE_WAIT,
-    steps: st.steps.map((s) => ({ ...s }))
-  }));
-  $igForm.elements.namedItem('name').value = g.name;
-  $igForm.elements.namedItem('on_failure').value = g.on_failure;
-  $igForm.elements.namedItem('enabled').checked = !!g.enabled;
-  renderStages();
-  const assignedIds = flatlineGroups.filter((fg) => fg.action_group_ids.includes(g.id)).map((fg) => fg.id);
-  renderIgFlatlineGroupChecks(assignedIds);
-  $igFormTitle.textContent = `Edit group: ${g.name}`;
-  $igSubmit.textContent = 'Save changes';
-  $igCancel.style.display = '';
-  $igReset.style.display = 'none';
-  $igError.textContent = '';
-  $igSaveNote.textContent = '';
-  igDirty.markClean();
-  igroupFormSection.expand();
-  targetFormSection.collapse(); // one edit form open at a time
-  $igForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-$igCancel.addEventListener('click', (e) => {
-  e.preventDefault();
-  resetIgForm();
-});
-
-$igReset.addEventListener('click', () => resetIgForm());
-
 /** Applies the checked Flatline groups for this action group by updating each
  *  affected Flatline group's own action_group_ids (the assignment is stored
  *  there) — adding/removing actionGroupId without disturbing anything else. */
@@ -1285,39 +1139,62 @@ async function applyFlatlineGroupAssignments(actionGroupId, desiredIds) {
 
   for (const id of toAdd) {
     const fg = flatlineGroups.find((g) => g.id === id);
-    await updateGroup(fg.id, { ...fg, action_group_ids: [...fg.action_group_ids, actionGroupId] });
+    await flatlineGroupsApi.update(fg.id, { ...fg, action_group_ids: [...fg.action_group_ids, actionGroupId] });
   }
   for (const id of toRemove) {
     const fg = flatlineGroups.find((g) => g.id === id);
-    await updateGroup(fg.id, { ...fg, action_group_ids: fg.action_group_ids.filter((x) => x !== actionGroupId) });
+    await flatlineGroupsApi.update(fg.id, { ...fg, action_group_ids: fg.action_group_ids.filter((x) => x !== actionGroupId) });
   }
 }
 
-$igForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  void (async () => {
-    const input = {
-      name: $igForm.elements.namedItem('name').value,
-      on_failure: $igForm.elements.namedItem('on_failure').value,
-      enabled: $igForm.elements.namedItem('enabled').checked,
-      stages: stages.filter((st) => st.steps.length > 0)
-    };
-    const wasEditing = editingIgId != null;
-    try {
-      const saved = wasEditing ? await updateActionGroup(editingIgId, input) : await createActionGroup(input);
-      await applyFlatlineGroupAssignments(saved.id, selectedIgFlatlineGroupIds());
-      $igError.textContent = '';
-      await refreshAll();
-      if (wasEditing) {
-        fillIgForm(igroups.find((g) => g.id === saved.id) ?? saved);
-        $igSaveNote.textContent = 'Saved ✓';
-      } else {
-        resetIgForm();
-      }
-    } catch (err) {
-      $igError.textContent = err.message;
-    }
-  })();
+const igForm = initEntityForm({
+  form: $igForm,
+  els: {
+    title: document.getElementById('igroup-form-title'),
+    error: document.getElementById('igroup-error'),
+    submit: document.getElementById('igroup-submit'),
+    cancel: document.getElementById('igroup-cancel'),
+    reset: document.getElementById('igroup-reset'),
+    saveNote: document.getElementById('igroup-save-note')
+  },
+  section: igroupFormSection,
+  siblingSection: () => targetFormSection,
+  dirty: igDirty,
+  noun: 'action group',
+  itemLabel: 'group',
+  api: actionGroups,
+  reset: () => {
+    stages = [];
+    renderStages();
+    renderIgFlatlineGroupChecks();
+  },
+  fill: (g) => {
+    stages = g.stages.map((st) => ({
+      pass_rule: st.pass_rule,
+      on_failure: st.on_failure ?? null,
+      wait_seconds: st.wait_seconds ?? DEFAULT_STAGE_WAIT,
+      steps: st.steps.map((s) => ({ ...s }))
+    }));
+    $igForm.elements.namedItem('name').value = g.name;
+    $igForm.elements.namedItem('on_failure').value = g.on_failure;
+    $igForm.elements.namedItem('enabled').checked = !!g.enabled;
+    renderStages();
+    renderIgFlatlineGroupChecks(
+      flatlineGroups.filter((fg) => fg.action_group_ids.includes(g.id)).map((fg) => fg.id));
+  },
+  collect: () => ({
+    name: $igForm.elements.namedItem('name').value,
+    on_failure: $igForm.elements.namedItem('on_failure').value,
+    enabled: $igForm.elements.namedItem('enabled').checked,
+    stages: stages.filter((st) => st.steps.length > 0)
+  }),
+  // The assignment lives on each Flatline group, so it is written separately —
+  // before the reload, so the refreshed list already reflects it.
+  refresh: async (saved) => {
+    await applyFlatlineGroupAssignments(saved.id, selectedIgFlatlineGroupIds());
+    await refreshAll();
+  },
+  findSaved: (id) => igroups.find((g) => g.id === id)
 });
 
 /** One stage as text: "k8s + NAS, wait 10s, Windows" — batch, wait, batch. */
@@ -1338,64 +1215,45 @@ function stageStepText(stage) {
 }
 
 function renderIgTable() {
-  clear($igTable);
-  if (igroups.length === 0) {
-    $igTable.append(el('div', { class: 'empty' },
-      el('div', { class: 'big' }, 'No action groups yet'),
-      el('div', {}, 'Create an ordered sequence of targets using the form below.')));
-    return;
-  }
+  renderTable($igTable, {
+    headers: ['Status', 'Group', 'Stages (in order)', 'On stage failure', 'Assigned to', ''],
+    rows: igroups,
+    empty: ['No action groups yet', 'Create an ordered sequence of targets using the form below.'],
+    cells: (g) => {
+      // "+" joins what runs at once, "," what follows it once a wait is up, and
+      // "→" separates stages, carrying the gap held between them.
+      const stageText = g.stages.length
+        ? g.stages.map((st, i) => {
+            const gap = i === 0 ? '' : st.wait_seconds > 0 ? `  →(${st.wait_seconds}s)→  ` : '  →  ';
+            return `${gap}${i + 1}. ${stageStepText(st)}`;
+          }).join('')
+        : '—';
+      const hasOverride = g.stages.some((st) => st.on_failure);
 
-  const tbody = el('tbody', {});
-  for (const g of igroups) {
-    const editBtn = el('button', { class: 'btn ghost small' }, 'Edit');
-    editBtn.addEventListener('click', () => fillIgForm(g));
-    const delBtn = el('button', { class: 'btn danger-ghost small' }, 'Delete');
-    delBtn.addEventListener('click', () => {
-      void (async () => {
-        const ok = await confirmDialog({
-          title: 'Delete action group?',
-          body: `"${g.name}" will be deleted. The action targets it uses are still available, only this sequence of steps is removed.`,
-          confirmText: 'Delete group',
-          danger: true
-        });
-        if (!ok) return;
-        await deleteActionGroup(g.id);
-        if (editingIgId === g.id) resetIgForm();
-        await refreshAll();
-      })();
-    });
-
-    // "+" joins what runs at once, "," what follows it once a wait is up, and
-    // "→" separates stages, carrying the gap held between them.
-    const stageText = g.stages.length
-      ? g.stages.map((st, i) => {
-          const gap = i === 0 ? '' : st.wait_seconds > 0 ? `  →(${st.wait_seconds}s)→  ` : '  →  ';
-          return `${gap}${i + 1}. ${stageStepText(st)}`;
-        }).join('')
-      : '—';
-    const hasOverride = g.stages.some((st) => st.on_failure);
-
-    tbody.append(el('tr', {},
-      el('td', {}, enabledPill(g.enabled)),
-      el('td', {}, el('strong', {}, g.name)),
-      el('td', { class: 'target-cell', title: stageText }, stageText),
-      el('td', {},
-        g.on_failure === 'stop' ? 'stop sequence' : 'continue',
-        hasOverride ? el('span', { class: 'hint', title: 'Some stages override this' }, ' · overrides') : null),
-      el('td', { class: 'mono' }, `${g.assigned_count} Flatline group(s)`),
-      el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, editBtn, delBtn))
-    ));
-  }
-
-  const table = el('table', { class: 'endpoints' });
-  table.append(
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'Status'), el('th', {}, 'Group'), el('th', {}, 'Stages (in order)'), el('th', {}, 'On stage failure'),
-      el('th', {}, 'Assigned to'), el('th', {}, ''))),
-    tbody
-  );
-  $igTable.append(table);
+      return [
+        el('td', {}, enabledPill(g.enabled)),
+        el('td', {}, el('strong', {}, g.name)),
+        el('td', { class: 'target-cell', title: stageText }, stageText),
+        el('td', {},
+          g.on_failure === 'stop' ? 'stop sequence' : 'continue',
+          hasOverride ? el('span', { class: 'hint', title: 'Some stages override this' }, ' · overrides') : null),
+        el('td', { class: 'mono' }, `${g.assigned_count} Flatline group(s)`),
+        actionsCell(editDeleteButtons({
+          onEdit: () => igForm.toEditMode(g),
+          confirm: {
+            title: 'Delete action group?',
+            body: `"${g.name}" will be deleted. The action targets it uses are still available, only this sequence of steps is removed.`,
+            confirmText: 'Delete group'
+          },
+          onDelete: async () => {
+            await actionGroups.remove(g.id);
+            igForm.forgetIfEditing(g.id);
+            await refreshAll();
+          }
+        }))
+      ];
+    }
+  });
 }
 
 // ---------- live restore progress ----------
@@ -1440,23 +1298,21 @@ async function pollRestores() {
 
 async function refreshAll() {
   [targets, igroups, flatlineGroups, relays] = await Promise.all([
-    listActionTargets(), listActionGroups(), listGroups(), listRelays()
+    actionTargets.list(), actionGroups.list(), flatlineGroupsApi.list(), relaysApi.list()
   ]);
   renderRelayOptions();
   renderTargetTable();
   renderIgTable();
   renderStages();
   // Keep the checklist valid without clobbering an in-progress edit.
-  if (editingIgId == null) {
-    renderIgFlatlineGroupChecks(selectedIgFlatlineGroupIds());
-  } else {
-    const assignedIds = flatlineGroups.filter((fg) => fg.action_group_ids.includes(editingIgId)).map((fg) => fg.id);
-    renderIgFlatlineGroupChecks(assignedIds);
-  }
+  const editingIg = igForm.editingId;
+  renderIgFlatlineGroupChecks(editingIg == null
+    ? selectedIgFlatlineGroupIds()
+    : flatlineGroups.filter((fg) => fg.action_group_ids.includes(editingIg)).map((fg) => fg.id));
 }
 
-resetTargetForm();
-resetIgForm();
+targetForm.toAddMode();
+igForm.toAddMode();
 void refreshAll();
 // Picks up the background connectivity dot (server rechecks targets ~every minute).
 setInterval(() => void refreshAll(), 20_000);
