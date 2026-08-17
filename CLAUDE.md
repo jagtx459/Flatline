@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Working approach
 
-These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+These guidelines bias toward caution over speed. For trivial tasks, use judgment but also present plan.
 
 ### Think before coding
 
@@ -22,7 +22,7 @@ Minimum code that solves the problem. Nothing speculative.
 
 - No features beyond what was asked.
 - No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
+- No "flexibility" or "configurability" that wasn't requested; if unsure ask.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
 
@@ -33,8 +33,8 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 Touch only what you must. Clean up only your own mess.
 
 When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
+- Don't "improve" adjacent code, comments, or formatting without asking.
+- Don't refactor things that aren't broken; make recommendation after initial goals and tasks are complete.
 - Match existing style, even if you'd do it differently.
 - If you notice unrelated dead code, mention it — don't delete it.
 
@@ -68,7 +68,7 @@ If you leave anything unfinished, partially implemented, or explicitly defer it,
 
 Each entry needs four things: **what** the work is, **why** it was deferred, **what would unblock it**, and **where** the relevant code lives (file paths). Read existing entries for the format.
 
-Don't put work-in-progress on `BACKLOG.md` — WIP belongs on a branch. The backlog is for *known gaps the team has agreed to leave for later*. If you finish an item, delete it.
+Don't put work-in-progress on `BACKLOG.md`. The backlog is for *known gaps the team has agreed to leave for later*. If you finish an item, delete it.
 
 What counts as "unfinished":
 - Tier 1 / Tier 2 splits where you only shipped Tier 1.
