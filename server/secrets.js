@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { dataDir } from './db.js';
+import { dataDir } from './paths.js';
 
 /**
  * Encryption at rest for infrastructure credentials (passwords, private keys,

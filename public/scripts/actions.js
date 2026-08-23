@@ -33,24 +33,34 @@ const SECRET_INPUTS = {
   http: { token: 'http_token', password: 'http_password', login_password: 'http_login_password' }
 };
 
-// RESTORE_SECRET_FIELDS (imported above) is the restore's own credentials, used
-// only when it does not inherit the target's. One panel serves every kind, so
-// the input names are the field names — no per-kind prefix to map through.
+// RESTORE_SECRET_FIELDS (imported above) is both restore steps' own credentials,
+// used only where a step does not inherit the target's. One panel serves every
+// kind, and each step's inputs are named for its own fields — no mapping through.
 
 const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
 const DEFAULT_RESTORE_WAIT = 300;
-/** Methods offered to the restore request, per method. Kubernetes takes PATCH;
- *  the HTTP kind does not. One select serves both, repopulated on change. */
-const RESTORE_REQUEST_METHODS = {
+/**
+ * The restore's two configurable steps, which are the same shape and so share
+ * their wiring: `p` prefixes every field name, `id` every element id, and the
+ * two data attributes tag the markup belonging to each.
+ */
+const RESTORE_STEPS = [
+  { p: 'restore_', id: 'restore-', kindAttr: 'rk', authAttr: 'rauth' },
+  { p: 'post_restore_', id: 'post-restore-', kindAttr: 'prk', authAttr: 'prauth' }
+];
+/** Verbs offered to a step's request, per method. Kubernetes takes PATCH; the
+ *  HTTP kind does not. One select per step serves both, repopulated on change. */
+const REQUEST_METHODS = {
   k8s: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   http: ['GET', 'POST', 'PUT', 'DELETE']
 };
-/** Which of the restore's connection selects names its sub-auth, per method —
- *  the second axis the connection fields are shown on (see syncRestoreFields). */
-const RESTORE_AUTH_FIELD = {
-  ssh: 'restore_auth_method',
-  k8s: 'restore_k8s_auth',
-  http: 'restore_auth_scheme'
+/** Which of a step's connection selects names its sub-auth, per method — the
+ *  second axis the connection fields are shown on (see syncRestoreStep). WinRM
+ *  is absent because it has only one way to sign in. */
+const STEP_AUTH_FIELD = {
+  ssh: 'auth_method',
+  k8s: 'k8s_auth',
+  http: 'auth_scheme'
 };
 
 function targetById(id) {
@@ -70,11 +80,8 @@ const $targetTable = document.getElementById('target-table');
 const $sshAuthMethod = $form.elements.namedItem('ssh_auth_method');
 const $k8sAuthMethod = $form.elements.namedItem('k8s_auth_method');
 const $k8sAction = $form.elements.namedItem('k8s_action');
-const $restoreKind = document.getElementById('restore-kind');
-const $restoreInherit = document.getElementById('restore-inherit');
 const $restoreEnabled = $form.elements.namedItem('restore_enabled');
 const $restoreSummary = document.getElementById('restore-summary');
-const $restoreRequestMethod = document.getElementById('restore-request-method');
 const targetFormSection = initCollapsible('actions:target-form',
   document.getElementById('target-form-header'), document.getElementById('target-form-body'));
 // The Restore panel is the longest part of the form and most targets never
@@ -104,46 +111,18 @@ function syncKindSections() {
   $formTestResult.textContent = '';
 }
 
-/**
- * The whole Restore panel: whether it is on at all, which method it uses, and —
- * when it connects somewhere of its own — that method's connection fields.
- *
- * A field shows when its `data-rk` names the chosen method and, where present,
- * its `data-rauth` names that method's current sub-auth (SSH's password/key,
- * the cluster's token/kubeconfig, HTTP's scheme). Everything inside
- * #restore-connection is additionally hidden while the restore inherits, since
- * then there is nothing of its own to fill in.
- */
+/** The whole Restore panel: whether it is on at all, then each of its two
+ *  configurable steps. */
 function syncRestoreFields() {
-  const on = $restoreEnabled.checked;
-  document.getElementById('restore-config').style.display = on ? '' : 'none';
+  document.getElementById('restore-config').style.display = $restoreEnabled.checked ? '' : 'none';
 
-  // Inheriting means "the same machine, reached the same way", which only
-  // exists when the method is the target's own kind.
-  const restoreKind = $restoreKind.value;
-  const canInherit = restoreKind === $kind.value;
-  document.getElementById('restore-inherit-field').style.display = canInherit ? '' : 'none';
-  if (!canInherit) $restoreInherit.value = '0';
-  const inherits = canInherit && $restoreInherit.value === '1';
+  syncRestoreStep(RESTORE_STEPS[0]);
+  const postKind = syncRestoreStep(RESTORE_STEPS[1]);
 
-  document.getElementById('restore-connection').style.display =
-    restoreKind !== 'none' && !inherits ? '' : 'none';
-
-  // Two axes here rather than one, so this stays a hand-rolled loop: a field
-  // shows only when its method AND that method's sub-auth both match.
-  const authField = RESTORE_AUTH_FIELD[restoreKind];
-  const auth = authField ? field(authField).value : null;
-  for (const node of $form.querySelectorAll('[data-rk]')) {
-    const kindMatch = node.dataset.rk.split(' ').includes(restoreKind);
-    const authMatch = node.dataset.rauth == null || node.dataset.rauth.split(' ').includes(auth);
-    node.style.display = kindMatch && authMatch ? '' : 'none';
-  }
-
-  renderRestoreRequestMethods(restoreKind);
   // Left blank the port falls back to the method's default, so say which one
-  // that would be rather than showing SSH's on a WinRM restore.
-  if (restoreKind === 'ssh' || restoreKind === 'winrm') {
-    field('restore_port').placeholder = restoreKind === 'ssh' ? '22' : '5985';
+  // that would be rather than showing SSH's on a WinRM action.
+  if (postKind === 'ssh' || postKind === 'winrm') {
+    field('post_restore_port').placeholder = postKind === 'ssh' ? '22' : '5985';
   }
 
   toggleByData($form, 'wake-mode', field('wake_mode').value);
@@ -151,16 +130,58 @@ function syncRestoreFields() {
   renderRestoreSummary();
 }
 
-/** The request-method select is shared by the Kubernetes and HTTP methods,
+/**
+ * One restore step: which method it uses and — when it connects somewhere of its
+ * own — that method's connection fields. Returns the chosen method.
+ *
+ * A field shows when the step's kind attribute names the chosen method and,
+ * where present, its auth attribute names that method's current sub-auth (SSH's
+ * password/key, the cluster's token/kubeconfig, HTTP's scheme). Everything
+ * inside the step's connection block is additionally hidden while it inherits,
+ * since then there is nothing of its own to fill in.
+ */
+function syncRestoreStep({ p, id, kindAttr, authAttr }) {
+  const stepKind = field(`${p}kind`).value;
+
+  // Inheriting means "the same machine, reached the same way", which only
+  // exists when the method is the target's own kind. The choice is only hidden
+  // while that does not hold, not reset — so switching away from a method and
+  // back does not quietly turn "same as target" into "its own". The server drops
+  // the flag for a method that cannot inherit anyway.
+  const canInherit = stepKind === $kind.value;
+  document.getElementById(`${id}inherit-field`).style.display = canInherit ? '' : 'none';
+  const inherits = canInherit && field(`${p}inherit`).value === '1';
+
+  document.getElementById(`${id}connection`).style.display =
+    !inherits && stepKind !== 'wol' && stepKind !== 'none' ? '' : 'none';
+
+  // Two axes here rather than one, so this stays a hand-rolled loop: a field
+  // shows only when its method AND that method's sub-auth both match. A method
+  // with no sub-auth to pick (WinRM) skips the second axis rather than failing
+  // it, or its own fields would never show.
+  const authName = STEP_AUTH_FIELD[stepKind];
+  const auth = authName ? field(p + authName).value : null;
+  for (const node of $form.querySelectorAll(`[data-${kindAttr}]`)) {
+    const kindMatch = node.dataset[kindAttr].split(' ').includes(stepKind);
+    const authMatch = node.dataset[authAttr] == null || !authName
+      || node.dataset[authAttr].split(' ').includes(auth);
+    node.style.display = kindMatch && authMatch ? '' : 'none';
+  }
+
+  renderRequestMethods(document.getElementById(`${id}request-method`), stepKind);
+  return stepKind;
+}
+
+/** A step's request-method select is shared by its Kubernetes and HTTP methods,
  *  which do not accept the same verbs. Repopulated rather than duplicated, so
- *  there is only ever one `restore_method` input in the form. */
-function renderRestoreRequestMethods(restoreKind) {
-  const methods = RESTORE_REQUEST_METHODS[restoreKind];
+ *  there is only ever one such input per step. */
+function renderRequestMethods(select, stepKind) {
+  const methods = REQUEST_METHODS[stepKind];
   if (!methods) return;
-  const chosen = $restoreRequestMethod.value;
-  clear($restoreRequestMethod);
-  for (const m of methods) $restoreRequestMethod.append(el('option', { value: m }, m));
-  $restoreRequestMethod.value = methods.includes(chosen) ? chosen : (restoreKind === 'k8s' ? 'PATCH' : 'POST');
+  const chosen = select.value;
+  clear(select);
+  for (const m of methods) select.append(el('option', { value: m }, m));
+  select.value = methods.includes(chosen) ? chosen : (stepKind === 'k8s' ? 'PATCH' : 'POST');
 }
 
 /** A folded panel still has to say whether a restore exists, and roughly what
@@ -170,23 +191,26 @@ function renderRestoreSummary() {
     $restoreSummary.textContent = 'off';
     return;
   }
-  const parts = [];
-  if (field('wol_mac').value.trim()) parts.push('wake');
-  const restoreKind = $restoreKind.value;
-  parts.push(restoreKind === 'none' ? 'no action' : KIND_LABELS[restoreKind]);
+  const restoreKind = field('restore_kind').value;
+  const parts = [restoreKind === 'wol'
+    ? (field('wol_mac').value.trim() ? 'wake' : 'no wake')
+    : KIND_LABELS[restoreKind]];
+  const postKind = field('post_restore_kind').value;
+  if (postKind !== 'none') parts.push(`then ${KIND_LABELS[postKind]}`);
   if (field('auto_restore').checked) parts.push('auto');
   $restoreSummary.textContent = parts.join(' · ');
 }
 
 /** The address the woken machine is expected to answer on, for the relay check
- *  below. That is whatever the restore is about to connect to; for a method
- *  that names no host (Kubernetes, HTTP) it falls back to the target's own. */
+ *  below. That is whatever the restore is about to connect to once the packet is
+ *  out: the post-restore action's own host where it has one, otherwise the
+ *  target's own address. */
 function wakeHost() {
-  const restoreKind = $restoreKind.value;
-  if (restoreKind === 'ssh' || restoreKind === 'winrm') {
-    return $restoreInherit.value === '1' && restoreKind === $kind.value
+  const postKind = field('post_restore_kind').value;
+  if (postKind === 'ssh' || postKind === 'winrm') {
+    return postKind === $kind.value && field('post_restore_inherit').value === '1'
       ? field(`${$kind.value}_host`).value.trim()
-      : field('restore_host').value.trim();
+      : field('post_restore_host').value.trim();
   }
   const kind = $kind.value;
   if (kind === 'ssh' || kind === 'winrm') return field(`${kind}_host`).value.trim();
@@ -281,8 +305,10 @@ $sshAuthMethod.addEventListener('change', syncSshAuthFields);
 $k8sAuthMethod.addEventListener('change', syncK8sAuthFields);
 $k8sAction.addEventListener('change', syncK8sActionFields);
 // Everything the Restore panel's visibility depends on, in one pass.
-for (const name of ['restore_enabled', 'restore_kind', 'restore_inherit', 'wake_mode',
-  'restore_auth_method', 'restore_k8s_auth', 'restore_auth_scheme', 'auto_restore']) {
+for (const name of ['restore_enabled', 'auto_restore', 'wake_mode',
+  'restore_kind', 'restore_inherit', 'restore_k8s_auth', 'restore_auth_scheme',
+  'post_restore_kind', 'post_restore_inherit', 'post_restore_auth_method',
+  'post_restore_k8s_auth', 'post_restore_auth_scheme']) {
   field(name).addEventListener('change', syncRestoreFields);
 }
 // The summary line and the relay-reach warning both follow typed text, not just
@@ -291,7 +317,7 @@ for (const name of ['restore_enabled', 'restore_kind', 'restore_inherit', 'wake_
 // connect to.
 field('wol_mac').addEventListener('input', renderRestoreSummary);
 field('wake_relay_id').addEventListener('change', renderRelayWarning);
-for (const name of ['restore_host', 'ssh_host', 'winrm_host', 'k8s_api_url', 'http_url']) {
+for (const name of ['post_restore_host', 'ssh_host', 'winrm_host', 'k8s_api_url', 'http_url']) {
   field(name).addEventListener('input', renderRelayWarning);
 }
 
@@ -308,74 +334,89 @@ wireFileUpload(
   $form.elements.namedItem('k8s_kubeconfig')
 );
 wireFileUpload(
-  document.getElementById('restore-key-upload-btn'),
-  document.getElementById('restore-key-upload'),
-  $form.elements.namedItem('restore_private_key')
-);
-wireFileUpload(
   document.getElementById('restore-kubeconfig-upload-btn'),
   document.getElementById('restore-kubeconfig-upload'),
   $form.elements.namedItem('restore_kubeconfig')
 );
+wireFileUpload(
+  document.getElementById('post-restore-key-upload-btn'),
+  document.getElementById('post-restore-key-upload'),
+  $form.elements.namedItem('post_restore_private_key')
+);
+wireFileUpload(
+  document.getElementById('post-restore-kubeconfig-upload-btn'),
+  document.getElementById('post-restore-kubeconfig-upload'),
+  $form.elements.namedItem('post_restore_kubeconfig')
+);
 
 /**
  * The Restore panel, which is the same for every kind of target. Everything is
- * sent whatever the method is; the server keeps what the chosen one uses and
- * drops the rest, so switching method twice cannot leave the blob carrying a
+ * sent whatever the two methods are; the server keeps what the chosen ones use
+ * and drops the rest, so switching method twice cannot leave the blob carrying a
  * host or a URL that nothing reads.
  */
 function collectRestore() {
   return {
     restore_enabled: $restoreEnabled.checked,
     auto_restore: field('auto_restore').checked,
-    restore_kind: $restoreKind.value,
-    restore_inherit: $restoreInherit.value === '1',
+    restore_wait_seconds: Number(field('restore_wait_seconds').value) || 0,
+
+    // step 1 — the restore itself
+    restore_kind: field('restore_kind').value,
+    restore_inherit: field('restore_inherit').value === '1',
     wol_mac: field('wol_mac').value,
     wake_mode: field('wake_mode').value,
     wake_relay_id: Number(field('wake_relay_id').value) || null,
     wol_broadcast: field('wol_broadcast').value,
-    restore_wait_seconds: Number(field('restore_wait_seconds').value) || 0,
-    // ssh / winrm method
-    restore_host: field('restore_host').value,
-    restore_port: Number(field('restore_port').value) || null,
-    restore_domain: field('restore_domain').value,
-    restore_username: field('restore_username').value,
-    restore_auth_method: field('restore_auth_method').value,
-    restore_command: field('restore_command').value,
-    // kubernetes method
     restore_api_url: field('restore_api_url').value,
     restore_k8s_auth: field('restore_k8s_auth').value,
     restore_uncordon: field('restore_uncordon').checked,
     restore_restart_deployments: field('restore_restart_deployments').checked,
     restore_path: field('restore_path').value,
-    // http method
     restore_url: field('restore_url').value,
     restore_auth_scheme: field('restore_auth_scheme').value,
     restore_header_name: field('restore_header_name').value,
+    restore_username: field('restore_username').value,
     restore_insecure_tls: field('restore_insecure_tls').checked,
     restore_ca_cert: field('restore_ca_cert').value,
-    // shared by the kubernetes and http methods
-    restore_method: $restoreRequestMethod.value,
-    restore_body: field('restore_body').value
+    restore_method: field('restore_method').value,
+    restore_body: field('restore_body').value,
+
+    // step 3 — the optional post-restore action
+    post_restore_kind: field('post_restore_kind').value,
+    post_restore_inherit: field('post_restore_inherit').value === '1',
+    post_restore_host: field('post_restore_host').value,
+    post_restore_port: Number(field('post_restore_port').value) || null,
+    post_restore_domain: field('post_restore_domain').value,
+    post_restore_username: field('post_restore_username').value,
+    post_restore_auth_method: field('post_restore_auth_method').value,
+    post_restore_command: field('post_restore_command').value,
+    post_restore_api_url: field('post_restore_api_url').value,
+    post_restore_k8s_auth: field('post_restore_k8s_auth').value,
+    post_restore_uncordon: field('post_restore_uncordon').checked,
+    post_restore_restart_deployments: field('post_restore_restart_deployments').checked,
+    post_restore_path: field('post_restore_path').value,
+    post_restore_url: field('post_restore_url').value,
+    post_restore_auth_scheme: field('post_restore_auth_scheme').value,
+    post_restore_header_name: field('post_restore_header_name').value,
+    post_restore_insecure_tls: field('post_restore_insecure_tls').checked,
+    post_restore_ca_cert: field('post_restore_ca_cert').value,
+    post_restore_method: field('post_restore_method').value,
+    post_restore_body: field('post_restore_body').value
   };
 }
 
 function fillRestore(c) {
   $restoreEnabled.checked = !!c.restore_enabled;
   field('auto_restore').checked = !!c.auto_restore;
-  $restoreKind.value = c.restore_kind ?? 'none';
-  $restoreInherit.value = c.restore_inherit ? '1' : '0';
+  field('restore_wait_seconds').value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
+
+  field('restore_kind').value = c.restore_kind ?? 'wol';
+  field('restore_inherit').value = c.restore_inherit ? '1' : '0';
   field('wol_mac').value = c.wol_mac ?? '';
   field('wake_mode').value = c.wake_mode ?? 'packet';
   field('wake_relay_id').value = c.wake_relay_id != null ? String(c.wake_relay_id) : '';
   field('wol_broadcast').value = c.wol_broadcast ?? '';
-  field('restore_wait_seconds').value = String(c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT);
-  field('restore_host').value = c.restore_host ?? '';
-  field('restore_port').value = c.restore_port != null ? String(c.restore_port) : '';
-  field('restore_domain').value = c.restore_domain ?? '';
-  field('restore_username').value = c.restore_username ?? '';
-  field('restore_auth_method').value = c.restore_auth_method ?? 'password';
-  field('restore_command').value = c.restore_command ?? '';
   field('restore_api_url').value = c.restore_api_url ?? '';
   field('restore_k8s_auth').value = c.restore_k8s_auth ?? 'token';
   // Both default on for a new target, so an existing one saved before the
@@ -386,13 +427,38 @@ function fillRestore(c) {
   field('restore_url').value = c.restore_url ?? '';
   field('restore_auth_scheme').value = c.restore_auth_scheme ?? 'none';
   field('restore_header_name').value = c.restore_header_name ?? '';
+  field('restore_username').value = c.restore_username ?? '';
   field('restore_insecure_tls').checked = !!c.restore_insecure_tls;
   field('restore_ca_cert').value = c.restore_ca_cert ?? '';
-  // The method select's options depend on restore_kind, so populate them before
-  // trying to select one.
-  renderRestoreRequestMethods(c.restore_kind ?? 'none');
-  if (c.restore_method) $restoreRequestMethod.value = c.restore_method;
+
+  field('post_restore_kind').value = c.post_restore_kind ?? 'none';
+  field('post_restore_inherit').value = c.post_restore_inherit ? '1' : '0';
+  field('post_restore_host').value = c.post_restore_host ?? '';
+  field('post_restore_port').value = c.post_restore_port != null ? String(c.post_restore_port) : '';
+  field('post_restore_domain').value = c.post_restore_domain ?? '';
+  field('post_restore_username').value = c.post_restore_username ?? '';
+  field('post_restore_auth_method').value = c.post_restore_auth_method ?? 'password';
+  field('post_restore_command').value = c.post_restore_command ?? '';
+  field('post_restore_api_url').value = c.post_restore_api_url ?? '';
+  field('post_restore_k8s_auth').value = c.post_restore_k8s_auth ?? 'token';
+  field('post_restore_uncordon').checked = !!c.post_restore_uncordon;
+  field('post_restore_restart_deployments').checked = !!c.post_restore_restart_deployments;
+  field('post_restore_path').value = c.post_restore_path ?? '';
+  field('post_restore_url').value = c.post_restore_url ?? '';
+  field('post_restore_auth_scheme').value = c.post_restore_auth_scheme ?? 'none';
+  field('post_restore_header_name').value = c.post_restore_header_name ?? '';
+  field('post_restore_insecure_tls').checked = !!c.post_restore_insecure_tls;
+  field('post_restore_ca_cert').value = c.post_restore_ca_cert ?? '';
+
+  // Each request-method select's options depend on its step's method, so
+  // populate them before trying to select one.
+  for (const { p, id } of RESTORE_STEPS) {
+    const select = document.getElementById(`${id}request-method`);
+    renderRequestMethods(select, c[`${p}kind`] ?? 'none');
+    if (c[`${p}method`]) select.value = c[`${p}method`];
+  }
   field('restore_body').value = c.restore_body ?? '';
+  field('post_restore_body').value = c.post_restore_body ?? '';
 }
 
 /** The target's own connection and trigger action. The Restore panel is spread
@@ -663,51 +729,65 @@ function fmtElapsed(seconds) {
  * The target's restore spelled out, one sentence per step — shown in the Restore
  * button's tooltip and in its confirm dialog, which describe the same thing.
  *
- * The shape is the same whatever the target's kind: an optional wake, the wait,
- * then whatever the chosen method does.
+ * The shape is the same whatever the target's kind: the restore itself, the wait
+ * it needs, then the optional post-restore action.
  */
 function restoreSteps(t) {
   const c = t.config;
   if (!c.restore_enabled) return [];
-  const steps = [];
+  const wait = c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT;
+  const postKind = c.post_restore_kind ?? 'none';
 
+  return [
+    ...(c.restore_kind === 'wol'
+      ? wakeSentences(c, wait, postKind === 'none')
+      : stepSentences(c, 'restore_', c.restore_kind, wait)),
+    ...stepSentences(c, 'post_restore_', postKind, wait)
+  ].map((sentence, i) => `${i + 1}. ${sentence}`);
+}
+
+/** The wake, and — when nothing follows it — the wait for the target itself. A
+ *  post-restore action waits on the machine it is about to act on instead. */
+function wakeSentences(c, wait, waitsForTarget) {
+  const sentences = [];
   if (c.wol_mac) {
     const relay = relays.find((r) => r.id === c.wake_relay_id);
-    steps.push(c.wake_mode === 'relay'
-      ? `1. Ask relay "${relay?.name ?? `#${c.wake_relay_id}`}" to wake ${c.wol_mac}.`
-      : `1. Wake ${c.wol_mac} with a magic packet to ${c.wol_broadcast || 'every attached network'}.`);
+    sentences.push(c.wake_mode === 'relay'
+      ? `Ask relay "${relay?.name ?? `#${c.wake_relay_id}`}" to wake ${c.wol_mac}.`
+      : `Wake ${c.wol_mac} with a magic packet to ${c.wol_broadcast || 'every attached network'}.`);
   }
+  if (waitsForTarget) sentences.push(`Wait up to ${wait}s for the target to answer.`);
+  return sentences;
+}
 
-  const wait = c.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT;
-  switch (c.restore_kind) {
+/** What one step does, one sentence per part — the same list for either step,
+ *  since the two are the same shape. */
+function stepSentences(c, p, stepKind, wait) {
+  switch (stepKind) {
     case 'ssh':
     case 'winrm': {
-      const proto = PROTO_LABELS[c.restore_kind];
-      steps.push(`${steps.length + 1}. Wait up to ${wait}s for ${proto} to answer.`);
-      steps.push(`${steps.length + 1}. Then run over ${proto}: ${c.restore_command}`);
-      break;
+      const proto = PROTO_LABELS[stepKind];
+      return [
+        `Wait up to ${wait}s for ${proto} to answer.`,
+        `Then run over ${proto}: ${c[`${p}command`]}`
+      ];
     }
-    case 'k8s':
-      steps.push(`${steps.length + 1}. Wait up to ${wait}s for the API server to answer.`);
-      if (c.restore_uncordon) steps.push(`${steps.length + 1}. Uncordon every node.`);
-      if (c.restore_path) steps.push(`${steps.length + 1}. Send ${c.restore_method ?? 'PATCH'} ${c.restore_path}`);
-      if (c.restore_restart_deployments) steps.push(`${steps.length + 1}. Restart every Deployment outside kube-system.`);
-      break;
-    case 'http':
+    case 'k8s': return [
+      `Wait up to ${wait}s for the API server to answer.`,
+      c[`${p}uncordon`] ? 'Uncordon every node.' : null,
+      c[`${p}path`] ? `Send ${c[`${p}method`] ?? 'PATCH'} ${c[`${p}path`]}` : null,
+      c[`${p}restart_deployments`] ? 'Restart every Deployment outside kube-system.' : null
+    ].filter(Boolean);
+    case 'http': return [
       // Only a target that logs in has a probe safe to retry; every other HTTP
-      // restore is the one request, sent once.
-      if (c.restore_inherit && c.auth_scheme === 'login' && wait > 0) {
-        steps.push(`${steps.length + 1}. Wait up to ${wait}s for ${c.login_url} to accept the login.`);
-      }
-      steps.push(`${steps.length + 1}. Send ${c.restore_method ?? 'POST'} ${c.restore_url}`);
-      break;
-    default:
-      // A wake with no method behind it.
-      if (!c.wol_mac) return [];
-      steps.push(`${steps.length + 1}. Nothing further — being back up is the whole restore.`);
-      break;
+      // request is sent once.
+      c[`${p}inherit`] && c.auth_scheme === 'login' && wait > 0
+        ? `Wait up to ${wait}s for ${c.login_url} to accept the login.`
+        : null,
+      `Send ${c[`${p}method`] ?? 'POST'} ${c[`${p}url`]}`
+    ].filter(Boolean);
+    default: return [];
   }
-  return steps;
 }
 
 /** Whether the target has a restore configured at all. The server refuses to

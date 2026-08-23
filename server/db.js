@@ -1,14 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, renameSync, rmSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { renameSync, rmSync } from 'node:fs';
 import { migrate, migrations } from './migrations.js';
+import { dataDir, dbFile } from './paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const dataDir = process.env.FLATLINE_DATA_DIR ?? path.join(__dirname, '..', 'data');
-mkdirSync(dataDir, { recursive: true });
+export { dataDir, dbFile };
 
-export const dbFile = path.join(dataDir, 'flatline.db');
 const LATEST_VERSION = Math.max(...migrations.map((m) => m.version));
 
 // Per-connection pragmas (not schema — these don't belong in migrations).

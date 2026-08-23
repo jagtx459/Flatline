@@ -4,7 +4,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { migrate, migrations } from '../server/migrations.js';
 
 // What happens to an existing install's data when it upgrades. Each case builds
 // a database at the version *before* the migration under test, writes the rows
@@ -13,6 +12,13 @@ import { migrate, migrations } from '../server/migrations.js';
 // This is deliberately not driven through db.js: that opens the real database
 // at whatever version it is already on, which is the one state a migration test
 // can never use.
+//
+// Migration 10 re-encrypts a credential under a new name, so secrets.js is in
+// play — point its key file at a throwaway dir before the dynamic import, or it
+// would generate one next to the real database.
+process.env.FLATLINE_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'flatline-migrate-key-'));
+const { migrate, migrations } = await import('../server/migrations.js');
+const { encryptSecrets, decryptSecrets } = await import('../server/secrets.js');
 
 /** A database with every migration below `version` applied, and nothing above. */
 function dbAtVersion(version) {
@@ -26,9 +32,9 @@ function dbAtVersion(version) {
   return db;
 }
 
-function addTarget(db, { name, kind, config }) {
-  db.prepare('INSERT INTO action_targets (name, kind, config, secret_enc, enabled, created_at) VALUES (?, ?, ?, NULL, 1, ?)')
-    .run(name, kind, JSON.stringify(config), Date.now());
+function addTarget(db, { name, kind, config, secret_enc = null }) {
+  db.prepare('INSERT INTO action_targets (name, kind, config, secret_enc, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)')
+    .run(name, kind, JSON.stringify(config), secret_enc, Date.now());
 }
 
 function configOf(db, name) {
@@ -45,24 +51,24 @@ function upgraded(version, kind, config) {
   return cfg;
 }
 
-describe('migrations 7 and 9: a bare restore command becomes a chosen restore method', () => {
+describe('migrations 7, 9 and 10: a bare restore command becomes a post-restore action', () => {
   test('an existing restore command still runs, over the target\'s own connection', () => {
-    // Two migrations in sequence: 7 gave the command a restore_action, 9 turned
-    // that into a method. Without either, the target's restore would quietly
-    // stop doing anything on upgrade.
+    // Three migrations in sequence: 7 gave the command a restore_action, 9 turned
+    // that into a method, 10 moved it behind the restore into step 3. Without any
+    // of them, the target's restore would quietly stop doing anything on upgrade.
     const cfg = upgraded(6, 'ssh', { host: 'h', username: 'u', restore_command: 'systemctl start nfs' });
     assert.equal(cfg.restore_enabled, 1);
-    assert.equal(cfg.restore_kind, 'ssh');
-    assert.equal(cfg.restore_inherit, 1, 'a command always ran over the target\'s own connection');
-    assert.equal(cfg.restore_command, 'systemctl start nfs', 'the command itself is untouched');
+    assert.equal(cfg.post_restore_kind, 'ssh');
+    assert.equal(cfg.post_restore_inherit, 1, 'a command always ran over the target\'s own connection');
+    assert.equal(cfg.post_restore_command, 'systemctl start nfs', 'the command itself is untouched');
     assert.equal(cfg.restore_wait_seconds, 300);
-    assert.equal('restore_action' in cfg, false, 'replaced by restore_kind');
+    assert.equal('restore_action' in cfg, false, 'replaced by the two step kinds');
   });
 
   test('a target with nothing to restore ends with the restore switched off', () => {
     const cfg = upgraded(6, 'winrm', { host: 'h', username: 'u', command: 'shutdown' });
     assert.equal(cfg.restore_enabled, 0);
-    assert.equal(cfg.restore_kind, 'none');
+    assert.equal(cfg.post_restore_kind, 'none');
     assert.equal('restore_command' in cfg, false);
   });
 
@@ -103,12 +109,13 @@ describe('migration 9: restore method is chosen, not inherited from the target k
     assert.equal(cfg.restore_auth_scheme, 'bearer');
   });
 
-  test('a wake with no final step becomes a wake with no method', () => {
+  test('a wake with no final step becomes a wake with nothing behind it', () => {
     const cfg = upgraded(8, 'winrm', {
       host: 'h', username: 'u', restore_action: 'none', wol_mac: 'AA:BB:CC:DD:EE:FF'
     });
     assert.equal(cfg.restore_enabled, 1);
-    assert.equal(cfg.restore_kind, 'none');
+    assert.equal(cfg.restore_kind, 'wol');
+    assert.equal(cfg.post_restore_kind, 'none');
     assert.equal(cfg.wol_mac, 'AA:BB:CC:DD:EE:FF');
   });
 
@@ -127,7 +134,7 @@ describe('migration 9: restore method is chosen, not inherited from the target k
       api_url: 'https://10.0.0.1:6443', action: 'custom', command_path: '/apis/x'
     });
     assert.equal(cfg.restore_enabled, 0);
-    assert.equal(cfg.restore_kind, 'none');
+    assert.equal(cfg.post_restore_kind, 'none');
   });
 
   test('an http target restores over http when it had a URL, and not at all otherwise', () => {
@@ -142,6 +149,83 @@ describe('migration 9: restore method is chosen, not inherited from the target k
     const without = upgraded(8, 'http', { url: 'https://svc.local/hook', auto_restore: 1 });
     assert.equal(without.restore_enabled, 0);
     assert.equal(without.auto_restore, 0, 'nothing to arm');
+  });
+});
+
+describe('migration 10: the restore splits into a restore step and a post-restore action', () => {
+  test('a shell restore moves behind the wake it already ran after', () => {
+    const cfg = upgraded(9, 'ssh', {
+      host: 'h', username: 'u', restore_enabled: 1, restore_kind: 'ssh', restore_inherit: 1,
+      wol_mac: 'AA:BB:CC:DD:EE:FF', restore_command: 'systemctl start nfs'
+    });
+    assert.equal(cfg.restore_kind, 'wol');
+    assert.equal(cfg.restore_inherit, 0);
+    assert.equal(cfg.wol_mac, 'AA:BB:CC:DD:EE:FF');
+    assert.equal(cfg.post_restore_kind, 'ssh');
+    assert.equal(cfg.post_restore_inherit, 1);
+    assert.equal(cfg.post_restore_command, 'systemctl start nfs');
+    assert.equal('restore_command' in cfg, false, 'the old name is gone');
+  });
+
+  test('a shell restore with no wake becomes a wake with no MAC to send', () => {
+    // Which is how "the machine is already up, just run the command" is said
+    // now. Nothing about what it does changes.
+    const cfg = upgraded(9, 'http', {
+      url: 'https://svc.local/hook', restore_enabled: 1, restore_kind: 'winrm', restore_inherit: 0,
+      restore_host: '10.0.0.9', restore_port: 5985, restore_username: 'admin',
+      restore_command: 'Restart-Service app'
+    });
+    assert.equal(cfg.restore_kind, 'wol');
+    assert.equal('wol_mac' in cfg, false);
+    assert.equal(cfg.post_restore_kind, 'winrm');
+    assert.equal(cfg.post_restore_host, '10.0.0.9');
+    assert.equal(cfg.post_restore_port, 5985);
+    assert.equal(cfg.post_restore_username, 'admin');
+    assert.equal(cfg.post_restore_command, 'Restart-Service app');
+  });
+
+  test('a shell restore\'s own credentials are re-encrypted under their new names', () => {
+    // They would otherwise be unreachable: the step that reads them now looks
+    // for post_restore_ names, and secretFieldsFor would drop the old ones on
+    // the next save.
+    const db = dbAtVersion(9);
+    addTarget(db, {
+      name: 't', kind: 'http',
+      config: {
+        url: 'https://svc.local/hook', restore_enabled: 1, restore_kind: 'ssh', restore_inherit: 0,
+        restore_host: '10.0.0.9', restore_username: 'admin', restore_command: 'systemctl start app'
+      },
+      secret_enc: encryptSecrets({ token: 'target-tok', restore_password: 'shell-pw' })
+    });
+    migrate(db);
+
+    const { secret_enc } = db.prepare('SELECT secret_enc FROM action_targets WHERE name = ?').get('t');
+    const secrets = decryptSecrets(secret_enc);
+    db.close();
+
+    assert.equal(secrets.post_restore_password, 'shell-pw');
+    assert.equal('restore_password' in secrets, false);
+    assert.equal(secrets.token, 'target-tok', 'the target\'s own credentials are untouched');
+  });
+
+  test('a cluster or endpoint restore keeps its fields exactly where they were', () => {
+    // Both are still step-1 methods, so nothing about them moves.
+    const cluster = upgraded(9, 'k8s', {
+      api_url: 'https://10.0.0.1:6443', restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1,
+      restore_uncordon: 1, restore_restart_deployments: 1
+    });
+    assert.equal(cluster.restore_kind, 'k8s');
+    assert.equal(cluster.restore_inherit, 1);
+    assert.equal(cluster.restore_uncordon, 1);
+    assert.equal(cluster.post_restore_kind, 'none');
+
+    const endpoint = upgraded(9, 'http', {
+      url: 'https://svc.local/hook', restore_enabled: 1, restore_kind: 'http', restore_inherit: 1,
+      restore_url: 'https://svc.local/resume', restore_method: 'POST'
+    });
+    assert.equal(endpoint.restore_kind, 'http');
+    assert.equal(endpoint.restore_url, 'https://svc.local/resume');
+    assert.equal(endpoint.post_restore_kind, 'none');
   });
 });
 

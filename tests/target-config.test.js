@@ -22,6 +22,9 @@ const {
   isSequenceRestore, secretFieldsFor, MAX_RESTORE_WAIT_SECONDS
 } = await import('../server/targetConfig.js');
 
+// A restore is step 1 (a wake, a cluster, or an endpoint) -> the wait -> an
+// optional step 3, whose fields live under post_restore_ names.
+
 /** A relay for the wake-through-a-relay cases to point at. */
 const relay = store.createRelay({
   name: 'garage-pi', kind: 'ssh',
@@ -52,21 +55,24 @@ describe('restore: the toggle', () => {
     // A half-configured restore would be invisible in the form yet still stored,
     // and auto_restore would still arm it.
     const cfg = ssh({
-      restore_enabled: 0, auto_restore: 1, restore_kind: 'ssh',
-      wol_mac: 'AA:BB:CC:DD:EE:FF', restore_command: 'systemctl start app'
+      restore_enabled: 0, auto_restore: 1, post_restore_kind: 'ssh',
+      wol_mac: 'AA:BB:CC:DD:EE:FF', post_restore_command: 'systemctl start app'
     });
     assert.equal(cfg.restore_enabled, 0);
-    for (const field of ['auto_restore', 'restore_kind', 'wol_mac', 'restore_command']) {
+    for (const field of ['auto_restore', 'restore_kind', 'wol_mac', 'post_restore_kind', 'post_restore_command']) {
       assert.equal(field in cfg, false, field);
     }
   });
 
   test('a restore that would do nothing at all is refused', () => {
-    assert.match(ssh({ restore_enabled: 1 }), /needs a wake or a method/);
+    // A wake with no MAC and no post-restore action: step 1 sends nothing and
+    // there is no step 3 behind it.
+    assert.match(ssh({ restore_enabled: 1 }), /needs a MAC to wake or a post-restore action/);
     // Either half on its own is enough.
     assert.equal(typeof ssh({ restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF' }), 'object');
-    assert.equal(typeof ssh({ restore_enabled: 1, restore_kind: 'ssh', restore_inherit: 1, restore_command: 'x' }),
-      'object');
+    assert.equal(typeof ssh({
+      restore_enabled: 1, post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'x'
+    }), 'object', 'a machine already up, needing only the follow-up command');
   });
 
   test('the wait is clamped to the allowed range and defaults to five minutes', () => {
@@ -139,55 +145,36 @@ describe('restore: wake-on-lan', () => {
   });
 });
 
-describe('restore: the method', () => {
-  test("'none' is the default, and pairs with a wake", () => {
+describe('restore: step 1, the restore itself', () => {
+  test("waking is the default, and only what can start a restore is on offer", () => {
     const cfg = restore();
-    assert.equal(cfg.restore_kind, 'none');
+    assert.equal(cfg.restore_kind, 'wol');
     assert.equal(cfg.restore_inherit, 0);
-  });
-
-  test('an unknown method is rejected', () => {
-    assert.match(restore({ restore_kind: 'telnet' }), /restore method must be one of/);
+    // A shell command cannot bring a machine back from being off, so it is a
+    // step-3 action rather than a restore method.
+    for (const restore_kind of ['ssh', 'winrm', 'telnet']) {
+      assert.match(restore({ restore_kind }), /restore method must be one of/, restore_kind);
+    }
   });
 
   test('the connection is only inheritable when the method matches the kind', () => {
     // "The same machine, reached the same way" only exists when the method is
     // the target's own kind.
-    assert.equal(restore({ restore_kind: 'ssh', restore_inherit: 1, restore_command: 'x' }).restore_inherit, 1);
+    assert.equal(k8s({ restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1, restore_uncordon: 1 })
+      .restore_inherit, 1);
     // An ssh target has no cluster credentials to lend a Kubernetes restore, so
     // the request to inherit is dropped and its own connection required.
     assert.match(restore({ restore_kind: 'k8s', restore_inherit: 1, restore_uncordon: 1 }),
       /restore API server URL is required/);
   });
 
-  test('an inherited shell restore needs only its command', () => {
-    const cfg = restore({ restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app' });
-    assert.equal(cfg.restore_command, 'systemctl start app');
-    assert.equal('restore_host' in cfg, false, 'nothing of its own to store');
-    assert.match(restore({ restore_kind: 'ssh', restore_inherit: 1 }), /restore command is required/);
-  });
-
-  test('a shell restore that brings its own connection needs a host and a user', () => {
-    // An HTTP target revived over SSH: the credentials cannot come from the
-    // target, because it has none of that shape.
-    assert.match(http({ restore_enabled: 1, restore_kind: 'ssh', restore_command: 'x' }), /host is required/);
-    assert.match(http({ restore_enabled: 1, restore_kind: 'ssh', restore_command: 'x', restore_host: '10.0.0.9' }),
-      /username is required/);
-    const cfg = http({
-      restore_enabled: 1, restore_kind: 'winrm', restore_command: 'Restart-Service app',
-      restore_host: '10.0.0.9', restore_username: 'admin'
-    });
-    assert.equal(cfg.restore_port, 5985, 'the port defaults per method, not per target kind');
-    assert.equal(cfg.restore_inherit, 0);
-  });
-
   test('a cluster restore needs at least one thing to do', () => {
     const cluster = (over) => k8s({ restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1, ...over });
-    assert.match(cluster({}), /at least one thing for the cluster restore to do/);
+    assert.match(cluster({}), /at least one thing for the restore cluster step to do/);
     assert.equal(cluster({ restore_uncordon: 1 }).restore_uncordon, 1);
     assert.equal(cluster({ restore_restart_deployments: 1 }).restore_restart_deployments, 1);
     assert.equal(cluster({ restore_path: '/apis/apps/v1/namespaces/default/deployments/app' }).restore_method, 'PATCH');
-    assert.match(cluster({ restore_uncordon: 1, restore_method: 'TRACE' }), /restore method must be one of/);
+    assert.match(cluster({ restore_uncordon: 1, restore_method: 'TRACE' }), /restore request method must be one of/);
   });
 
   test('an http restore needs a valid http(s) URL', () => {
@@ -196,7 +183,8 @@ describe('restore: the method', () => {
     assert.match(undo({ restore_url: 'file:///etc/passwd' }), /must be http\(s\)/);
     assert.match(undo({ restore_url: 'not a url' }), /must be a valid URL/);
     assert.equal(undo({ restore_url: 'https://svc.local/start' }).restore_method, 'POST');
-    assert.match(undo({ restore_url: 'https://svc.local/start', restore_method: 'PATCH' }), /restore method must be/);
+    assert.match(undo({ restore_url: 'https://svc.local/start', restore_method: 'PATCH' }),
+      /restore request method must be/);
   });
 
   test("an http restore with its own connection carries its own auth, but never 'login'", () => {
@@ -224,38 +212,123 @@ describe('restore: the method', () => {
     // Same reason the http kind clears a login it no longer uses: it would sit
     // in the blob unreachable from the form.
     const cfg = restore({
-      restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app',
       restore_url: 'https://svc.local/start', restore_path: '/apis/x', restore_api_url: 'https://10.0.0.1:6443'
     });
-    assert.equal(cfg.restore_command, 'systemctl start app');
+    assert.equal(cfg.wol_mac, 'AA:BB:CC:DD:EE:FF');
     for (const field of ['restore_url', 'restore_path', 'restore_api_url']) {
       assert.equal(field in cfg, false, field);
     }
   });
 
-  test('an inherited connection stores none of its own fields', () => {
-    const cfg = restore({
-      restore_kind: 'ssh', restore_inherit: 1, restore_command: 'x',
-      restore_host: '10.9.9.9', restore_username: 'someone'
+  test('the wake fields go with the wake', () => {
+    // A cluster restore has nothing to broadcast to.
+    const cfg = k8s({
+      restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1, restore_uncordon: 1,
+      wol_mac: 'AA:BB:CC:DD:EE:FF', wol_broadcast: '10.0.0.255'
     });
-    assert.equal('restore_host' in cfg, false);
-    assert.equal('restore_username' in cfg, false);
+    assert.equal('wol_mac' in cfg, false);
+    assert.equal('wol_broadcast' in cfg, false);
   });
 });
 
-describe('restore credentials follow the method', () => {
-  test('an inherited restore adds none of its own', () => {
-    const fields = secretFieldsFor('ssh', { restore_enabled: 1, restore_inherit: 1, restore_kind: 'ssh' });
+describe('restore: step 3, the post-restore action', () => {
+  test('there is none by default', () => {
+    assert.equal(restore().post_restore_kind, 'none');
+    assert.equal(restore().post_restore_inherit, 0);
+    assert.match(restore({ post_restore_kind: 'telnet' }), /post-restore action must be one of/);
+  });
+
+  test('an inherited shell action needs only its command', () => {
+    const cfg = restore({
+      post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'systemctl start app'
+    });
+    assert.equal(cfg.post_restore_command, 'systemctl start app');
+    assert.equal(cfg.post_restore_inherit, 1);
+    assert.equal('post_restore_host' in cfg, false, 'nothing of its own to store');
+    assert.match(restore({ post_restore_kind: 'ssh', post_restore_inherit: 1 }),
+      /post-restore command is required/);
+  });
+
+  test('a shell action that brings its own connection needs a host and a user', () => {
+    // An HTTP target finished off over SSH: the credentials cannot come from the
+    // target, because it has none of that shape.
+    const undo = (over) => http({ restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF', ...over });
+    assert.match(undo({ post_restore_kind: 'ssh', post_restore_command: 'x' }), /host is required/);
+    assert.match(undo({ post_restore_kind: 'ssh', post_restore_command: 'x', post_restore_host: '10.0.0.9' }),
+      /username is required/);
+    const cfg = undo({
+      post_restore_kind: 'winrm', post_restore_command: 'Restart-Service app',
+      post_restore_host: '10.0.0.9', post_restore_username: 'admin'
+    });
+    assert.equal(cfg.post_restore_port, 5985, 'the port defaults per method, not per target kind');
+    assert.equal(cfg.post_restore_inherit, 0);
+  });
+
+  test('a cluster action is offered here too, with its own connection', () => {
+    // The point of the split: a woken NAS, then a cluster brought back onto it.
+    const cfg = ssh({
+      restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF',
+      post_restore_kind: 'k8s', post_restore_api_url: 'https://10.0.0.1:6443', post_restore_uncordon: 1
+    });
+    assert.equal(typeof cfg, 'object', typeof cfg === 'string' ? cfg : '');
+    assert.equal(cfg.post_restore_k8s_auth, 'token');
+    assert.match(ssh({ restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF', post_restore_kind: 'k8s' }),
+      /post-restore API server URL is required/);
+    assert.match(ssh({
+      restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF',
+      post_restore_kind: 'k8s', post_restore_api_url: 'https://10.0.0.1:6443'
+    }), /at least one thing for the post-restore cluster step to do/);
+  });
+
+  test('both steps can talk to a different place at once', () => {
+    // Step 1 resumes the service over its API; step 3 signs in to another host
+    // and starts what depends on it. Neither connection displaces the other.
+    const cfg = ssh({
+      restore_enabled: 1,
+      restore_kind: 'http', restore_url: 'https://svc.local/resume', restore_auth_scheme: 'bearer',
+      post_restore_kind: 'ssh', post_restore_host: '10.0.0.9', post_restore_username: 'admin',
+      post_restore_command: 'systemctl start app'
+    });
+    assert.equal(typeof cfg, 'object', typeof cfg === 'string' ? cfg : '');
+    assert.equal(cfg.restore_url, 'https://svc.local/resume');
+    assert.equal(cfg.post_restore_host, '10.0.0.9');
+    assert.equal(cfg.restore_inherit, 0);
+    assert.equal(cfg.post_restore_inherit, 0);
+  });
+
+  test('an inherited connection stores none of its own fields', () => {
+    const cfg = restore({
+      post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'x',
+      post_restore_host: '10.9.9.9', post_restore_username: 'someone'
+    });
+    assert.equal('post_restore_host' in cfg, false);
+    assert.equal('post_restore_username' in cfg, false);
+  });
+});
+
+describe('restore credentials follow the methods', () => {
+  test('an inherited step adds none of its own', () => {
+    const fields = secretFieldsFor('ssh', {
+      restore_enabled: 1, restore_kind: 'wol', post_restore_inherit: 1, post_restore_kind: 'ssh'
+    });
     assert.deepEqual(fields, ['password', 'private_key', 'passphrase', 'sudo_password']);
   });
 
-  test('a restore with its own connection adds exactly that method\'s credentials', () => {
-    // Narrowing the list is what drops a stale credential once the method
+  test('each step with its own connection adds exactly that method\'s credentials', () => {
+    // Narrowing the list is what drops a stale credential once a method
     // changes — mergeSecrets keeps only what is on it.
-    assert.deepEqual(secretFieldsFor('http', { restore_enabled: 1, restore_inherit: 0, restore_kind: 'k8s' }),
-      ['token', 'password', 'login_password', 'restore_token', 'restore_kubeconfig']);
-    assert.deepEqual(secretFieldsFor('k8s', { restore_enabled: 1, restore_inherit: 0, restore_kind: 'winrm' }),
-      ['token', 'kubeconfig', 'restore_password']);
+    assert.deepEqual(secretFieldsFor('http', {
+      restore_enabled: 1, restore_inherit: 0, restore_kind: 'k8s', post_restore_kind: 'none'
+    }), ['token', 'password', 'login_password', 'restore_token', 'restore_kubeconfig']);
+    assert.deepEqual(secretFieldsFor('k8s', {
+      restore_enabled: 1, restore_kind: 'wol', post_restore_inherit: 0, post_restore_kind: 'winrm'
+    }), ['token', 'kubeconfig', 'post_restore_password']);
+    // Both steps at once, each carrying its own set.
+    assert.deepEqual(secretFieldsFor('ssh', {
+      restore_enabled: 1, restore_inherit: 0, restore_kind: 'http',
+      post_restore_inherit: 0, post_restore_kind: 'k8s'
+    }), ['password', 'private_key', 'passphrase', 'sudo_password',
+      'restore_token', 'restore_password', 'post_restore_token', 'post_restore_kubeconfig']);
     assert.deepEqual(secretFieldsFor('http', { restore_enabled: 0 }),
       ['token', 'password', 'login_password']);
   });
@@ -404,6 +477,17 @@ describe('k8s target config', () => {
     const cluster = k8s({ restore_enabled: 1, restore_kind: 'k8s', restore_inherit: 1, restore_uncordon: true });
     assert.equal(cluster.restore_uncordon, 1);
   });
+
+  test('every kind of target can have a cluster restore, not just a k8s one', () => {
+    // The restore method is a choice of its own: an ssh jump host whose restore
+    // brings a cluster back needs its own API URL and token.
+    const cfg = ssh({
+      restore_enabled: 1, restore_kind: 'k8s',
+      restore_api_url: 'https://10.0.0.1:6443', restore_uncordon: 1
+    });
+    assert.equal(typeof cfg, 'object', typeof cfg === 'string' ? cfg : '');
+    assert.equal(cfg.restore_inherit, 0);
+  });
 });
 
 // ---- which restores answer 202 ----
@@ -414,13 +498,15 @@ describe('isSequenceRestore', () => {
   });
 
   test('a wake always does — nothing answers a magic packet, so a wait follows', () => {
-    assert.equal(isSequenceRestore('http', { restore_enabled: 1, restore_kind: 'none', wol_mac: 'AA:BB:CC:DD:EE:FF' }),
+    assert.equal(isSequenceRestore('http', { restore_enabled: 1, restore_kind: 'wol', wol_mac: 'AA:BB:CC:DD:EE:FF' }),
       true);
   });
 
-  test('the methods that open by polling always do, whatever the target is', () => {
-    for (const restore_kind of ['ssh', 'winrm', 'k8s']) {
-      assert.equal(isSequenceRestore('http', { restore_enabled: 1, restore_kind }), true, restore_kind);
+  test('anything that opens by polling always does, in either step', () => {
+    assert.equal(isSequenceRestore('http', { restore_enabled: 1, restore_kind: 'k8s' }), true);
+    for (const post_restore_kind of ['ssh', 'winrm', 'k8s']) {
+      assert.equal(isSequenceRestore('http', { restore_enabled: 1, restore_kind: 'wol', post_restore_kind }),
+        true, post_restore_kind);
     }
   });
 

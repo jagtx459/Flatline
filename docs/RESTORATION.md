@@ -5,16 +5,23 @@ target back after its trigger action ran. It is configured in the collapsible
 *Restore* panel at the bottom of the target form on the Actions page, and stored
 in the same config blob as the rest of the target.
 
-A restore is always the same three parts, whatever kind of target it belongs to:
+A restore is always the same three steps, whatever kind of target it belongs to:
 
 ```
-wake (optional)  ->  wait  ->  one action
+1. the restore  ->  2. the wait  ->  3. a post-restore action (optional)
 ```
 
-The action's **method** is chosen independently of how the target itself is
-reached. A cluster taken down over its API can be woken with a magic packet and
-revived over SSH; a NAS shut down through its HTTP API can be woken and finished
-off with a command. The method either **inherits** the target's own connection
+Step 1 is what actually brings the target back, and offers only the three things
+that work on something that is *not* answering: **Wake-on-LAN**, **Kubernetes**,
+or an **HTTP(S) endpoint**. Step 3 is anything else that needs doing once it is
+up — including a shell command, which needs a machine already listening and so
+can never be step 1.
+
+Both steps' methods are chosen independently of how the target itself is reached
+and of each other. A cluster taken down over its API can be woken with a magic
+packet and finished off over SSH; a NAS shut down through its HTTP API can be
+resumed through another endpoint and then have its shares remounted by a command
+on a different host. Each step either **inherits** the target's own connection
 and credentials, or brings its own.
 
 There is **no snapshot of prior state anywhere**. A restore is only as good as
@@ -75,16 +82,36 @@ One auto-restore per Flatline group runs at a time: a group that flaps while its
 restore is still going is logged and ignored (`inFlight`,
 [autoRestore.js:24](../server/autoRestore.js#L24)).
 
-## The three parts
+## The three steps
 
-### 1. Wake (optional)
+Every field of a step lives under that step's prefix — `restore_` for step 1,
+`post_restore_` for step 3 — with the same bare name on both sides
+(`restore_url` / `post_restore_url`, `restore_token` / `post_restore_token`, …).
+That is what lets one set of parsers, runners and form wiring serve both.
+
+### 1. The restore (`restore_kind`)
+
+One of three, and required — a restore with no step 1 would have nothing to act
+with.
+
+| `restore_kind` | What happens |
+| --- | --- |
+| `wol` | A magic packet, then (with no step 3 behind it) a wait for the target itself. |
+| `k8s` | Wait for the API server, then up to three parts: uncordon every node, one raw API request, restart every Deployment. |
+| `http` | One request: `restore_method` (default POST) to `restore_url`, with `restore_body` as `application/json` if set. |
+
+#### Wake-on-LAN
 
 Configured with a **Wake MAC** (`wol_mac`, stored canonically as
 `AA:BB:CC:DD:EE:FF`) and offered to **every kind of target** — what shut a
 machine down says nothing about whether it needs a magic packet to come back.
-Leave it blank if the host comes back on its own; the restore then starts at the
-wait. The packet is the standard magic packet (6 × `0xFF` then the MAC repeated
-16 times) sent to UDP port 9.
+The packet is the standard magic packet (6 × `0xFF` then the MAC repeated 16
+times) sent to UDP port 9.
+
+Leaving the MAC **blank** is how "the machine is already up, only do the
+follow-up" is said: nothing is broadcast and the restore goes straight to step 3.
+A restore with neither a MAC nor a step 3 is refused, since it would do nothing
+at all.
 
 Two ways to deliver it (`wake_mode`):
 
@@ -113,23 +140,28 @@ A wake that fails stops the sequence there. Nothing ever answers a magic packet,
 so success only means the packet was accepted for delivery. The destinations it
 went to are reported in the result message.
 
-### 2. Wait
+### 2. The wait
 
 **Wait up to N seconds** (`restore_wait_seconds`) — 0 to 3600, default **300**.
 This is a *give-up budget*, not a sleep: Flatline polls every 10s and moves on
-the moment the target answers. `0` means one attempt, then give up.
+the moment what it is waiting for answers. `0` means one attempt, then give up.
 
-What gets polled is whatever the restore is about to act on, using that
+One budget, spent wherever the sequence actually has to wait, using that
 connection's own connectivity test — the same one the **Test connection** button
 and the background health poller run:
 
-| Method | Polls |
+| Step | Polls |
 | --- | --- |
-| `ssh` / `winrm` | An SSH connect + `echo flatline-ok`, or WinRM `Write-Output flatline-ok` |
-| `k8s` | `GET version` on the API server |
+| `wol`, with a step 3 behind it | Nothing — step 3 waits on the machine it is about to act on, which is the better probe |
+| `wol`, alone | The **target's** own test, when it has one that is safe to repeat |
+| `ssh` / `winrm` (step 3) | An SSH connect + `echo flatline-ok`, or WinRM `Write-Output flatline-ok` |
+| `k8s` | `GET version` on the API server, **before** its uncordon/restart run |
 | `http`, inheriting a target that logs in | The **login**, retried until it succeeds |
 | `http`, otherwise | The **target's** own test, when the target has one that is safe to repeat |
-| `none` (wake only) | The **target's** own test, when it has one |
+
+Because a Kubernetes step has to reach the API server before it can do anything,
+its share of the budget is spent *inside* step 1 rather than after it — the
+numbering on the page reads 1-2-3 but a cluster restore waits first.
 
 The HTTP method never polls its own request: it need not be idempotent, and the
 trigger request is the very thing being undone. When it brings its own
@@ -139,53 +171,67 @@ resume API" shape. An HTTP target using a static auth scheme has no safe probe a
 all (its test *is* its real request), so there the request is sent once and the
 budget is ignored.
 
-If the wait runs out, the restore fails and **the action is not run**.
+If the wait runs out the restore fails there, and **nothing after it runs**.
 
-Everything after the wait runs with a **60s** timeout
+Everything after a wait runs with a **60s** timeout
 (`DEFAULT_TIMEOUT_MS`, [connectors.js:31](../server/connectors.js#L31)); SSH
 connection setup inside that is capped at 16s.
 
-### 3. The action
+### 3. The post-restore action (`post_restore_kind`)
 
-`restore_kind` picks the method; `restore_inherit` picks where it connects.
+Optional, and `none` by default. It runs only once step 1 has succeeded — a
+failed step 1 stops the sequence there rather than acting on something that
+never came back.
+
+| `post_restore_kind` | What happens |
+| --- | --- |
+| `none` | Nothing. Step 1 was the whole restore. |
+| `ssh` / `winrm` | Wait for the host, then run `post_restore_command`. When inheriting, that includes the stored sudo password, written to the command's stdin (so the command needs `sudo -S`). A non-zero exit fails the restore. |
+| `k8s` | The same three parts a step-1 cluster restore has, against whatever cluster this step points at. |
+| `http` | One request: `post_restore_method` (default POST) to `post_restore_url`. |
+
+### Where each step connects
+
+`restore_inherit` and `post_restore_inherit` each pick where their own step
+connects, independently.
 
 **Inheriting** reuses the target's own connection and credentials, and is only on
-offer when the method matches the target's kind — an HTTP target has no SSH login
-to lend an SSH restore. Otherwise the restore carries its own address and its own
-encrypted credentials, under `restore_`-prefixed names that mirror the method's
-normal fields (`restore_host`, `restore_username`, `restore_password`, …). The
-rename is all `restoreConnection()` does before handing off, so nothing below
-that point knows which of the two it got.
+offer when that step's method matches the target's kind — an HTTP target has no
+SSH login to lend an SSH action. Otherwise the step carries its own address and
+its own encrypted credentials, under its prefixed names that mirror the method's
+normal fields (`post_restore_host`, `post_restore_username`,
+`post_restore_password`, …). The rename is all `restoreConnection()` does before
+handing off, so nothing below that point knows which of the two it got — nor
+which step it is running.
 
-| `restore_kind` | What happens |
-| --- | --- |
-| `none` | Nothing beyond the wake and the wait. Being back up is the whole restore. |
-| `ssh` / `winrm` | `restore_command` runs over the connection. When inheriting, that includes the stored sudo password, written to the command's stdin (so the command needs `sudo -S`). A non-zero exit fails the restore. |
-| `k8s` | Up to three parts, in this order: uncordon every node, one raw API request, restart every Deployment. |
-| `http` | One request: `restore_method` (default POST) to `restore_url`, with `restore_body` as `application/json` if set. |
+The two credential sets are genuinely separate: a step-1 HTTP endpoint's
+`restore_token` and a step-3 cluster's `post_restore_token` are stored, resolved
+and dropped independently.
 
-An HTTP restore that brings its own connection carries its own auth scheme
-(`none` / `bearer` / `header` / `basic`), TLS policy (`restore_insecure_tls` /
-`restore_ca_cert`) and secrets (`restore_token`, `restore_password`). The `login`
-scheme is not on offer there: a login round trip belongs to a target, which has
-room for the whole conversation it needs.
+An HTTP step that brings its own connection carries its own auth scheme
+(`none` / `bearer` / `header` / `basic`), TLS policy (`…_insecure_tls` /
+`…_ca_cert`) and secrets (`…_token`, `…_password`). The `login` scheme is not on
+offer there: a login round trip belongs to a target, which has room for the whole
+conversation it needs.
 
 ### The Kubernetes method in detail
+
+The same in either step; the field names below take that step's prefix.
 
 The connection is resolved **before** the wait, so a missing token or an
 unparseable kubeconfig fails immediately instead of being buried under a
 five-minute timeout. Then, in this order:
 
-1. **Uncordon every node** (`restore_uncordon`) — `PATCH spec.unschedulable=false`
+1. **Uncordon every node** (`…_uncordon`) — `PATCH spec.unschedulable=false`
    on each. This is an explicit choice, defaulted on in the form: it is the
    mirror image of a cordon + drain, but nothing infers it from the trigger
    action, because the cluster being restored need not be the one this target
    shut down. Nothing records which nodes were cordoned before the outage, so
    **every** node in the cluster is uncordoned.
-2. **Optional restore request** — one raw API call, `restore_method` (default
-   `PATCH`, sent as `application/merge-patch+json`) to `restore_path` with
-   `restore_body`. Leave the path blank to skip it.
-3. **Optional Deployment restart** (`restore_restart_deployments`) — the
+2. **Optional restore request** — one raw API call, `…_method` (default
+   `PATCH`, sent as `application/merge-patch+json`) to `…_path` with
+   `…_body`. Leave the path blank to skip it.
+3. **Optional Deployment restart** (`…_restart_deployments`) — the
    equivalent of `kubectl rollout restart deployment` in every namespace except
    `kube-system`, by stamping a fresh `kubectl.kubernetes.io/restartedAt`
    annotation. Evicted pods reschedule on their own once nodes are schedulable;
@@ -223,12 +269,14 @@ The message accumulates one clause per part of the sequence, so a failure says
 how far it got. For example, `sent Wake-on-LAN for AA:…:FF via 10.1.20.255; SSH did not
 answer within 300s (…)`.
 
-## Upgrading from the type-locked restore
+## Upgrading
 
-Before this, a restore was whatever shape the target's kind implied: only
+### From the type-locked restore (migration 9)
+
+Before that, a restore was whatever shape the target's kind implied: only
 ssh/winrm could wake a host, only a k8s target could uncordon, and an http target
 could do nothing but replay one request. Migration 9 maps every existing restore
-onto the new shape without changing what it does:
+onto a chosen method without changing what it does:
 
 | Was | Becomes |
 | --- | --- |
@@ -241,6 +289,24 @@ onto the new shape without changing what it does:
 `restore_enabled` is set from whether the old config would actually have done
 anything — the same test the Restore button used to enable itself with — so a
 target that was never set up does not silently acquire a restore.
+
+### From the single-action restore (migration 10)
+
+That one action then split in two, so that the thing which brings a target back
+and the thing that finishes the job could be picked separately. Migration 10
+moves each existing restore into whichever step it belongs in:
+
+| Was | Becomes |
+| --- | --- |
+| `restore_kind: 'ssh'` / `'winrm'` | `restore_kind: 'wol'` + `post_restore_kind` = that kind, with `restore_host`/`_port`/`_domain`/`_username`/`_auth_method`/`_command` moved to `post_restore_` names |
+| the same, with no MAC | the same — a wake with a blank MAC, which broadcasts nothing and goes straight to step 3 |
+| `restore_kind: 'none'` | `restore_kind: 'wol'`, `post_restore_kind: 'none'` |
+| `restore_kind: 'k8s'` / `'http'` | unchanged; both are still step-1 methods |
+
+A shell restore that carried its own credentials has them decrypted and rewritten
+under `post_restore_` names in the same transaction, because that is where step 3
+looks for them. A blob that will not decrypt (a lost key) is left exactly as it
+is rather than discarded.
 
 ## Limits worth knowing
 
@@ -258,6 +324,7 @@ target that was never set up does not silently acquire a restore.
   what the sequence is for.
 - **Auto-restore ignores targets in disabled action groups**, even if those
   targets ran before the group was disabled.
-- **Changing the restore method drops the old one's credentials.** The allowed
-  secret list narrows with the method (`secretFieldsFor()`), so a credential the
-  restore no longer connects with is not left sitting encrypted in the blob.
+- **Changing either step's method drops that step's old credentials.** The
+  allowed secret list narrows with both methods (`secretFieldsFor()`), so a
+  credential neither step connects with any more is not left sitting encrypted in
+  the blob.
