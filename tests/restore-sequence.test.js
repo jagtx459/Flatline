@@ -5,14 +5,14 @@ import { restoreStep } from '../server/connectors.js';
 import { startMockSsh } from '../dev/mock-ssh.js';
 import { startMockTargets } from '../dev/mock-targets.js';
 
-// The restore sequence: wake the host, wait for it to answer, then run the one
-// action its owner chose. Driven through the exported restoreStep() against a
-// real SSH server (dev/mock-ssh.js) and a real HTTP one (dev/mock-targets.js),
-// so the ordering being asserted is the ordering that actually happened on the
-// wire.
+// The restore sequence: the restore itself (step 1), the wait, then the optional
+// post-restore action (step 3). Driven through the exported restoreStep()
+// against a real SSH server (dev/mock-ssh.js) and a real HTTP one
+// (dev/mock-targets.js), so the ordering being asserted is the ordering that
+// actually happened on the wire.
 //
 // These all use an ssh target, since that is the kind with a probe to wait on;
-// the method it restores with varies, which is the point — it is chosen, not
+// the methods it restores with vary, which is the point — each is chosen, not
 // implied by the target's kind.
 //
 // The wake half is tests/wake-on-lan.test.js. Here the MAC is left off unless a
@@ -65,13 +65,13 @@ const down = (over = {}) => up({ port: deadPort, ...over });
 
 describe('what counts as a restore at all', () => {
   test('a target with the restore switched off has nothing to do', async () => {
-    const result = await restoreStep('ssh', up({ restore_enabled: 0, restore_kind: 'ssh', restore_command: 'x' }), secrets);
+    const result = await restoreStep('ssh', up({ restore_enabled: 0, post_restore_kind: 'ssh', post_restore_command: 'x' }), secrets);
     assert.equal(result.ok, false);
     assert.match(result.message, /no restore configured/);
   });
 
-  test('a target with neither a wake nor a method has nothing to do', async () => {
-    const result = await restoreStep('ssh', up({ restore_kind: 'none' }), secrets);
+  test('a wake with no MAC and no action behind it has nothing to do', async () => {
+    const result = await restoreStep('ssh', up({ restore_kind: 'wol' }), secrets);
     assert.equal(result.ok, false);
     assert.match(result.message, /no restore configured/);
   });
@@ -80,7 +80,7 @@ describe('what counts as a restore at all', () => {
 describe('waiting for the host', () => {
   test('a host that never answers fails, naming the budget it waited out', async () => {
     const started = Date.now();
-    const result = await restoreStep('ssh', down({ restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app' }), secrets);
+    const result = await restoreStep('ssh', down({ post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'systemctl start app' }), secrets);
 
     assert.equal(result.ok, false);
     assert.match(result.message, /SSH did not answer within 1s/);
@@ -90,9 +90,9 @@ describe('waiting for the host', () => {
     assert.equal(Date.now() - started >= 1000, true, 'it waited the full budget out');
   });
 
-  test('the final step is not run when the host never came back', async () => {
+  test('the post-restore action is not run when the host never came back', async () => {
     const before = ssh.commands.length;
-    await restoreStep('ssh', down({ restore_kind: 'ssh', restore_inherit: 1, restore_command: 'must-not-run' }), secrets);
+    await restoreStep('ssh', down({ post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'must-not-run' }), secrets);
     assert.equal(ssh.commands.length, before, 'nothing reached a host');
     assert.equal(ssh.commands.includes('must-not-run'), false);
   });
@@ -116,7 +116,7 @@ describe('waiting for the host', () => {
     const result = await restoreStep('ssh', {
       host: '127.0.0.1', port, username: 'root', auth_method: 'password',
       restore_enabled: 1, restore_wait_seconds: 3,
-      restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app'
+      post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'systemctl start app'
     }, secrets);
 
     clearTimeout(timer);
@@ -124,17 +124,17 @@ describe('waiting for the host', () => {
 
     assert.equal(result.ok, true, result.message);
     assert.match(result.message, /SSH answered/, 'the first refusal was not fatal');
-    assert.match(result.message, /ran: systemctl start app/, 'and the final step ran once it was back');
+    assert.match(result.message, /ran: systemctl start app/, 'and the action ran once it was back');
   });
 });
 
 describe('the order of the sequence', () => {
-  test('the wake is reported before the wait, and the wait before the final step', async () => {
+  test('the wake is reported before the wait, and the wait before the action', async () => {
     const result = await restoreStep('ssh', up({
       wol_mac: 'AA:BB:CC:DD:EE:FF',
       wol_broadcast: '127.0.0.1', // one packet to loopback — nothing leaves this host
-      restore_kind: 'ssh', restore_inherit: 1,
-      restore_command: 'systemctl start app'
+      post_restore_kind: 'ssh', post_restore_inherit: 1,
+      post_restore_command: 'systemctl start app'
     }), secrets);
 
     assert.equal(result.ok, true, result.message);
@@ -142,7 +142,7 @@ describe('the order of the sequence', () => {
     const answered = result.message.indexOf('SSH answered');
     const step = result.message.indexOf('ran: systemctl start app');
     assert.equal(wake >= 0 && answered > wake && step > answered, true,
-      `expected wake -> wait -> final step, got: ${result.message}`);
+      `expected wake -> wait -> action, got: ${result.message}`);
   });
 
   test('each part reports itself as it starts', async () => {
@@ -151,7 +151,7 @@ describe('the order of the sequence', () => {
     const phases = [];
     const result = await restoreStep('ssh', up({
       wol_mac: 'AA:BB:CC:DD:EE:FF', wol_broadcast: '127.0.0.1',
-      restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app'
+      post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'systemctl start app'
     }), secrets, undefined, null, (p) => phases.push(p));
 
     assert.equal(result.ok, true, result.message);
@@ -164,7 +164,7 @@ describe('the order of the sequence', () => {
 
   test('a target that only waits reports only the wait', async () => {
     const phases = [];
-    await restoreStep('ssh', up({ wol_mac: 'AA:BB:CC:DD:EE:FF', wol_broadcast: '127.0.0.1', restore_kind: 'none' }),
+    await restoreStep('ssh', up({ wol_mac: 'AA:BB:CC:DD:EE:FF', wol_broadcast: '127.0.0.1', restore_kind: 'wol' }),
       secrets, undefined, null, (p) => phases.push(p));
     assert.deepEqual(phases, ['waking AA:BB:CC:DD:EE:FF', 'waiting up to 1s for SSH to answer']);
   });
@@ -176,8 +176,8 @@ describe('the order of the sequence', () => {
     const result = await restoreStep('ssh', up({
       wol_mac: 'AA:BB:CC:DD:EE:FF',
       wake_mode: 'relay',
-      restore_kind: 'ssh', restore_inherit: 1,
-      restore_command: 'must-not-run'
+      post_restore_kind: 'ssh', post_restore_inherit: 1,
+      post_restore_command: 'must-not-run'
     }), secrets, undefined, null);
 
     assert.equal(result.ok, false);
@@ -185,19 +185,19 @@ describe('the order of the sequence', () => {
     assert.equal(ssh.commands.length, before);
   });
 
-  test('with no final step, coming back is the whole restore', async () => {
+  test('with no post-restore action, coming back is the whole restore', async () => {
     const result = await restoreStep('ssh', up({
-      wol_mac: 'AA:BB:CC:DD:EE:FF', wol_broadcast: '127.0.0.1', restore_kind: 'none'
+      wol_mac: 'AA:BB:CC:DD:EE:FF', wol_broadcast: '127.0.0.1', restore_kind: 'wol'
     }), secrets);
     assert.equal(result.ok, true, result.message);
     assert.match(result.message, /SSH answered/);
   });
 });
 
-describe('the final step', () => {
+describe('the post-restore action', () => {
   test('a command runs on the host that was waited for', async () => {
     const result = await restoreStep('ssh',
-      up({ restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app' }), secrets);
+      up({ post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'systemctl start app' }), secrets);
     assert.equal(result.ok, true, result.message);
     assert.equal(ssh.commands.at(-1), 'systemctl start app');
   });
@@ -210,7 +210,7 @@ describe('the final step', () => {
     const result = await restoreStep('ssh', {
       host: '127.0.0.1', port: failing.address().port, username: 'root', auth_method: 'password',
       restore_enabled: 1, restore_wait_seconds: 1,
-      restore_kind: 'ssh', restore_inherit: 1, restore_command: 'systemctl start app'
+      post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'systemctl start app'
     }, secrets);
     failing.close();
 
@@ -273,6 +273,61 @@ describe('the final step', () => {
   });
 });
 
+describe('the two steps together', () => {
+  test('step 1 runs before step 3, each against its own connection', async () => {
+    // The shape the split exists for: an endpoint resumes the service, then a
+    // command runs on a machine reached separately.
+    const result = await restoreStep('ssh', up({
+      restore_kind: 'http', restore_url: `${base}/up`, restore_method: 'POST',
+      post_restore_kind: 'ssh',
+      post_restore_host: '127.0.0.1', post_restore_port: ssh.address().port,
+      post_restore_username: 'root', post_restore_auth_method: 'password',
+      post_restore_command: 'systemctl start app'
+    }), { ...secrets, post_restore_password: HOST_PASSWORD });
+
+    assert.equal(result.ok, true, result.message);
+    const sent = result.message.indexOf('-> 200');
+    const ran = result.message.indexOf('ran: systemctl start app');
+    assert.equal(sent >= 0 && ran > sent, true,
+      `expected the request before the command, got: ${result.message}`);
+  });
+
+  test('step 3 is never reached when step 1 fails', async () => {
+    const result = await restoreStep('ssh', up({
+      restore_kind: 'http', restore_url: `${base}/down`, restore_method: 'POST',
+      post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'must-not-run'
+    }), secrets);
+
+    assert.equal(result.ok, false);
+    assert.match(result.message, /-> 500/);
+    // The wait's own reachability probe does run over SSH; the command does not.
+    assert.equal(ssh.commands.includes('must-not-run'), false);
+  });
+
+  test('step 3 carries its own credentials, not the target\'s', async () => {
+    // A different login on a different machine — if the step fell back to the
+    // target's password it would be refused here.
+    const other = await startMockSsh({
+      username: 'svc', password: 'svc-pw',
+      respond: (command) => ({ code: 0, output: `ran: ${command}` })
+    });
+    const config = up({
+      post_restore_kind: 'ssh',
+      post_restore_host: '127.0.0.1', post_restore_port: other.address().port,
+      post_restore_username: 'svc', post_restore_auth_method: 'password',
+      post_restore_command: 'systemctl start app'
+    });
+
+    const ok = await restoreStep('ssh', config, { ...secrets, post_restore_password: 'svc-pw' });
+    const refused = await restoreStep('ssh', config, secrets);
+    other.close();
+
+    assert.equal(ok.ok, true, ok.message);
+    assert.match(ok.message, /ran: systemctl start app/);
+    assert.equal(refused.ok, false, 'the target\'s own password is not on offer to step 3');
+  });
+});
+
 describe('waking through a relay', () => {
   test('the relay runs its own command with the MAC substituted', async () => {
     const relayServer = await startMockSsh({ username: 'pi', password: 'relay-pw' });
@@ -284,7 +339,7 @@ describe('waking through a relay', () => {
     };
 
     const result = await restoreStep('ssh', up({
-      wol_mac: 'AA:BB:CC:DD:EE:FF', wake_mode: 'relay', restore_kind: 'none'
+      wol_mac: 'AA:BB:CC:DD:EE:FF', wake_mode: 'relay', restore_kind: 'wol'
     }), secrets, undefined, relay);
 
     assert.equal(relayServer.commands.at(-1), 'wakeonlan AA:BB:CC:DD:EE:FF',
@@ -303,7 +358,7 @@ describe('waking through a relay', () => {
       wake_command: 'wakeonlan {mac} && logger "woke {mac}"'
     };
 
-    await restoreStep('ssh', up({ wol_mac: 'AA:BB:CC:DD:EE:FF', wake_mode: 'relay', restore_kind: 'none' }),
+    await restoreStep('ssh', up({ wol_mac: 'AA:BB:CC:DD:EE:FF', wake_mode: 'relay', restore_kind: 'wol' }),
       secrets, undefined, relay);
 
     assert.equal(relayServer.commands.at(-1), 'wakeonlan AA:BB:CC:DD:EE:FF && logger "woke AA:BB:CC:DD:EE:FF"');
@@ -323,7 +378,7 @@ describe('waking through a relay', () => {
     };
 
     const result = await restoreStep('ssh', up({
-      wol_mac: 'AA:BB:CC:DD:EE:FF', wake_mode: 'relay', restore_kind: 'ssh', restore_inherit: 1, restore_command: 'must-not-run'
+      wol_mac: 'AA:BB:CC:DD:EE:FF', wake_mode: 'relay', post_restore_kind: 'ssh', post_restore_inherit: 1, post_restore_command: 'must-not-run'
     }), secrets, undefined, relay);
 
     assert.equal(result.ok, false);
