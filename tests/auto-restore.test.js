@@ -171,6 +171,18 @@ describe('who takes part', () => {
     assert.deepEqual(restored(), ['mine']);
   });
 
+  test('given the targets a run actually reached, the rest are left down', async () => {
+    // What a run stopped early by stop_on_restore hands back: the stages it
+    // never got to were never shut down, so restoring them would put machines
+    // into a state the outage never took them out of.
+    const ran = target('was-shut-down');
+    const untouched = target('never-reached');
+    const ag = actionGroup('stopped-early', [[ran], [untouched]]);
+
+    await runAutoRestore(flatlineGroup('lab', [ag]), new Set([ran.id]));
+    assert.deepEqual(restored(), ['was-shut-down']);
+  });
+
   test('a target whose restore is switched off takes no part', async () => {
     // The auto_restore flag lives inside the restore, and is cleared with it, so
     // "ticked but nothing configured" is no longer a state a saved target can be

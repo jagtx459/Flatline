@@ -19,6 +19,10 @@ import { recordTargetActivity } from './targetHealth.js';
  * part of that boundary: nothing has been sent to a machine during it, so a
  * cancel cuts it short rather than sitting it out.
  *
+ * An action group set to stop_on_restore adds one more thing that ends a run at
+ * a stage boundary: the Flatline group that started it coming back. The stages
+ * below it would be answering an outage that is over, so they never run.
+ *
  * A wait step *inside* a stage splits it: the steps before it start together,
  * the wait is held, and only then do the steps after it start. So a stage runs
  * as a sequence of parallel batches, and the order of its steps matters. Those
@@ -90,11 +94,31 @@ export function isRunning(actionGroupId) {
 }
 
 /**
+ * The Flatline group a run was started for, when it is no longer down and this
+ * action group asked to stop there. Null in every other case: a manual run with
+ * no group behind it, a group deleted mid-run, or one still down.
+ *
+ * "Restored" is the group's own all/any rule read in reverse — whatever counted
+ * as down is what has to stop counting for the run to give up.
+ */
+function recoveredFlatlineGroup(actionGroup, flatlineGroupId) {
+  if (!actionGroup.stop_on_restore || flatlineGroupId == null) return null;
+  const group = store.getFlatlineGroup(flatlineGroupId);
+  return group && !store.isFlatlineGroupDown(group) ? group : null;
+}
+
+/**
  * Starts an action group. Returns { run, done } — `run` is the row as created
  * (so a caller can respond immediately) and `done` resolves when the run
- * finishes, for callers that need the stages to complete before moving on.
+ * finishes, for callers that need the stages to complete before moving on. It
+ * resolves to the set of target ids the run actually acted on, which is what a
+ * restore afterwards has to undo — the stages a stopped run never reached are
+ * not in it.
+ *
+ * `flatlineGroupId` is the group that triggered this run, so it can be watched
+ * for a recovery; a manual run has none.
  */
-export function startActionGroupRun(actionGroup, { trigger, detail = null }) {
+export function startActionGroupRun(actionGroup, { trigger, detail = null, flatlineGroupId = null }) {
   const stages = actionGroup.stages ?? [];
   const run = store.createActionRun({
     action_group_id: actionGroup.id,
@@ -116,10 +140,11 @@ export function startActionGroupRun(actionGroup, { trigger, detail = null }) {
   });
 
   controls.set(run.id, { pause: false, paused: false, cancel: false, wake: null });
-  const done = execute(run.id, actionGroup, stages)
+  const done = execute(run.id, actionGroup, stages, flatlineGroupId)
     .catch((err) => {
       console.error(`[runs] run ${run.id} ("${actionGroup.name}") failed unexpectedly:`, err);
       finish(run.id, 'failed', `Run failed unexpectedly: ${err.message}`);
+      return new Set();
     })
     .finally(() => controls.delete(run.id));
 
@@ -133,12 +158,14 @@ function finish(runId, status, message) {
   recordOutcome(store.getActionRun(runId));
 }
 
-async function execute(runId, actionGroup, stages) {
+async function execute(runId, actionGroup, stages, flatlineGroupId) {
   const ctl = controls.get(runId);
+  /** Targets this run acted on, for whoever restores afterwards. */
+  const ran = new Set();
 
   if (stages.length === 0) {
     finish(runId, 'completed', 'Nothing to do — this action group has no stages');
-    return;
+    return ran;
   }
 
   let failedStages = 0;
@@ -162,7 +189,7 @@ async function execute(runId, actionGroup, stages) {
 
     if (ctl.cancel) {
       finish(runId, 'cancelled', `Cancelled before stage ${i + 1} of ${stages.length}`);
-      return;
+      return ran;
     }
     if (ctl.pause) {
       store.updateActionRun(runId, {
@@ -177,8 +204,21 @@ async function execute(runId, actionGroup, stages) {
       ctl.wake = null;
       if (ctl.cancel) {
         finish(runId, 'cancelled', `Cancelled while paused before stage ${i + 1} of ${stages.length}`);
-        return;
+        return ran;
       }
+    }
+
+    // The outage this run answers may be over — the group it was started for is
+    // back. Checked at the same boundary a cancel is, and for the same reason: a
+    // stage already in flight is commands running on remote hosts. Stage 1 is
+    // checked too, so a group that recovers between the trigger and the run
+    // starting is never shut down at all.
+    const back = recoveredFlatlineGroup(actionGroup, flatlineGroupId);
+    if (back) {
+      console.log(`[runs] "${actionGroup.name}" stopping before stage ${i + 1} — "${back.name}" recovered`);
+      finish(runId, 'cancelled',
+        `Stopped before stage ${i + 1} of ${stages.length} — "${back.name}" recovered`);
+      return ran;
     }
 
     // 'pending' is a step whose batch has not started yet — everything below
@@ -198,25 +238,28 @@ async function execute(runId, actionGroup, stages) {
     });
 
     const { results, cancelled } = await runStage(runId, actionGroup, stage, steps, ctl);
+    // Only what was actually acted on: a skipped (disabled) target was never
+    // sent anything, so there is nothing to bring back.
+    for (const r of results) if (r.target_id != null && !r.skipped) ran.add(r.target_id);
     if (cancelled) {
       finish(runId, 'cancelled', `Cancelled during stage ${i + 1} of ${stages.length}`);
-      return;
+      return ran;
     }
 
     // Skipped steps are left out of the verdict — a stage of nothing but
     // disabled targets has not failed, it simply had nothing to do.
-    const ran = results.filter((r) => !r.skipped);
-    const failed = ran.filter((r) => !r.ok).length;
+    const attempted = results.filter((r) => !r.skipped);
+    const failed = attempted.filter((r) => !r.ok).length;
     const stageFailed = stage.pass_rule === 'all'
-      ? ran.length > 0 && failed === ran.length // every step in the stage failed
-      : failed > 0;                             // any step in the stage failed
+      ? attempted.length > 0 && failed === attempted.length // every step in the stage failed
+      : failed > 0;                                        // any step in the stage failed
     if (stageFailed) failedStages += 1;
 
     if (stageFailed && (stage.on_failure ?? actionGroup.on_failure) === 'stop') {
-      console.log(`[runs] "${actionGroup.name}" stopping after stage ${i + 1} — ${failed}/${ran.length} failed and on_failure is 'stop'`);
+      console.log(`[runs] "${actionGroup.name}" stopping after stage ${i + 1} — ${failed}/${attempted.length} failed and on_failure is 'stop'`);
       finish(runId, 'failed',
-        `Stopped after stage ${i + 1} of ${stages.length} — ${failed} of ${ran.length} targets failed`);
-      return;
+        `Stopped after stage ${i + 1} of ${stages.length} — ${failed} of ${attempted.length} targets failed`);
+      return ran;
     }
   }
 
@@ -224,6 +267,7 @@ async function execute(runId, actionGroup, stages) {
     failedStages > 0
       ? `Ran all ${stages.length} stage(s); ${failedStages} failed but the sequence continued`
       : `All ${stages.length} stage(s) completed`);
+  return ran;
 }
 
 /**
@@ -296,7 +340,8 @@ function sleep(ctl, ms) {
   });
 }
 
-/** Runs one step against its target and records the result. Returns { ok, skipped }. */
+/** Runs one step against its target and records the result. Returns
+ *  { ok, skipped, target_id } — the id names what a later restore has to undo. */
 async function runActionStep(actionGroup, step) {
   const target = store.getActionTarget(step.target_id);
   if (!target) {
@@ -315,7 +360,7 @@ async function runActionStep(actionGroup, step) {
       message: `"${actionGroup.name}" -> ${target.name} (${target.kind}): skipped — this target is disabled`
     });
     console.log(`[runs] "${actionGroup.name}" -> ${target.name}: SKIPPED — target is disabled`);
-    return { ok: true, skipped: true };
+    return { ok: true, skipped: true, target_id: target.id };
   }
 
   let config;
@@ -336,7 +381,7 @@ async function runActionStep(actionGroup, step) {
     message: `"${actionGroup.name}" -> ${target.name} (${target.kind}): ${result.message}`
   });
   console.log(`[runs] "${actionGroup.name}" -> ${target.name}: ${result.ok ? 'OK' : 'FAILED'} — ${result.message}`);
-  return { ok: result.ok };
+  return { ok: result.ok, target_id: target.id };
 }
 
 // ---- controls ----

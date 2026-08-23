@@ -1257,6 +1257,7 @@ const igForm = initEntityForm({
     }));
     $igForm.elements.namedItem('name').value = g.name;
     $igForm.elements.namedItem('on_failure').value = g.on_failure;
+    $igForm.elements.namedItem('stop_on_restore').checked = !!g.stop_on_restore;
     $igForm.elements.namedItem('enabled').checked = !!g.enabled;
     renderStages();
     renderIgFlatlineGroupChecks(
@@ -1265,6 +1266,7 @@ const igForm = initEntityForm({
   collect: () => ({
     name: $igForm.elements.namedItem('name').value,
     on_failure: $igForm.elements.namedItem('on_failure').value,
+    stop_on_restore: $igForm.elements.namedItem('stop_on_restore').checked,
     enabled: $igForm.elements.namedItem('enabled').checked,
     stages: stages.filter((st) => st.steps.length > 0)
   }),

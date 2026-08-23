@@ -963,7 +963,13 @@ function parseActionGroupInput(body) {
     }
   }
 
-  return { name, on_failure, stages, enabled: body.enabled === undefined || body.enabled ? 1 : 0 };
+  return {
+    name, on_failure, stages,
+    // Only a Flatline-triggered run has a group to watch; a manual one runs to
+    // the end whatever this says.
+    stop_on_restore: body.stop_on_restore ? 1 : 0,
+    enabled: body.enabled === undefined || body.enabled ? 1 : 0
+  };
 }
 
 /** Rotates or sets the encryption key, re-encrypting every stored blob. */

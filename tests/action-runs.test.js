@@ -34,9 +34,10 @@ function target(name, route) {
  * together; `wait` makes a wait step. `waits[i]` is the gap held before stage i,
  * and defaults to none here so tests about anything else run at full speed.
  */
-function group(name, stages, { on_failure = 'continue', stageFailure = null, waits = [] } = {}) {
+function group(name, stages,
+  { on_failure = 'continue', stageFailure = null, waits = [], stop_on_restore = 0 } = {}) {
   return store.createActionGroup({
-    name, on_failure, enabled: 1,
+    name, on_failure, stop_on_restore, enabled: 1,
     stages: stages.map((steps, i) => ({
       pass_rule: 'any',
       on_failure: stageFailure,
@@ -455,6 +456,121 @@ test('a cancelled run reports the same outcome event as a failed one', async () 
   const outcome = store.listEvents(10).find((e) => e.kind.startsWith('action_run_c') || e.kind === 'action_run_failed');
   assert.equal(outcome.kind, 'action_run_failed');
   assert.match(outcome.message, /CANCELLED/);
+});
+
+// ---- stopping once the Flatline group is back ----
+// A run a Flatline group triggered can be set to give up its remaining stages
+// the moment that group is no longer down — by the group's own all/any rule,
+// the one that decided it was down to begin with.
+
+/** A Flatline group whose endpoints are all down, and the endpoints themselves. */
+function flatlineGroup(name, mode, count) {
+  const endpoints = [];
+  for (let i = 0; i < count; i++) {
+    const ep = store.createEndpoint({
+      name: `${name}-ep${i}`, type: 'icmp', target: '127.0.0.1',
+      interval_seconds: 30, timeout_ms: 2000, down_threshold: 2, up_threshold: 2,
+      expect_status: null, expect_json: null, enabled: 1
+    });
+    store.setEndpointState(ep.id, 'down', Date.now());
+    endpoints.push(ep);
+  }
+  const group = store.createFlatlineGroup({
+    name, grace_minutes: 1, mode, enabled: 1,
+    endpoint_ids: endpoints.map((e) => e.id), action_group_ids: []
+  });
+  return { group, endpoints };
+}
+
+const up = (ep) => store.setEndpointState(ep.id, 'up', Date.now());
+
+test("a group in 'all' mode is back as soon as one endpoint answers, and the run stops there", async () => {
+  const first = target('ran-before-the-power-returned', '/up');
+  const second = target('never-shut-down', '/up');
+  const { group: fg, endpoints } = flatlineGroup('all-mode', 'all', 2);
+  const g = group('stops-on-restore', [[{ target: first, seconds: 30 }], [{ target: second, seconds: 30 }]],
+    { waits: [0, 2], stop_on_restore: 1 });
+
+  const { run, done } = runs.startActionGroupRun(g,
+    { trigger: 'flatline', detail: fg.name, flatlineGroupId: fg.id });
+
+  // Power comes back mid-run: 'all' means the group needs every endpoint down,
+  // so one answering is already a recovery.
+  await waitFor(() => /Waiting 2s before stage 2/.test(message(run.id)), 'the gap before stage 2');
+  up(endpoints[0]);
+  const ran = await done;
+
+  const finished = store.getActionRun(run.id);
+  assert.equal(finished.status, 'cancelled');
+  assert.equal(finished.stage_index, 0, 'stage 2 answers an outage that is over — it must not run');
+  assert.match(finished.message, /Stopped before stage 2 of 2 — "all-mode" recovered/);
+  // What it did run is what a restore afterwards has to undo.
+  assert.deepEqual([...ran], [first.id]);
+});
+
+test("a group in 'any' mode is only back once every endpoint is, and the run keeps going until then", async () => {
+  const first = target('any-mode-first', '/up');
+  const second = target('any-mode-second', '/up');
+  const { group: fg, endpoints } = flatlineGroup('any-mode', 'any', 2);
+  const g = group('any-mode-run', [[{ target: first, seconds: 30 }], [{ target: second, seconds: 30 }]],
+    { waits: [0, 2], stop_on_restore: 1 });
+
+  const { run, done } = runs.startActionGroupRun(g,
+    { trigger: 'flatline', detail: fg.name, flatlineGroupId: fg.id });
+
+  // One endpoint back is not a recovery here — 'any' means one down is down.
+  await waitFor(() => /Waiting 2s before stage 2/.test(message(run.id)), 'the gap before stage 2');
+  up(endpoints[0]);
+  const ran = await done;
+
+  assert.equal(status(run.id), 'completed', 'the group was still down, so the run finished');
+  assert.equal(store.getActionRun(run.id).stage_index, 1);
+  assert.deepEqual([...ran].sort(), [first.id, second.id].sort());
+});
+
+test('an action group without the setting runs on regardless of the group coming back', async () => {
+  const first = target('unstoppable-first', '/up');
+  const second = target('unstoppable-second', '/up');
+  const { group: fg, endpoints } = flatlineGroup('ignored', 'all', 1);
+  const g = group('runs-to-the-end', [[{ target: first, seconds: 30 }], [{ target: second, seconds: 30 }]],
+    { waits: [0, 2] });
+
+  const { run, done } = runs.startActionGroupRun(g,
+    { trigger: 'flatline', detail: fg.name, flatlineGroupId: fg.id });
+
+  await waitFor(() => /Waiting 2s before stage 2/.test(message(run.id)), 'the gap before stage 2');
+  up(endpoints[0]);
+  await done;
+
+  assert.equal(status(run.id), 'completed');
+  assert.equal(store.getActionRun(run.id).stage_index, 1, 'every stage ran, as it always has');
+});
+
+test('a manual run has no group to watch, so the setting does not touch it', async () => {
+  const ok = target('manual-with-the-setting', '/up');
+  const g = group('manual-stop-on-restore', [[{ target: ok, seconds: 30 }], [{ target: ok, seconds: 30 }]],
+    { stop_on_restore: 1 });
+
+  const { run, done } = runs.startActionGroupRun(g, { trigger: 'manual' });
+  await done;
+
+  assert.equal(status(run.id), 'completed');
+  assert.equal(store.getActionRun(run.id).stage_index, 1);
+});
+
+test('a group that recovers before the first stage stops the run without shutting anything down', async () => {
+  const never = target('never-touched', '/up');
+  const { group: fg, endpoints } = flatlineGroup('quick-recovery', 'all', 1);
+  const g = group('nothing-to-do', [[{ target: never, seconds: 30 }]], { stop_on_restore: 1 });
+
+  up(endpoints[0]); // back before the run even starts
+  const { run, done } = runs.startActionGroupRun(g,
+    { trigger: 'flatline', detail: fg.name, flatlineGroupId: fg.id });
+  const ran = await done;
+
+  assert.equal(status(run.id), 'cancelled');
+  assert.match(store.getActionRun(run.id).message, /Stopped before stage 1 of 1/);
+  assert.deepEqual([...ran], [], 'nothing ran, so there is nothing to restore');
 });
 
 test('markInterruptedRuns closes out runs a stopped process left behind', () => {

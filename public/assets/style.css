@@ -686,6 +686,11 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 /* A tick box with a "?" beside it: the label must not stretch across the row,
    or the popover button lands somewhere far from what it explains. */
 .check-row { display: flex; align-items: center; gap: 6px; }
+/* A checkbox sharing a form .grid row with captioned inputs. Left to stretch it
+   centres itself against the caption as well and floats above the controls
+   beside it, so it drops to the bottom of the cell like they do (label.field's
+   margin-top: auto) and lifts by half an input's height to line up with them. */
+form .grid > .check-row { align-self: end; padding-bottom: 8px; }
 .restore-step { display: flex; gap: 10px; padding: 10px 0 2px; border-top: 1px dashed var(--gridline); margin-top: 10px; }
 .restore-step .restore-num {
   flex: none; width: 20px; padding-top: 2px;

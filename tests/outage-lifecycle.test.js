@@ -140,3 +140,74 @@ test('a second outage arms and fires again', async () => {
   setAll('up', Date.now());
   await waitFor(() => !state().armed, 'the group to disarm again');
 });
+
+/**
+ * Recovery mid-run, for an action group set to stop there: the run gives up its
+ * remaining stages, and the restore that follows covers what it actually ran —
+ * not the stages it never reached, which were never shut down.
+ *
+ * A separate Flatline group of its own, so the fixture above keeps its history.
+ */
+test('a group set to stop on restore stops mid-run, and only what ran comes back', async () => {
+  const port = mock.address().port;
+  const restorable = (name) => store.createActionTarget({
+    name, kind: 'http',
+    config: JSON.stringify({
+      url: `http://127.0.0.1:${port}/up`, method: 'POST', auth_scheme: 'none',
+      restore_enabled: 1, auto_restore: 1,
+      restore_kind: 'http', restore_inherit: 1,
+      restore_url: `http://127.0.0.1:${port}/up`, restore_method: 'POST'
+    }),
+    secret_enc: null, enabled: 1
+  });
+
+  const ran = restorable('stage-1-went-down');
+  const untouched = restorable('stage-2-never-started');
+  const ag = store.createActionGroup({
+    name: 'stops when the power is back', on_failure: 'continue',
+    stop_on_restore: 1, enabled: 1,
+    stages: [
+      { pass_rule: 'any', on_failure: null, wait_seconds: 0,
+        steps: [{ target_id: ran.id, timeout_seconds: 30 }] },
+      // Long enough that the watcher notices the recovery while the run is
+      // still holding this gap.
+      { pass_rule: 'any', on_failure: null, wait_seconds: 20,
+        steps: [{ target_id: untouched.id, timeout_seconds: 30 }] }
+    ]
+  });
+
+  const ep = store.createEndpoint({
+    name: 'stop-on-restore-ups', type: 'http', target: `http://127.0.0.1:${port}/scenario`,
+    interval_seconds: 10, timeout_ms: 2000, down_threshold: 2, up_threshold: 2,
+    expect_status: 200, expect_json: null, enabled: 1
+  });
+  const fg = store.createFlatlineGroup({
+    name: 'stop-on-restore group', grace_minutes: 1, mode: 'all', enabled: 1,
+    endpoint_ids: [ep.id], action_group_ids: [ag.id]
+  });
+  const fgState = () => getGroupStates().find((g) => g.group_id === fg.id);
+  const runFor = () => store.listActionRuns(50).find((r) => r.action_group_id === ag.id);
+
+  store.setEndpointState(ep.id, 'down', Date.now() - 61_000);
+  await waitFor(() => fgState().triggered, 'the group to trigger');
+  await waitFor(() => runFor(), 'the run to start');
+  await waitFor(() => /Waiting 20s before stage 2/.test(runFor().message ?? ''),
+    'the run to reach the gap before stage 2');
+
+  // The power comes back while the run is between stages.
+  store.setEndpointState(ep.id, 'up', Date.now());
+  await waitFor(() => !fgState().armed, 'the group to disarm');
+  await waitFor(() => runFor().status === 'cancelled', 'the run to stop where it stood');
+
+  assert.match(runFor().message, /Stopped before stage 2 of 2 — "stop-on-restore group" recovered/);
+  assert.equal(runFor().stage_index, 0, 'stage 2 must not have run');
+
+  const restoreEvents = () => store.listEvents(50)
+    .filter((e) => e.message.includes('Auto-restore after "stop-on-restore group"'));
+  await waitFor(() => restoreEvents().length > 0, 'the auto-restore to run');
+
+  // Only the target the run actually reached: stage 2 was never shut down, so
+  // there is nothing to bring it back from.
+  assert.deepEqual(restoreEvents().map((e) => e.message.includes(ran.name)), [true]);
+  assert.equal(restoreEvents().some((e) => e.message.includes(untouched.name)), false);
+});

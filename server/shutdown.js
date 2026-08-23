@@ -10,13 +10,27 @@ import { runAutoRestore } from './autoRestore.js';
  * recovers after triggering hands off to autoRestore.js to bring back the
  * targets that asked for it.
  *
+ * An action group set to stop_on_restore stops itself on that recovery rather
+ * than running its remaining stages (actionRuns.js does that). Its restore then
+ * waits for it: only once the run has stopped is it known which targets were
+ * actually acted on, and the ones it never reached must not be restored from a
+ * state they were never put in.
+ *
  * Executing those action groups is actionRuns.js's job — this file only
  * decides when they start.
  */
 
 const EVAL_INTERVAL_MS = 5000;
 
-/** group id -> { armed, outageStartTs, deadlineTs, triggered, triggeredTs } */
+/**
+ * group id -> { armed, outageStartTs, deadlineTs, triggered, triggeredTs,
+ *   trigger, ranTargets, stopsOnRestore, restoreWhenDone }
+ *
+ * The last four cover one trigger: a marker for it while its action groups are
+ * still running, the targets they have acted on so far, whether any of them
+ * stops when the group comes back, and whether a recovery arrived before they
+ * had finished.
+ */
 const states = new Map();
 
 /** Returns the interval so tests can stop the watcher; the server ignores it. */
@@ -61,15 +75,14 @@ function evaluate() {
   for (const g of groups) {
     liveIds.add(g.id);
     const st = states.get(g.id) ?? {
-      armed: false, outageStartTs: null, deadlineTs: null, triggered: false, triggeredTs: null
+      armed: false, outageStartTs: null, deadlineTs: null, triggered: false, triggeredTs: null,
+      trigger: null, ranTargets: new Set(), stopsOnRestore: false, restoreWhenDone: false
     };
     states.set(g.id, st);
 
     const members = endpoints.filter((e) => e.group_ids.includes(g.id) && e.enabled);
     const downMembers = members.filter((e) => e.last_state === 'down');
-    const failed = g.enabled && members.length > 0 && (
-      g.mode === 'any' ? downMembers.length > 0 : downMembers.length === members.length
-    );
+    const failed = g.enabled && store.isFlatlineGroupDown(g, endpoints);
 
     if (!failed) {
       if (st.armed) {
@@ -85,12 +98,17 @@ function evaluate() {
         });
         console.log(`[watcher] "${g.name}" disarmed — group recovered`);
 
-        // Only worth undoing if the actions actually ran. Deliberately not
-        // awaited: a restore waits minutes for hosts to boot, and the watcher
-        // has every other group to keep evaluating meanwhile.
-        if (wasTriggered) {
-          runAutoRestore(g).catch((err) =>
-            console.error(`[restore] "${g.name}" auto-restore failed unexpectedly:`, err));
+        // Only worth undoing if the actions actually ran.
+        if (wasTriggered && st.stopsOnRestore && st.trigger) {
+          // Those runs are stopping on this very recovery. What they got as far
+          // as is only settled once they have, so the restore waits for them —
+          // see finishTrigger.
+          st.restoreWhenDone = true;
+          console.log(`[watcher] "${g.name}" recovered mid-run — restoring once the run stops`);
+        } else if (wasTriggered) {
+          // A trigger that stops on restore reports exactly what it acted on;
+          // any other one is restored whole, as it always has been.
+          autoRestore(g, st.stopsOnRestore ? st.ranTargets : null);
         }
       }
       continue;
@@ -115,7 +133,16 @@ function evaluate() {
     if (!st.triggered && now >= st.deadlineTs) {
       st.triggered = true;
       st.triggeredTs = now;
-      triggerActions(g, now).catch((err) => console.error(`[watcher] "${g.name}" trigger failed unexpectedly:`, err));
+      st.ranTargets = new Set();
+      st.stopsOnRestore = false;
+      st.restoreWhenDone = false;
+      // Identifies this trigger, so a group that flaps hard enough to start a
+      // second one cannot have the first's completion mistaken for its own.
+      const token = {};
+      st.trigger = token;
+      triggerActions(g, now, st)
+        .catch((err) => console.error(`[watcher] "${g.name}" trigger failed unexpectedly:`, err))
+        .finally(() => finishTrigger(g.id, token));
     }
   }
 
@@ -124,8 +151,9 @@ function evaluate() {
   }
 }
 
-async function triggerActions(group, now) {
+async function triggerActions(group, now, st) {
   const actionGroups = store.listActionGroups().filter((ag) => group.action_group_ids.includes(ag.id) && ag.enabled);
+  st.stopsOnRestore = actionGroups.some((ag) => ag.stop_on_restore);
   const names = actionGroups.map((ag) => ag.name);
   store.recordEvent({
     ts: now, kind: 'shutdown_triggered',
@@ -137,7 +165,31 @@ async function triggerActions(group, now) {
   // starts. A paused run therefore holds the ones behind it, which is the
   // point of pausing.
   for (const ag of actionGroups) {
-    const { done } = startActionGroupRun(ag, { trigger: 'flatline', detail: group.name });
-    await done;
+    const { done } = startActionGroupRun(ag,
+      { trigger: 'flatline', detail: group.name, flatlineGroupId: group.id });
+    for (const targetId of await done) st.ranTargets.add(targetId);
   }
+}
+
+/**
+ * The trigger's runs are all over. A recovery that arrived while they were
+ * still going left its restore for this moment — unless the group has gone down
+ * again since, in which case there is nothing to bring anything back to.
+ */
+function finishTrigger(groupId, token) {
+  const st = states.get(groupId);
+  if (!st || st.trigger !== token) return; // a newer trigger has taken over
+  st.trigger = null;
+  if (!st.restoreWhenDone) return;
+  st.restoreWhenDone = false;
+
+  const group = store.getFlatlineGroup(groupId);
+  if (group && !store.isFlatlineGroupDown(group)) autoRestore(group, st.ranTargets);
+}
+
+/** Deliberately not awaited: a restore waits minutes for hosts to boot, and the
+ *  watcher has every other group to keep evaluating meanwhile. */
+function autoRestore(group, only) {
+  runAutoRestore(group, only).catch((err) =>
+    console.error(`[restore] "${group.name}" auto-restore failed unexpectedly:`, err));
 }
