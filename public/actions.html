@@ -970,21 +970,39 @@ Cookies        leave "send login cookies" ticked</pre>
             <span class="cap">Name</span>
             <input type="text" name="name" required maxlength="100" placeholder="Rack A / Lab VMs">
           </label>
-          <label class="field" style="grid-column: span 2">
+          <label class="field">
             <span class="cap">On stage failure</span>
             <select name="on_failure">
               <option value="continue">Continue</option>
               <option value="stop">Stop remaining stages</option>
             </select>
           </label>
+          <div class="check-row" style="grid-column: span 2">
+            <label class="check">
+              <input type="checkbox" name="stop_on_restore">
+              <span>Stop if the Flatline group restores</span>
+            </label>
+            <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About stopping when the Flatline group restores">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Stops a run the moment the Flatline group that triggered it is back — the
+                  stages below it answer an outage that is over. Restored means no longer down
+                  by that group's own rule, all or any: the same rule that triggered this.</p>
+                <p>It takes hold between stages. A stage already running finishes, since its
+                  commands are already on their way to remote hosts.</p>
+                <p>The targets it did run are then brought back, each following its own restore
+                  and auto-restore settings. The ones it never reached are left alone.</p>
+                <p>A run started by hand has no group to watch, so this does not apply to it.</p>
+              </span></span>
+          </div>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <span class="cap">Assign Flatline groups</span>
+          <div class="check-scroll" id="ig-flatline-group-checks"></div>
         </div>
         <div class="field" style="margin-top:12px">
           <div id="stage-list" class="stage-list"></div>
           <button type="button" class="btn ghost small" id="stage-add-btn">+ Add stage</button>
-        </div>
-        <div class="field" style="margin-top:12px">
-          <span class="cap">Run by</span>
-          <div class="check-scroll" id="ig-flatline-group-checks"></div>
         </div>
         <div style="margin-top:12px">
           <label class="check">

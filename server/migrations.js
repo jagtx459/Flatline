@@ -483,6 +483,23 @@ export const migrations = [
         update.run(JSON.stringify(config), secretEnc, row.id);
       }
     }
+  },
+  {
+    version: 11,
+    name: 'an action group can stop once its Flatline group recovers',
+    up(db) {
+      // A run triggered by a Flatline group can now be told to give up the rest
+      // of its stages the moment that group is back — power returned mid-way,
+      // so there is nothing left to shut down. Off by default: every existing
+      // group keeps running to the end, as it always has.
+      //
+      // Nullable rather than NOT NULL, unlike the other flags: a config file
+      // exported before this column existed has no value to import, and NULL
+      // reads as off, which is exactly what such a group was.
+      db.exec(`
+        ALTER TABLE action_groups ADD COLUMN stop_on_restore INTEGER DEFAULT 0;
+      `);
+    }
   }
 ];
 
