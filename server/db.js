@@ -1,14 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, renameSync, rmSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { renameSync, rmSync } from 'node:fs';
 import { migrate, migrations } from './migrations.js';
+import { dataDir, dbFile } from './paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const dataDir = process.env.FLATLINE_DATA_DIR ?? path.join(__dirname, '..', 'data');
-mkdirSync(dataDir, { recursive: true });
+export { dataDir, dbFile };
 
-export const dbFile = path.join(dataDir, 'flatline.db');
 const LATEST_VERSION = Math.max(...migrations.map((m) => m.version));
 
 // Per-connection pragmas (not schema — these don't belong in migrations).
@@ -209,6 +205,21 @@ export function getFlatlineGroup(id) {
   return listFlatlineGroups().find((g) => g.id === id);
 }
 
+/**
+ * Whether a Flatline group counts as down right now, by its own mode: 'all'
+ * means every enabled member endpoint is down, 'any' means at least one is. A
+ * group with no enabled members is never down.
+ *
+ * The rule shutdown.js arms on, and the one actionRuns.js reads in reverse to
+ * decide the group has been restored — so both agree on what "down" means.
+ * Callers already holding the endpoint list pass it in rather than re-reading it.
+ */
+export function isFlatlineGroupDown(group, endpoints = listEndpoints()) {
+  const members = endpoints.filter((e) => e.group_ids.includes(group.id) && e.enabled);
+  const down = members.filter((e) => e.last_state === 'down');
+  return members.length > 0 && (group.mode === 'any' ? down.length > 0 : down.length === members.length);
+}
+
 export function createFlatlineGroup(g) {
   const r = db.prepare(`
     INSERT INTO flatline_groups (name, grace_minutes, mode, enabled, created_at)
@@ -322,16 +333,18 @@ export function getActionGroup(id) {
 }
 
 export function createActionGroup(g) {
-  const r = db.prepare('INSERT INTO action_groups (name, on_failure, enabled, created_at) VALUES (?, ?, ?, ?)')
-    .run(g.name, g.on_failure, g.enabled, Date.now());
+  const r = db.prepare(`
+    INSERT INTO action_groups (name, on_failure, stop_on_restore, enabled, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(g.name, g.on_failure, g.stop_on_restore ?? 0, g.enabled, Date.now());
   const id = Number(r.lastInsertRowid);
   setActionGroupStages(id, g.stages);
   return getActionGroup(id);
 }
 
 export function updateActionGroup(id, g) {
-  db.prepare('UPDATE action_groups SET name = ?, on_failure = ?, enabled = ? WHERE id = ?')
-    .run(g.name, g.on_failure, g.enabled, id);
+  db.prepare('UPDATE action_groups SET name = ?, on_failure = ?, stop_on_restore = ?, enabled = ? WHERE id = ?')
+    .run(g.name, g.on_failure, g.stop_on_restore ?? 0, g.enabled, id);
   setActionGroupStages(id, g.stages);
   return getActionGroup(id);
 }
@@ -546,7 +559,7 @@ const CONFIG_TABLES = {
               'down_threshold', 'up_threshold', 'expect_status', 'expect_json', 'enabled', 'created_at'],
   action_targets: ['id', 'name', 'kind', 'config', 'secret_enc', 'enabled', 'created_at'],
   relays: ['id', 'name', 'kind', 'config', 'secret_enc', 'wake_command', 'network', 'enabled', 'created_at'],
-  action_groups: ['id', 'name', 'on_failure', 'enabled', 'created_at'],
+  action_groups: ['id', 'name', 'on_failure', 'stop_on_restore', 'enabled', 'created_at'],
   action_group_stages: ['action_group_id', 'stage', 'pass_rule', 'on_failure', 'wait_seconds'],
   action_group_members: ['action_group_id', 'target_id', 'position', 'timeout_seconds', 'stage', 'wait_seconds'],
   flatline_groups: ['id', 'name', 'grace_minutes', 'mode', 'enabled', 'created_at'],

@@ -543,7 +543,8 @@ async function handleApi(req, res, url) {
   }
 
   // POST /api/actions/targets/:id/restore — brings a target back by running the
-  // restore its owner configured: a wake, a wait, then one action.
+  // restore its owner configured: the restore step, a wait, then an optional
+  // post-restore action.
   //
   // Most of those open by waiting — for a host to boot, for a cluster's API
   // server to answer, or for an http target's login to — which can take minutes,
@@ -962,7 +963,13 @@ function parseActionGroupInput(body) {
     }
   }
 
-  return { name, on_failure, stages, enabled: body.enabled === undefined || body.enabled ? 1 : 0 };
+  return {
+    name, on_failure, stages,
+    // Only a Flatline-triggered run has a group to watch; a manual one runs to
+    // the end whatever this says.
+    stop_on_restore: body.stop_on_restore ? 1 : 0,
+    enabled: body.enabled === undefined || body.enabled ? 1 : 0
+  };
 }
 
 /** Rotates or sets the encryption key, re-encrypting every stored blob. */
@@ -1028,9 +1035,9 @@ function parseActionTargetInput(body, existing) {
   const cfg = parseInfraConfig(kind, body.config);
   if (typeof cfg === 'string') return cfg;
 
-  // Changing kind invalidates old secrets (different field set). Changing the
-  // restore method narrows the list the same way, so a credential the restore no
-  // longer connects with is dropped rather than left encrypted.
+  // Changing kind invalidates old secrets (different field set). Changing either
+  // restore step's method narrows the list the same way, so a credential that
+  // step no longer connects with is dropped rather than left encrypted.
   const baseEnc = existing && kind === existing.kind ? existing.secret_enc : null;
   const merged = mergeSecrets(secretFieldsFor(kind, cfg), baseEnc, body.secrets);
   if (merged.error) return merged.error;

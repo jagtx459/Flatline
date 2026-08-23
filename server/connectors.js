@@ -14,13 +14,14 @@ import { winrmExec } from './winrm.js';
  *     — there's no separate no-op to send instead. One that logs in does have
  *     one: the login itself.
  *   - runStep()     — the real thing, used by the shutdown watcher on trigger.
- *   - restoreStep() — brings a target back after a runStep(): an optional wake,
- *     a wait for something to answer, then one action. The action's method is
- *     chosen independently of the target's own kind, so a cluster shut down over
- *     its API can be woken and revived over SSH. It either inherits the target's
- *     connection and credentials or carries its own (see restoreConnection).
- *     There's no stored snapshot of prior state anywhere — a restore is only as
- *     good as what the target owner configured.
+ *   - restoreStep() — brings a target back after a runStep(): the restore itself
+ *     (a wake, a cluster, or an endpoint that resumes the service), a wait for
+ *     something to answer, then an optional post-restore action. Each step's
+ *     method is chosen independently of the target's own kind, so a cluster shut
+ *     down over its API can be woken and finished off over SSH. Each either
+ *     inherits the target's connection and credentials or carries its own (see
+ *     restoreConnection). There's no stored snapshot of prior state anywhere — a
+ *     restore is only as good as what the target owner configured.
  *
  * The 'winrm' kind runs commands on a Windows host over WinRM (NTLMv2, see
  * winrm.js): the config identifies the machine and login, and the command
@@ -62,9 +63,9 @@ export async function runStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT
 }
 
 /**
- * Brings a target back after a runStep(): wake (optional), wait, then one
- * action, whose method the target's owner picked independently of the target's
- * own kind.
+ * Brings a target back after a runStep(): the restore itself, the wait, then the
+ * optional post-restore action — each step's method picked by the target's owner
+ * independently of the target's own kind.
  *
  * `relay` is only used when the target is set to wake through one. It is passed
  * in already resolved and decrypted, because this module talks to machines and
@@ -76,26 +77,39 @@ export async function runStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT
  */
 export async function restoreStep(kind, config, secrets, timeoutMs = DEFAULT_TIMEOUT_MS, relay = null, onPhase = null) {
   const phase = typeof onPhase === 'function' ? onPhase : () => {};
-  const method = config.restore_kind ?? 'none';
-  if (!config.restore_enabled || (!config.wol_mac && method === 'none')) {
+  const restoreKind = config.restore_kind ?? 'wol';
+  const postKind = config.post_restore_kind ?? 'none';
+  if (!config.restore_enabled
+    || (restoreKind === 'wol' && !config.wol_mac && postKind === 'none')) {
     return { ok: false, message: 'no restore configured for this target' };
   }
 
   const done = [];
-  if (config.wol_mac) {
-    const woke = await wake(config, relay, timeoutMs, phase);
-    if (!woke.ok) return woke;
-    done.push(woke.message);
-  }
+  const first = await runRestoreStep(restoreKind, 'restore_',
+    // A wake with a post-restore action behind it leaves the waiting to that
+    // step, which polls the machine it is about to act on — the better probe,
+    // and the one budget spent once rather than twice.
+    { kind, config, secrets, timeoutMs, relay, phase, done, waitForTarget: postKind === 'none' });
+  if (!first.ok || postKind === 'none') return first;
 
-  const conn = restoreConnection(kind, config, secrets);
-  switch (conn.kind) {
-    case 'none': return restoreWakeOnly(kind, config, secrets, phase, done);
+  return runRestoreStep(postKind, 'post_restore_',
+    { kind, config, secrets, timeoutMs, relay: null, phase, done, waitForTarget: false });
+}
+
+/** One step of a restore, dispatched on its method. `p` is the step's field
+ *  prefix, so nothing below here needs to know which of the two it is running. */
+function runRestoreStep(stepKind, p, ctx) {
+  const { kind, config, secrets, timeoutMs, relay, phase, done } = ctx;
+  switch (stepKind) {
+    case 'wol': return restoreWake(kind, config, secrets, relay, timeoutMs, phase, done, ctx.waitForTarget);
     case 'ssh':
-    case 'winrm': return restoreOverShell(conn, config, timeoutMs, phase, done);
-    case 'k8s': return restoreK8s(conn, config, timeoutMs, phase, done);
-    case 'http': return restoreHttp(conn, config, secrets, kind, timeoutMs, phase, done);
-    default: return { ok: false, message: `unknown restore method '${conn.kind}'` };
+    case 'winrm':
+      return restoreOverShell(restoreConnection(p, stepKind, config, secrets), p, config, timeoutMs, phase, done);
+    case 'k8s':
+      return restoreK8s(restoreConnection(p, stepKind, config, secrets), p, config, timeoutMs, phase, done);
+    case 'http':
+      return restoreHttp(restoreConnection(p, stepKind, config, secrets), p, config, secrets, kind, timeoutMs, phase, done);
+    default: return Promise.resolve({ ok: false, message: `unknown restore method '${stepKind}'` });
   }
 }
 
@@ -109,52 +123,49 @@ function hasSafeProbe(kind, config) {
 const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'the API server' };
 
 /**
- * What a restore actually talks to. Inheriting hands back the target's own
- * connection and credentials unchanged; otherwise the restore_-prefixed fields
+ * What one restore step actually talks to. Inheriting hands back the target's
+ * own connection and credentials unchanged; otherwise the step's prefixed fields
  * are renamed into the shape that method's own functions already expect, so
- * nothing below this point needs to know which of the two it got.
+ * nothing below this point needs to know which of the two it got — nor which of
+ * the two steps it belongs to.
  */
-function restoreConnection(kind, config, secrets) {
-  const restoreKind = config.restore_kind ?? 'none';
-  if (restoreKind === 'none') return { kind: 'none', config: {}, secrets: {} };
-  if (config.restore_inherit) return { kind: restoreKind, config, secrets };
+function restoreConnection(p, stepKind, config, secrets) {
+  if (config[`${p}inherit`]) return { kind: stepKind, config, secrets };
+  const c = (name) => config[p + name];
+  const s = (name) => secrets[p + name];
 
-  switch (restoreKind) {
+  switch (stepKind) {
     case 'ssh': return {
       kind: 'ssh',
       config: {
-        host: config.restore_host, port: config.restore_port ?? 22,
-        username: config.restore_username, auth_method: config.restore_auth_method ?? 'password'
+        host: c('host'), port: c('port') ?? 22,
+        username: c('username'), auth_method: c('auth_method') ?? 'password'
       },
       secrets: {
-        password: secrets.restore_password, private_key: secrets.restore_private_key,
-        passphrase: secrets.restore_passphrase, sudo_password: secrets.restore_sudo_password
+        password: s('password'), private_key: s('private_key'),
+        passphrase: s('passphrase'), sudo_password: s('sudo_password')
       }
     };
     case 'winrm': return {
       kind: 'winrm',
-      config: {
-        host: config.restore_host, port: config.restore_port ?? 5985,
-        domain: config.restore_domain, username: config.restore_username
-      },
-      secrets: { password: secrets.restore_password }
+      config: { host: c('host'), port: c('port') ?? 5985, domain: c('domain'), username: c('username') },
+      secrets: { password: s('password') }
     };
     case 'k8s': return {
       kind: 'k8s',
-      config: { api_url: config.restore_api_url, auth_method: config.restore_k8s_auth ?? 'token' },
-      secrets: { token: secrets.restore_token, kubeconfig: secrets.restore_kubeconfig }
+      config: { api_url: c('api_url'), auth_method: c('k8s_auth') ?? 'token' },
+      secrets: { token: s('token'), kubeconfig: s('kubeconfig') }
     };
     case 'http': return {
       kind: 'http',
       config: {
-        url: config.restore_url, method: config.restore_method ?? 'POST',
-        auth_scheme: config.restore_auth_scheme ?? 'none',
-        header_name: config.restore_header_name, username: config.restore_username,
-        insecure_tls: config.restore_insecure_tls, ca_cert: config.restore_ca_cert
+        url: c('url'), method: c('method') ?? 'POST', auth_scheme: c('auth_scheme') ?? 'none',
+        header_name: c('header_name'), username: c('username'),
+        insecure_tls: c('insecure_tls'), ca_cert: c('ca_cert')
       },
-      secrets: { token: secrets.restore_token, password: secrets.restore_password }
+      secrets: { token: s('token'), password: s('password') }
     };
-    default: return { kind: restoreKind, config: {}, secrets: {} };
+    default: return { kind: stepKind, config: {}, secrets: {} };
   }
 }
 
@@ -587,12 +598,12 @@ async function waitForLogin(config, secrets, timeoutMs, waitSeconds) {
  *   holds the "wake the host, wait for it, then call a resume API" shape.
  * - neither: send once, immediately.
  */
-async function restoreHttp(conn, config, secrets, kind, timeoutMs, phase, done) {
+async function restoreHttp(conn, p, config, secrets, kind, timeoutMs, phase, done) {
   const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
   let headers;
   let tls;
 
-  if (config.restore_inherit) {
+  if (config[`${p}inherit`]) {
     tls = httpTls(config);
     if (config.auth_scheme === 'login') {
       phase(`waiting up to ${waitSeconds}s for ${config.login_url} to accept the login`);
@@ -623,9 +634,10 @@ async function restoreHttp(conn, config, secrets, kind, timeoutMs, phase, done) 
     }
   }
 
-  const method = config.restore_method ?? 'POST';
-  phase(`sending ${method} ${config.restore_url}`);
-  const sent = await sendHttp(config.restore_url, method, config.restore_body, headers, timeoutMs, tls);
+  const method = config[`${p}method`] ?? 'POST';
+  const url = config[`${p}url`];
+  phase(`sending ${method} ${url}`);
+  const sent = await sendHttp(url, method, config[`${p}body`], headers, timeoutMs, tls);
   done.push(sent.message);
   return { ok: sent.ok, message: done.join('; ') };
 }
@@ -792,15 +804,24 @@ async function wake(config, relay, timeoutMs, phase) {
 }
 
 /**
- * A wake with no method behind it — getting the machine powered back on is the
- * whole restore.
+ * The wake restore method: the magic packet, then — when nothing follows it —
+ * the wait for the target to come back.
  *
- * It still waits where it can. Nothing ever answers a magic packet, so without
- * the wait the restore could only report that one was sent; with it, it reports
- * whether the machine actually came back.
+ * Nothing ever answers a magic packet, so without that wait the restore could
+ * only report that one was sent; with it, it reports whether the machine
+ * actually came back. A post-restore action waits on the machine it is about to
+ * act on instead, so the wake leaves the waiting to it.
+ *
+ * A blank MAC is how "the machine is already on, only do the post-restore
+ * action" is said — the packet is then skipped and nothing else here applies.
  */
-async function restoreWakeOnly(kind, config, secrets, phase, done) {
-  if (!hasSafeProbe(kind, config)) return { ok: true, message: done.join('; ') };
+async function restoreWake(kind, config, secrets, relay, timeoutMs, phase, done, waitForTarget) {
+  if (config.wol_mac) {
+    const woke = await wake(config, relay, timeoutMs, phase);
+    if (!woke.ok) return woke;
+    done.push(woke.message);
+  }
+  if (!waitForTarget || !hasSafeProbe(kind, config)) return { ok: true, message: done.join('; ') };
 
   const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
   const proto = PROTO_LABELS[kind] ?? 'the target';
@@ -812,10 +833,10 @@ async function restoreWakeOnly(kind, config, secrets, phase, done) {
   return { ok: reachable.ok, message: done.join('; ') };
 }
 
-/** The SSH and WinRM restore methods: wait for the host to answer, then run one
- *  command on it. Whether that host is the target itself or another machine
- *  entirely is already settled in `conn`. */
-async function restoreOverShell(conn, config, timeoutMs, phase, done) {
+/** The SSH and WinRM methods: wait for the host to answer, then run one command
+ *  on it. Whether that host is the target itself or another machine entirely is
+ *  already settled in `conn`. */
+async function restoreOverShell(conn, p, config, timeoutMs, phase, done) {
   const proto = PROTO_LABELS[conn.kind];
   const waitSeconds = config.restore_wait_seconds ?? DEFAULT_RESTORE_WAIT_S;
   phase(`waiting up to ${waitSeconds}s for ${proto} to answer`);
@@ -826,10 +847,11 @@ async function restoreOverShell(conn, config, timeoutMs, phase, done) {
   }
   done.push(`${proto} answered`);
 
+  const command = config[`${p}command`];
   phase(`running the restore command over ${proto}`);
   const result = conn.kind === 'ssh'
-    ? await execSsh(conn.config, conn.secrets, config.restore_command, timeoutMs, 'restore command')
-    : await execWinrm(conn.config, conn.secrets, config.restore_command, timeoutMs, 'restore command');
+    ? await execSsh(conn.config, conn.secrets, command, timeoutMs, 'restore command')
+    : await execWinrm(conn.config, conn.secrets, command, timeoutMs, 'restore command');
 
   done.push(result.message);
   return { ok: result.ok, message: done.join('; ') };
@@ -987,7 +1009,7 @@ async function runK8s(config, secrets, timeoutMs) {
  * the moment the Flatline group reports healthy, which is normally before the
  * control plane has finished coming up.
  */
-async function restoreK8s(conn, config, timeoutMs, phase, done) {
+async function restoreK8s(conn, p, config, timeoutMs, phase, done) {
   // Resolved before the wait, not after: a missing token or an unparseable
   // kubeconfig is not something five minutes of polling is going to fix, and
   // the wait would otherwise bury the real reason behind a timeout message.
@@ -1008,9 +1030,12 @@ async function restoreK8s(conn, config, timeoutMs, phase, done) {
   done.push('API server answered');
 
   const steps = [];
-  if (config.restore_uncordon) steps.push(['uncordoning every node', () => uncordonAllNodes(connection, timeoutMs)]);
-  if (config.restore_path) steps.push([`sending ${config.restore_method ?? 'PATCH'} ${config.restore_path}`, () => runK8sRestoreRequest(connection, config, timeoutMs)]);
-  if (config.restore_restart_deployments) steps.push(['restarting every Deployment outside kube-system', () => restartAllDeployments(connection, timeoutMs)]);
+  if (config[`${p}uncordon`]) steps.push(['uncordoning every node', () => uncordonAllNodes(connection, timeoutMs)]);
+  if (config[`${p}path`]) {
+    steps.push([`sending ${config[`${p}method`] ?? 'PATCH'} ${config[`${p}path`]}`,
+      () => runK8sRestoreRequest(connection, p, config, timeoutMs)]);
+  }
+  if (config[`${p}restart_deployments`]) steps.push(['restarting every Deployment outside kube-system', () => restartAllDeployments(connection, timeoutMs)]);
 
   // Each part stops the ones behind it: there is no point scaling back up onto
   // nodes that would not take the pods, nor restarting what never came up.
@@ -1233,8 +1258,8 @@ async function runCustomK8sCommand(conn, config, timeoutMs) {
 /** The mirror of the above on the way back — offered whatever the target's own
  *  action was, since a drained cluster can need a request of its own too. Only
  *  reached when a path is configured (see restoreK8s). */
-async function runK8sRestoreRequest(conn, config, timeoutMs) {
-  return execK8sCommand(conn, config.restore_method, config.restore_path, config.restore_body, timeoutMs, 'restore command');
+async function runK8sRestoreRequest(conn, p, config, timeoutMs) {
+  return execK8sCommand(conn, config[`${p}method`], config[`${p}path`], config[`${p}body`], timeoutMs, 'restore command');
 }
 
 async function execK8sCommand(conn, method, path, body, timeoutMs, label) {

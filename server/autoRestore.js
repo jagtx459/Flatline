@@ -53,12 +53,13 @@ export function resolveWakeRelay(config) {
 
 /** The auto-restore targets of one action group, as the batches that come back
  *  together: stages back to front, steps within a stage back to front. */
-function restoreBatches(actionGroup) {
+function restoreBatches(actionGroup, only) {
   const batches = [];
   for (const stage of [...(actionGroup.stages ?? [])].reverse()) {
     const batch = [];
     for (const step of [...stage.steps].reverse()) {
       if (step.target_id == null) continue; // a wait on the way down — nothing to undo
+      if (only && !only.has(step.target_id)) continue;
       const target = store.getActionTarget(step.target_id);
       if (!target?.enabled) continue;
       const config = parseConfig(target);
@@ -74,8 +75,13 @@ function restoreBatches(actionGroup) {
  * Restores everything the given Flatline group brought down that asked to come
  * back. A target reused across stages or action groups is restored once, at
  * the first point the reverse walk reaches it.
+ *
+ * `only`, when given, is the set of target ids the outage actually reached —
+ * a run stopped early by stop_on_restore never touched the stages below it, and
+ * a target that was never shut down must not be "restored" into a state it was
+ * never in. Left out, every auto-restore target of the group takes part.
  */
-export async function runAutoRestore(group) {
+export async function runAutoRestore(group, only = null) {
   if (inFlight.has(group.id)) {
     console.log(`[restore] "${group.name}" recovered again while an auto-restore was still running — ignored`);
     return;
@@ -87,7 +93,7 @@ export async function runAutoRestore(group) {
   const seen = new Set();
   const batches = [];
   for (const ag of [...actionGroups].reverse()) {
-    for (const batch of restoreBatches(ag)) {
+    for (const batch of restoreBatches(ag, only)) {
       const fresh = batch.filter(({ target }) => !seen.has(target.id));
       for (const { target } of fresh) seen.add(target.id);
       if (fresh.length) batches.push(fresh);

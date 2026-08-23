@@ -480,10 +480,10 @@ Cookies        leave "send login cookies" ticked</pre>
         </div>
 
         <!-- ================= Restore =================
-             One panel, whatever the target's kind. What brings a target back is a
-             choice of its own, not a consequence of how it was shut down: the
-             method below is any of the four, connecting to the target itself or
-             somewhere else entirely. -->
+             One panel, and the same three steps, whatever the target's kind.
+             What brings a target back is a choice of its own, not a consequence
+             of how it was shut down: each step below connects to the target
+             itself or somewhere else entirely. -->
         <div class="restore-panel">
           <div class="card-header" id="restore-header">
             <span class="chevron">▸</span>
@@ -492,10 +492,12 @@ Cookies        leave "send login cookies" ticked</pre>
             <span class="restore-title">Restore <span class="help">
               <button type="button" class="help-btn" aria-expanded="false" aria-label="About restore">?</button>
               <span class="help-pop" role="tooltip" hidden>
-                <p>What Flatline does to bring this target back after its trigger action ran: an
-                  optional wake, a wait for something to answer, then one action.</p>
-                <p>The method is yours to pick and is independent of how the target itself is reached —
-                  a cluster taken down over its API can be revived over SSH.</p>
+                <p>What Flatline does to bring this target back after its trigger action ran, in
+                  three steps: <strong>1.</strong> the restore itself, <strong>2.</strong> the wait
+                  for it to answer, <strong>3.</strong> an optional action once it is up.</p>
+                <p>Both methods are yours to pick and are independent of how the target itself is
+                  reached — a cluster taken down over its API can be woken with a magic packet and
+                  finished off over SSH.</p>
                 <p>There is <strong>no snapshot of prior state anywhere</strong>. A restore is only as
                   good as what you configure here — Flatline does not record which nodes were cordoned
                   or what a shutdown command turned off.</p>
@@ -528,93 +530,27 @@ Cookies        leave "send login cookies" ticked</pre>
                   </span></span>
               </div>
 
-              <!-- 1. Wake -->
+              <!-- 1. The restore itself. Only the methods that can bring
+                   something back from nothing are here: you cannot SSH into a
+                   machine that is off. A shell command is step 3's job. -->
               <div class="restore-step">
                 <span class="restore-num">1</span>
                 <div class="restore-body">
                   <div class="grid">
-                    <label class="field"><span class="cap">Wake MAC <span class="help">
-                        <button type="button" class="help-btn" aria-expanded="false" aria-label="About Wake-on-LAN">?</button>
-                        <span class="help-pop" role="tooltip" hidden>
-                          <p>Leave blank for no wake step — Flatline then goes straight to the wait.
-                            A MAC is <strong>required</strong> once you pick a relay.</p>
-                          <p>The NIC needs WoL enabled in firmware. Windows also needs fast startup
-                            turned off, or a shut-down machine will not listen for the packet.</p>
-                          <p>A magic packet is a broadcast, and <strong>broadcasts do not cross
-                            routers</strong>, so there are two ways to get one to the target:</p>
-                          <ol>
-                            <li><strong>Flatline</strong> — only works when Flatline shares a network
-                              with the target. In Docker that needs <code>network_mode: host</code>;
-                              the default bridge cannot reach your LAN. Leave the broadcast blank to
-                              send on every attached network, or name one (e.g.
-                              <code>10.1.20.255</code>) to send only there.</li>
-                            <li><strong>Relay</strong> — for a target on another VLAN. Flatline signs
-                              in to a machine already on that network and has it send the packet
-                              locally. Set relays up under <a href="/config#relays">Config →
-                              Relays</a>.</li>
-                          </ol>
-                        </span></span></span>
-                      <input type="text" name="wol_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF"></label>
-                    <label class="field"><span class="cap">Send via</span>
-                      <select name="wake_mode">
-                        <option value="packet">Flatline</option>
-                        <option value="relay">Relay</option>
-                      </select>
-                    </label>
-                    <label class="field" data-wake-mode="packet"><span class="cap">Broadcast</span>
-                      <input type="text" name="wol_broadcast" maxlength="255" placeholder="255.255.255.255"></label>
-                    <label class="field" data-wake-mode="relay"><span class="cap">Relay</span>
-                      <select name="wake_relay_id" data-relay-picker></select>
-                    </label>
-                  </div>
-                  <p class="hint-row" id="relay-note" style="margin:6px 0 0"></p>
-                </div>
-              </div>
-
-              <!-- 2. Wait -->
-              <div class="restore-step">
-                <span class="restore-num">2</span>
-                <div class="restore-body">
-                  <div class="restore-inline">
-                    <span>Wait up to</span>
-                    <input type="number" name="restore_wait_seconds" min="0" max="3600" value="300">
-                    <span>seconds, then give up.</span>
-                    <span class="help">
-                      <button type="button" class="help-btn" aria-expanded="false" aria-label="About the wait">?</button>
-                      <span class="help-pop" role="tooltip" hidden>
-                        <p>A give-up budget, not a sleep: Flatline polls every 10s and moves on the
-                          moment the target answers. <code>0</code> means one attempt.</p>
-                        <p>Auto-restore starts the moment the Flatline group reports healthy, which
-                          is usually before a booting host or a cluster's control plane is ready.
-                          Nothing below runs until it answers.</p>
-                        <p>The HTTP method is the exception: its static auth schemes have no request
-                          that is safe to repeat, so they send once and ignore this. Only a
-                          2-step-auth target has a safe probe — its login — to wait on.</p>
-                      </span></span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- 3. Method -->
-              <div class="restore-step">
-                <span class="restore-num">3</span>
-                <div class="restore-body">
-                  <div class="grid">
-                    <label class="field"><span class="cap">Method <span class="help">
+                    <label class="field"><span class="cap">Restore method <span class="help">
                         <button type="button" class="help-btn" aria-expanded="false" aria-label="About the restore method">?</button>
                         <span class="help-pop" role="tooltip" hidden>
-                          <p>How to bring the target back — independent of how it was shut down. A
-                            cluster taken down over its API can be revived over SSH; a NAS shut down
-                            through its HTTP API can be woken and finished off with a command.</p>
-                          <p><strong>None</strong> pairs with a wake: getting the machine powered
-                            back on is the whole restore.</p>
+                          <p>What actually brings this target back — independent of how it was shut
+                            down. A cluster taken down over its API can be woken with a magic packet;
+                            a NAS shut down through its HTTP API can be resumed through another one.</p>
+                          <p>Only the three things that work on something that is <em>not</em>
+                            answering are on offer here. A command needs the machine already up, so
+                            it belongs in step 3.</p>
                         </span></span></span>
                       <select name="restore_kind" id="restore-kind">
-                        <option value="none">None</option>
-                        <option value="ssh">SSH</option>
-                        <option value="winrm">WinRM</option>
+                        <option value="wol">Wake-on-LAN</option>
                         <option value="k8s">Kubernetes</option>
-                        <option value="http">HTTP(S)</option>
+                        <option value="http">HTTP(S) endpoint</option>
                       </select>
                     </label>
                     <label class="field" id="restore-inherit-field"><span class="cap">Connection <span class="help">
@@ -633,21 +569,50 @@ Cookies        leave "send login cookies" ticked</pre>
                     </label>
                   </div>
 
+                  <!-- Wake-on-LAN -->
+                  <div data-rk="wol">
+                    <div class="grid" style="margin-top:10px">
+                      <label class="field"><span class="cap">Wake MAC <span class="help">
+                          <button type="button" class="help-btn" aria-expanded="false" aria-label="About Wake-on-LAN">?</button>
+                          <span class="help-pop" role="tooltip" hidden>
+                            <p>Leave blank for no packet at all — the restore then goes straight to
+                              step 3, which is how you say "the machine is already up, just run the
+                              follow-up". A MAC is <strong>required</strong> once you pick a relay.</p>
+                            <p>The NIC needs WoL enabled in firmware. Windows also needs fast startup
+                              turned off, or a shut-down machine will not listen for the packet.</p>
+                            <p>A magic packet is a broadcast, and <strong>broadcasts do not cross
+                              routers</strong>, so there are two ways to get one to the target:</p>
+                            <ol>
+                              <li><strong>Flatline</strong> — only works when Flatline shares a network
+                                with the target. In Docker that needs <code>network_mode: host</code>;
+                                the default bridge cannot reach your LAN. Leave the broadcast blank to
+                                send on every attached network, or name one (e.g.
+                                <code>10.1.20.255</code>) to send only there.</li>
+                              <li><strong>Relay</strong> — for a target on another VLAN. Flatline signs
+                                in to a machine already on that network and has it send the packet
+                                locally. Set relays up under <a href="/config#relays">Config →
+                                Relays</a>.</li>
+                            </ol>
+                          </span></span></span>
+                        <input type="text" name="wol_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF"></label>
+                      <label class="field"><span class="cap">Send via</span>
+                        <select name="wake_mode">
+                          <option value="packet">Flatline</option>
+                          <option value="relay">Relay</option>
+                        </select>
+                      </label>
+                      <label class="field" data-wake-mode="packet"><span class="cap">Broadcast</span>
+                        <input type="text" name="wol_broadcast" maxlength="255" placeholder="255.255.255.255"></label>
+                      <label class="field" data-wake-mode="relay"><span class="cap">Relay</span>
+                        <select name="wake_relay_id" data-relay-picker></select>
+                      </label>
+                    </div>
+                    <p class="hint-row" id="relay-note" style="margin:6px 0 0"></p>
+                  </div>
+
                   <!-- The connection, when the restore brings its own -->
                   <div id="restore-connection">
                     <div class="grid" style="margin-top:10px">
-                      <label class="field" data-rk="ssh winrm"><span class="cap">Host</span>
-                        <input type="text" name="restore_host" maxlength="2000" placeholder="192.168.1.50"></label>
-                      <label class="field" data-rk="ssh winrm"><span class="cap">Port</span>
-                        <input type="number" name="restore_port" min="1" max="65535" placeholder="22"></label>
-                      <label class="field" data-rk="winrm"><span class="cap">Domain</span>
-                        <input type="text" name="restore_domain" maxlength="2000" placeholder="optional"></label>
-                      <label class="field" data-rk="ssh"><span class="cap">Auth</span>
-                        <select name="restore_auth_method">
-                          <option value="password">Password</option>
-                          <option value="key">Private key</option>
-                        </select>
-                      </label>
                       <label class="field" data-rk="k8s"><span class="cap">API URL</span>
                         <input type="text" name="restore_api_url" maxlength="2000" placeholder="https://10.0.0.10:6443"></label>
                       <label class="field" data-rk="k8s"><span class="cap">Auth</span>
@@ -666,33 +631,17 @@ Cookies        leave "send login cookies" ticked</pre>
                       </label>
                       <label class="field" data-rk="http" data-rauth="header"><span class="cap">Header name</span>
                         <input type="text" name="restore_header_name" maxlength="2000" placeholder="X-Api-Key"></label>
-                      <label class="field" data-rk="ssh winrm http" data-rauth="password key basic">
-                        <span class="cap">Username</span>
+                      <label class="field" data-rk="http" data-rauth="basic"><span class="cap">Username</span>
                         <input type="text" name="restore_username" maxlength="2000" autocomplete="off"></label>
                       <label class="field secret" data-secret="restore_password"
-                        data-rk="ssh winrm http" data-rauth="password basic"><span class="cap">Password
+                        data-rk="http" data-rauth="basic"><span class="cap">Password
                           <span class="secret-state"></span></span>
                         <input type="password" name="restore_password" autocomplete="new-password"></label>
-                      <label class="field secret" data-secret="restore_passphrase" data-rk="ssh" data-rauth="key">
-                        <span class="cap">Passphrase <span class="secret-state"></span></span>
-                        <input type="password" name="restore_passphrase" autocomplete="new-password"></label>
                       <label class="field secret" data-secret="restore_token"
                         data-rk="k8s http" data-rauth="token bearer header"><span class="cap">Token
                           <span class="secret-state"></span></span>
                         <input type="password" name="restore_token" autocomplete="new-password"></label>
-                      <label class="field secret" data-secret="restore_sudo_password" data-rk="ssh">
-                        <span class="cap">Sudo password <span class="secret-state"></span></span>
-                        <input type="password" name="restore_sudo_password" autocomplete="new-password"></label>
                     </div>
-                    <label class="field secret" data-secret="restore_private_key" data-rk="ssh" data-rauth="key"
-                      style="margin-top:10px">
-                      <span class="cap">Private key <span class="secret-state"></span></span>
-                      <textarea name="restore_private_key" rows="4" spellcheck="false"
-                        placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
-                      <button type="button" class="btn ghost small" id="restore-key-upload-btn"
-                        style="align-self:flex-start; margin-top:8px">Upload from file</button>
-                      <input type="file" id="restore-key-upload" hidden>
-                    </label>
                     <label class="field secret" data-secret="restore_kubeconfig" data-rk="k8s" data-rauth="kubeconfig"
                       style="margin-top:10px">
                       <span class="cap">Kubeconfig <span class="secret-state"></span></span>
@@ -715,10 +664,6 @@ Cookies        leave "send login cookies" ticked</pre>
                   </div>
 
                   <!-- What the method actually does -->
-                  <label class="field" data-rk="ssh winrm" style="margin-top:10px"><span class="cap">Command</span>
-                    <input type="text" name="restore_command" maxlength="10000" placeholder="sudo shutdown -c">
-                  </label>
-
                   <div data-rk="k8s" style="margin-top:10px">
                     <div class="check-row">
                       <label class="check">
@@ -770,12 +715,215 @@ Cookies        leave "send login cookies" ticked</pre>
                   </label>
 
                   <div class="grid" data-rk="k8s http" style="margin-top:10px">
-                    <label class="field"><span class="cap">Method</span>
+                    <label class="field"><span class="cap">Request method</span>
                       <select name="restore_method" id="restore-request-method"></select>
                     </label>
                   </div>
                   <label class="field" data-rk="k8s http" style="margin-top:10px"><span class="cap">Body</span>
                     <textarea name="restore_body" rows="3" spellcheck="false" placeholder='{"action":"resume"}'></textarea>
+                  </label>
+                </div>
+              </div>
+
+              <!-- 2. Wait -->
+              <div class="restore-step">
+                <span class="restore-num">2</span>
+                <div class="restore-body">
+                  <div class="restore-inline">
+                    <span>Wait up to</span>
+                    <input type="number" name="restore_wait_seconds" min="0" max="3600" value="300">
+                    <span>seconds, then give up.</span>
+                    <span class="help">
+                      <button type="button" class="help-btn" aria-expanded="false" aria-label="About the wait">?</button>
+                      <span class="help-pop" role="tooltip" hidden>
+                        <p>A give-up budget, not a sleep: Flatline polls every 10s and moves on the
+                          moment whatever it is waiting for answers. <code>0</code> means one
+                          attempt.</p>
+                        <p>It is spent wherever the sequence actually has to wait — for a booted host
+                          before step 3's command, or for the API server before a Kubernetes restore
+                          can uncordon anything. Nothing runs until that answers.</p>
+                        <p>Auto-restore starts the moment the Flatline group reports healthy, which
+                          is usually before a booting host or a cluster's control plane is ready.</p>
+                        <p>The HTTP method is the exception: its static auth schemes have no request
+                          that is safe to repeat, so they send once and ignore this. Only a
+                          2-step-auth target has a safe probe — its login — to wait on.</p>
+                      </span></span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 3. The optional post-restore action, run once step 1 is done. -->
+              <div class="restore-step">
+                <span class="restore-num">3</span>
+                <div class="restore-body">
+                  <div class="grid">
+                    <label class="field"><span class="cap">Post-restore action <span class="help">
+                        <button type="button" class="help-btn" aria-expanded="false" aria-label="About the post-restore action">?</button>
+                        <span class="help-pop" role="tooltip" hidden>
+                          <p>Optional. One more thing to do once step 1 is done and whatever it acted
+                            on is answering — the command that starts the services on a woken host,
+                            the API call that re-enables a load balancer, the uncordon on a cluster
+                            that something else brought back.</p>
+                          <p>It is chosen independently of both the target's kind and step 1, and
+                            connects wherever you point it: a cluster restored over its API can be
+                            finished off with an SSH command on a completely different machine.</p>
+                        </span></span></span>
+                      <select name="post_restore_kind" id="post-restore-kind">
+                        <option value="none">None</option>
+                        <option value="ssh">SSH command</option>
+                        <option value="winrm">WinRM command</option>
+                        <option value="k8s">Kubernetes</option>
+                        <option value="http">HTTP(S) request</option>
+                      </select>
+                    </label>
+                    <label class="field" id="post-restore-inherit-field"><span class="cap">Connection <span class="help">
+                        <button type="button" class="help-btn" aria-expanded="false" aria-label="About the post-restore connection">?</button>
+                        <span class="help-pop" role="tooltip" hidden>
+                          <p><strong>Same as target</strong> reuses the connection and credentials
+                            above. Only on offer when the action matches the target's own type.</p>
+                          <p><strong>Its own</strong> takes a separate address and credentials, stored
+                            and encrypted separately from both the target's and step 1's.</p>
+                        </span></span></span>
+                      <select name="post_restore_inherit" id="post-restore-inherit">
+                        <option value="1">Same as target</option>
+                        <option value="0">Its own</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <!-- The connection, when the action brings its own -->
+                  <div id="post-restore-connection">
+                    <div class="grid" style="margin-top:10px">
+                      <label class="field" data-prk="ssh winrm"><span class="cap">Host</span>
+                        <input type="text" name="post_restore_host" maxlength="2000" placeholder="192.168.1.50"></label>
+                      <label class="field" data-prk="ssh winrm"><span class="cap">Port</span>
+                        <input type="number" name="post_restore_port" min="1" max="65535" placeholder="22"></label>
+                      <label class="field" data-prk="winrm"><span class="cap">Domain</span>
+                        <input type="text" name="post_restore_domain" maxlength="2000" placeholder="optional"></label>
+                      <label class="field" data-prk="ssh"><span class="cap">Auth</span>
+                        <select name="post_restore_auth_method">
+                          <option value="password">Password</option>
+                          <option value="key">Private key</option>
+                        </select>
+                      </label>
+                      <label class="field" data-prk="k8s"><span class="cap">API URL</span>
+                        <input type="text" name="post_restore_api_url" maxlength="2000" placeholder="https://10.0.0.10:6443"></label>
+                      <label class="field" data-prk="k8s"><span class="cap">Auth</span>
+                        <select name="post_restore_k8s_auth">
+                          <option value="token">Token</option>
+                          <option value="kubeconfig">Kubeconfig</option>
+                        </select>
+                      </label>
+                      <label class="field" data-prk="http"><span class="cap">Auth</span>
+                        <select name="post_restore_auth_scheme">
+                          <option value="none">None</option>
+                          <option value="bearer">Bearer</option>
+                          <option value="header">Header</option>
+                          <option value="basic">Basic</option>
+                        </select>
+                      </label>
+                      <label class="field" data-prk="http" data-prauth="header"><span class="cap">Header name</span>
+                        <input type="text" name="post_restore_header_name" maxlength="2000" placeholder="X-Api-Key"></label>
+                      <label class="field" data-prk="ssh winrm http" data-prauth="password key basic">
+                        <span class="cap">Username</span>
+                        <input type="text" name="post_restore_username" maxlength="2000" autocomplete="off"></label>
+                      <label class="field secret" data-secret="post_restore_password"
+                        data-prk="ssh winrm http" data-prauth="password basic"><span class="cap">Password
+                          <span class="secret-state"></span></span>
+                        <input type="password" name="post_restore_password" autocomplete="new-password"></label>
+                      <label class="field secret" data-secret="post_restore_passphrase" data-prk="ssh" data-prauth="key">
+                        <span class="cap">Passphrase <span class="secret-state"></span></span>
+                        <input type="password" name="post_restore_passphrase" autocomplete="new-password"></label>
+                      <label class="field secret" data-secret="post_restore_token"
+                        data-prk="k8s http" data-prauth="token bearer header"><span class="cap">Token
+                          <span class="secret-state"></span></span>
+                        <input type="password" name="post_restore_token" autocomplete="new-password"></label>
+                      <label class="field secret" data-secret="post_restore_sudo_password" data-prk="ssh">
+                        <span class="cap">Sudo password <span class="secret-state"></span></span>
+                        <input type="password" name="post_restore_sudo_password" autocomplete="new-password"></label>
+                    </div>
+                    <label class="field secret" data-secret="post_restore_private_key" data-prk="ssh" data-prauth="key"
+                      style="margin-top:10px">
+                      <span class="cap">Private key <span class="secret-state"></span></span>
+                      <textarea name="post_restore_private_key" rows="4" spellcheck="false"
+                        placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+                      <button type="button" class="btn ghost small" id="post-restore-key-upload-btn"
+                        style="align-self:flex-start; margin-top:8px">Upload from file</button>
+                      <input type="file" id="post-restore-key-upload" hidden>
+                    </label>
+                    <label class="field secret" data-secret="post_restore_kubeconfig" data-prk="k8s" data-prauth="kubeconfig"
+                      style="margin-top:10px">
+                      <span class="cap">Kubeconfig <span class="secret-state"></span></span>
+                      <textarea name="post_restore_kubeconfig" rows="4" spellcheck="false"
+                        placeholder="apiVersion: v1&#10;kind: Config&#10;..."></textarea>
+                      <button type="button" class="btn ghost small" id="post-restore-kubeconfig-upload-btn"
+                        style="align-self:flex-start; margin-top:8px">Upload from file</button>
+                      <input type="file" id="post-restore-kubeconfig-upload" hidden>
+                    </label>
+                    <div data-prk="http" style="margin-top:10px">
+                      <label class="check">
+                        <input type="checkbox" name="post_restore_insecure_tls">
+                        <span>Accept untrusted certificate</span>
+                      </label>
+                      <label class="field" style="margin-top:10px"><span class="cap">CA certificate</span>
+                        <textarea name="post_restore_ca_cert" rows="3" spellcheck="false"
+                          placeholder="-----BEGIN CERTIFICATE-----&#10;..."></textarea>
+                      </label>
+                    </div>
+                  </div>
+
+                  <!-- What the action actually does -->
+                  <label class="field" data-prk="ssh winrm" style="margin-top:10px"><span class="cap">Command</span>
+                    <input type="text" name="post_restore_command" maxlength="10000" placeholder="sudo systemctl start app">
+                  </label>
+
+                  <div data-prk="k8s" style="margin-top:10px">
+                    <div class="check-row">
+                      <label class="check">
+                        <input type="checkbox" name="post_restore_uncordon" checked>
+                        <span>Uncordon every node</span>
+                      </label>
+                      <span class="help">
+                        <button type="button" class="help-btn" aria-expanded="false" aria-label="About uncordoning">?</button>
+                        <span class="help-pop" role="tooltip" hidden>
+                          <p>Makes the nodes schedulable again — the mirror image of a cordon + drain.
+                            Nothing records which nodes were cordoned before the outage, so
+                            <strong>every</strong> node in the cluster is uncordoned.</p>
+                        </span></span>
+                    </div>
+                    <div class="check-row" style="margin-top:8px">
+                      <label class="check">
+                        <input type="checkbox" name="post_restore_restart_deployments" checked>
+                        <span>Restart every Deployment</span>
+                      </label>
+                      <span class="help">
+                        <button type="button" class="help-btn" aria-expanded="false" aria-label="About restarting Deployments">?</button>
+                        <span class="help-pop" role="tooltip" hidden>
+                          <p>The same thing as <code>kubectl rollout restart deployment</code>, in
+                            every namespace except <code>kube-system</code>.</p>
+                        </span></span>
+                    </div>
+                    <label class="field" style="margin-top:10px"><span class="cap">Path <span class="help">
+                        <button type="button" class="help-btn" aria-expanded="false" aria-label="About the post-restore request">?</button>
+                        <span class="help-pop" role="tooltip" hidden>
+                          <p>One raw Kubernetes API request, the same shape as a custom trigger
+                            command. Leave blank to skip it.</p>
+                        </span></span></span>
+                      <input type="text" name="post_restore_path" maxlength="2000"
+                        placeholder="/apis/apps/v1/namespaces/default/deployments/app"></label>
+                  </div>
+
+                  <label class="field" data-prk="http" style="margin-top:10px"><span class="cap">URL</span>
+                    <input type="text" name="post_restore_url" maxlength="2000" placeholder="https://host/api/resume">
+                  </label>
+
+                  <div class="grid" data-prk="k8s http" style="margin-top:10px">
+                    <label class="field"><span class="cap">Request method</span>
+                      <select name="post_restore_method" id="post-restore-request-method"></select>
+                    </label>
+                  </div>
+                  <label class="field" data-prk="k8s http" style="margin-top:10px"><span class="cap">Body</span>
+                    <textarea name="post_restore_body" rows="3" spellcheck="false" placeholder='{"action":"resume"}'></textarea>
                   </label>
                 </div>
               </div>
@@ -822,21 +970,39 @@ Cookies        leave "send login cookies" ticked</pre>
             <span class="cap">Name</span>
             <input type="text" name="name" required maxlength="100" placeholder="Rack A / Lab VMs">
           </label>
-          <label class="field" style="grid-column: span 2">
+          <label class="field">
             <span class="cap">On stage failure</span>
             <select name="on_failure">
               <option value="continue">Continue</option>
               <option value="stop">Stop remaining stages</option>
             </select>
           </label>
+          <div class="check-row" style="grid-column: span 2">
+            <label class="check">
+              <input type="checkbox" name="stop_on_restore">
+              <span>Stop if the Flatline group restores</span>
+            </label>
+            <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About stopping when the Flatline group restores">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Stops a run the moment the Flatline group that triggered it is back — the
+                  stages below it answer an outage that is over. Restored means no longer down
+                  by that group's own rule, all or any: the same rule that triggered this.</p>
+                <p>It takes hold between stages. A stage already running finishes, since its
+                  commands are already on their way to remote hosts.</p>
+                <p>The targets it did run are then brought back, each following its own restore
+                  and auto-restore settings. The ones it never reached are left alone.</p>
+                <p>A run started by hand has no group to watch, so this does not apply to it.</p>
+              </span></span>
+          </div>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <span class="cap">Assign Flatline groups</span>
+          <div class="check-scroll" id="ig-flatline-group-checks"></div>
         </div>
         <div class="field" style="margin-top:12px">
           <div id="stage-list" class="stage-list"></div>
           <button type="button" class="btn ghost small" id="stage-add-btn">+ Add stage</button>
-        </div>
-        <div class="field" style="margin-top:12px">
-          <span class="cap">Run by</span>
-          <div class="check-scroll" id="ig-flatline-group-checks"></div>
         </div>
         <div style="margin-top:12px">
           <label class="check">

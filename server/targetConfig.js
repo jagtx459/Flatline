@@ -1,7 +1,7 @@
 import * as store from './db.js';
 import { intInRange, cleanString } from './inputs.js';
 import { ipToInt, intToIp, prefixMask } from '../shared/net.js';
-import { RESTORE_SECRETS_BY_KIND } from '../shared/restoreSecrets.js';
+import { RESTORE_SECRETS_BY_KIND, POST_RESTORE_SECRETS_BY_KIND } from '../shared/restoreSecrets.js';
 
 /**
  * Validation for everything the Actions page configures: an action target's
@@ -16,48 +16,76 @@ import { RESTORE_SECRETS_BY_KIND } from '../shared/restoreSecrets.js';
  */
 
 /**
- * A restore is the same shape for every kind of target: an optional wake, a wait
- * for something to answer, then one action. What that action is — and what it
- * talks to — is the target owner's choice, not a consequence of how the target
- * was shut down. A cluster brought down over its API can be woken and revived
- * over SSH; a NAS shut down through its HTTP API can be woken by a magic packet
- * and finished off with a command. See parseRestore().
+ * A restore is the same three steps for every kind of target:
+ *
+ *   1. the restore itself — wake the machine, bring the cluster back, or call an
+ *      endpoint that resumes the service,
+ *   2. the wait for something to answer,
+ *   3. an optional post-restore action, run once step 1 is done.
+ *
+ * Neither step is a consequence of how the target was shut down. A cluster
+ * brought down over its API can be woken by a magic packet and revived over SSH;
+ * a NAS shut down through its HTTP API can be woken and finished off with a
+ * command. See parseRestore().
+ *
+ * Step 1 offers only the methods that can bring something back from nothing —
+ * you cannot SSH into a machine that is off — so a shell command is a step-3
+ * action, never the thing that starts the restore.
  */
-export const RESTORE_KINDS = ['none', 'ssh', 'winrm', 'k8s', 'http'];
+export const RESTORE_KINDS = ['wol', 'k8s', 'http'];
+export const POST_RESTORE_KINDS = ['none', 'ssh', 'winrm', 'k8s', 'http'];
 
-// Present whatever the restore method is: the toggle, the method itself, and
-// the wake + wait that lead into it.
+// Every per-step field is its own bare name under one of two prefixes —
+// `restore_` for step 1, `post_restore_` for step 3 — so both steps are parsed
+// by the same code.
+
+// Present whatever either step is: the toggle, the two methods, and the wait
+// between them.
 const RESTORE_COMMON_FIELDS = [
-  'restore_enabled', 'auto_restore', 'restore_kind', 'restore_inherit',
-  'wol_mac', 'wake_mode', 'wake_relay_id', 'wol_broadcast', 'restore_wait_seconds'
+  'restore_enabled', 'auto_restore', 'restore_wait_seconds',
+  'restore_kind', 'restore_inherit', 'post_restore_kind', 'post_restore_inherit'
 ];
 
-// What the restore connects to, per method. Dropped when the restore inherits
-// the target's own connection, which it may do when the method matches the
-// target's kind.
-const RESTORE_CONNECTION_FIELDS = {
+// The wake, which is what step 1 configures when its method is 'wol'.
+const WAKE_FIELDS = ['wol_mac', 'wake_mode', 'wake_relay_id', 'wol_broadcast'];
+
+// What a step connects to, per method. Dropped when the step inherits the
+// target's own connection, which it may do when its method matches the target's
+// kind.
+const STEP_CONNECTION_FIELDS = {
+  wol: [],
   none: [],
-  ssh: ['restore_host', 'restore_port', 'restore_username', 'restore_auth_method'],
-  winrm: ['restore_host', 'restore_port', 'restore_domain', 'restore_username'],
-  k8s: ['restore_api_url', 'restore_k8s_auth'],
-  http: ['restore_auth_scheme', 'restore_header_name', 'restore_username',
-         'restore_insecure_tls', 'restore_ca_cert']
+  ssh: ['host', 'port', 'username', 'auth_method'],
+  winrm: ['host', 'port', 'domain', 'username'],
+  k8s: ['api_url', 'k8s_auth'],
+  http: ['auth_scheme', 'header_name', 'username', 'insecure_tls', 'ca_cert']
 };
 
-// What the restore does once it is connected. Kept whether or not the
-// connection is inherited.
-const RESTORE_ACTION_FIELDS = {
+// What a step does once it is connected. Kept whether or not the connection is
+// inherited.
+const STEP_ACTION_FIELDS = {
+  wol: [],
   none: [],
-  ssh: ['restore_command'],
-  winrm: ['restore_command'],
-  k8s: ['restore_uncordon', 'restore_restart_deployments', 'restore_method', 'restore_path', 'restore_body'],
-  http: ['restore_url', 'restore_method', 'restore_body']
+  ssh: ['command'],
+  winrm: ['command'],
+  k8s: ['uncordon', 'restart_deployments', 'method', 'path', 'body'],
+  http: ['url', 'method', 'body']
 };
+
+/** A step's fields under its own prefix — every one it could have, or only the
+ *  ones it keeps once the method and the inherit choice are known. */
+function stepFields(prefix, kinds, inherits = false) {
+  return [...new Set(kinds.flatMap((k) => [
+    ...STEP_ACTION_FIELDS[k],
+    ...(inherits ? [] : STEP_CONNECTION_FIELDS[k])
+  ]).map((field) => prefix + field))];
+}
 
 const RESTORE_FIELDS = [...new Set([
   ...RESTORE_COMMON_FIELDS,
-  ...Object.values(RESTORE_CONNECTION_FIELDS).flat(),
-  ...Object.values(RESTORE_ACTION_FIELDS).flat()
+  ...WAKE_FIELDS,
+  ...stepFields('restore_', RESTORE_KINDS),
+  ...stepFields('post_restore_', POST_RESTORE_KINDS)
 ])];
 
 // The http kind's 'login' auth scheme — see parseHttpLogin(). The credentials
@@ -80,25 +108,26 @@ export const KIND_CONFIG_FIELDS = {
          'insecure_tls', 'ca_cert', ...HTTP_LOGIN_FIELDS, ...RESTORE_FIELDS]
 };
 
-// Restore methods that open by polling something — a host booting, a cluster's
-// control plane coming up. Minutes, not seconds, so the manual Restore route
-// answers 202 and leaves them running.
-const POLLING_RESTORE_KINDS = ['ssh', 'winrm', 'k8s'];
+// Post-restore actions that open by polling something — a host booting, a
+// cluster's control plane coming up. Minutes, not seconds, so the manual Restore
+// route answers 202 and leaves them running.
+const POLLING_POST_KINDS = ['ssh', 'winrm', 'k8s'];
 
 /**
  * Whether a restore is going to take long enough to need answering 202.
  *
  * A wake always qualifies: nothing answers a magic packet, so a wake is only
- * ever followed by a wait. Otherwise it depends on the method. The http one
- * never polls its own request — that need not be idempotent — so it waits only
- * when some other safe probe is at hand: the login of a target it inherits, or,
- * when it brings its own connection, the target's own test (see connectors.js
- * restoreHttp).
+ * ever followed by a wait. So does anything that polls, in either step. The http
+ * method never polls its own request — that need not be idempotent — so it waits
+ * only when some other safe probe is at hand: the login of a target it inherits,
+ * or, when it brings its own connection, the target's own test (see
+ * connectors.js restoreHttp).
  */
 export function isSequenceRestore(kind, config) {
   if (!config.restore_enabled) return false;
   if (config.wol_mac) return true;
-  if (POLLING_RESTORE_KINDS.includes(config.restore_kind)) return true;
+  if (config.restore_kind === 'k8s') return true;
+  if (POLLING_POST_KINDS.includes(config.post_restore_kind)) return true;
   if (config.restore_kind !== 'http' || (config.restore_wait_seconds ?? 300) <= 0) return false;
   // Coerced, because restore_inherit is stored as 0/1 and && would hand back
   // the 0 rather than a boolean.
@@ -107,13 +136,17 @@ export function isSequenceRestore(kind, config) {
     : kind !== 'http' || config.auth_scheme === 'login';
 }
 
-/** The secret fields a target may carry: its own connection's, plus the restore
- *  method's when that connects somewhere of its own. Narrowing this is what
- *  drops a stale restore credential once the method changes — mergeSecrets
- *  keeps only what is on the list. */
+/** The secret fields a target may carry: its own connection's, plus those of
+ *  each restore step that connects somewhere of its own. Narrowing this is what
+ *  drops a stale restore credential once a method changes — mergeSecrets keeps
+ *  only what is on the list. */
 export function secretFieldsFor(kind, config) {
-  const restoreKind = config.restore_enabled && !config.restore_inherit ? config.restore_kind : 'none';
-  return [...KIND_SECRET_FIELDS[kind], ...(RESTORE_SECRETS_BY_KIND[restoreKind] ?? [])];
+  if (!config.restore_enabled) return [...KIND_SECRET_FIELDS[kind]];
+  return [
+    ...KIND_SECRET_FIELDS[kind],
+    ...(config.restore_inherit ? [] : RESTORE_SECRETS_BY_KIND[config.restore_kind] ?? []),
+    ...(config.post_restore_inherit ? [] : POST_RESTORE_SECRETS_BY_KIND[config.post_restore_kind] ?? [])
+  ];
 }
 
 const K8S_ACTIONS = ['drain', 'custom'];
@@ -155,7 +188,8 @@ export const MAX_SECRET_LEN = 262_144; // room for kubeconfigs / private keys
 // Config fields that hold a request body, a command or a PEM rather than a
 // setting, and so get the larger length cap.
 const BIG_CONFIG_FIELDS = ['body', 'command', 'command_body', 'restore_body', 'restore_command',
-  'login_body', 'ca_cert', 'restore_ca_cert'];
+  'login_body', 'ca_cert', 'restore_ca_cert',
+  'post_restore_body', 'post_restore_command', 'post_restore_ca_cert'];
 
 /** The wake that opens a restore: a magic packet Flatline broadcasts itself, or
  *  one a relay already on the target's network sends for it. Offered to every
@@ -195,72 +229,137 @@ function parseWake(cfg, src) {
   return null;
 }
 
-/** The restore's own SSH or WinRM connection, when it does not inherit the
- *  target's. Same fields the target kind itself takes, under restore_ names. */
-function parseRestoreShell(cfg, src, restoreKind) {
-  if (!cfg.restore_host) return 'a host is required for the restore connection';
-  if (!cfg.restore_username) return 'a username is required for the restore connection';
-  cfg.restore_port = intInRange(src.restore_port, 1, 65_535, restoreKind === 'ssh' ? 22 : 5985);
-  if (restoreKind === 'ssh') {
-    if (cfg.restore_auth_method && !['password', 'key'].includes(cfg.restore_auth_method)) {
-      return "restore auth_method must be 'password' or 'key'";
-    }
-    cfg.restore_auth_method ??= 'password';
-  }
-  return null;
-}
-
-/** The restore's own cluster connection. Mirrors the k8s kind: with a kubeconfig
- *  the server URL comes from the file, so the URL is only required for a plain
+/** A step's own cluster connection. Mirrors the k8s kind: with a kubeconfig the
+ *  server URL comes from the file, so the URL is only required for a plain
  *  bearer token. */
-function parseRestoreK8sConnection(cfg, src) {
-  if (cfg.restore_k8s_auth && !['token', 'kubeconfig'].includes(cfg.restore_k8s_auth)) {
-    return "restore cluster auth must be 'token' or 'kubeconfig'";
+function parseStepK8sConnection(cfg, p, label) {
+  if (cfg[`${p}k8s_auth`] && !['token', 'kubeconfig'].includes(cfg[`${p}k8s_auth`])) {
+    return `${label} cluster auth must be 'token' or 'kubeconfig'`;
   }
-  cfg.restore_k8s_auth ??= 'token';
-  if (cfg.restore_api_url) {
+  cfg[`${p}k8s_auth`] ??= 'token';
+  if (cfg[`${p}api_url`]) {
     try {
-      const u = new URL(cfg.restore_api_url);
-      if (u.protocol !== 'https:' && u.protocol !== 'http:') return 'restore API server URL must be http(s)';
+      const u = new URL(cfg[`${p}api_url`]);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') return `${label} API server URL must be http(s)`;
     } catch {
-      return 'restore API server URL must be a valid URL';
+      return `${label} API server URL must be a valid URL`;
     }
-  } else if (cfg.restore_k8s_auth === 'token') {
-    return 'a restore API server URL is required';
+  } else if (cfg[`${p}k8s_auth`] === 'token') {
+    return `a ${label} API server URL is required`;
   }
   return null;
 }
 
-/** The restore's own HTTP auth, when it does not inherit the target's. Only the
+/** A step's own HTTP auth, when it does not inherit the target's. Only the
  *  static schemes: a login round trip belongs to a target, which can hold the
  *  whole conversation it needs (see parseHttpLogin). */
-function parseRestoreHttpAuth(cfg) {
-  if (cfg.restore_auth_scheme && !AUTH_SCHEMES.includes(cfg.restore_auth_scheme)) {
-    return `restore auth scheme must be one of ${AUTH_SCHEMES.join('/')}`;
+function parseStepHttpAuth(cfg, p, label) {
+  if (cfg[`${p}auth_scheme`] && !AUTH_SCHEMES.includes(cfg[`${p}auth_scheme`])) {
+    return `${label} auth scheme must be one of ${AUTH_SCHEMES.join('/')}`;
   }
-  cfg.restore_auth_scheme ??= 'none';
-  if (cfg.restore_auth_scheme === 'header') {
-    if (!cfg.restore_header_name) return 'header name is required for the restore request\'s custom-header scheme';
-    if (!HEADER_NAME_RE.test(cfg.restore_header_name)) return 'restore header name contains invalid characters';
+  cfg[`${p}auth_scheme`] ??= 'none';
+  if (cfg[`${p}auth_scheme`] === 'header') {
+    if (!cfg[`${p}header_name`]) return `header name is required for the ${label} request's custom-header scheme`;
+    if (!HEADER_NAME_RE.test(cfg[`${p}header_name`])) return `${label} header name contains invalid characters`;
   }
-  if (cfg.restore_auth_scheme === 'basic') {
-    if (!cfg.restore_username) return 'username is required for the restore request\'s basic auth';
-    if (/[\r\n:]/.test(cfg.restore_username)) return 'restore username contains invalid characters';
+  if (cfg[`${p}auth_scheme`] === 'basic') {
+    if (!cfg[`${p}username`]) return `username is required for the ${label} request's basic auth`;
+    if (/[\r\n:]/.test(cfg[`${p}username`])) return `${label} username contains invalid characters`;
   }
-  if (cfg.restore_ca_cert && !cfg.restore_ca_cert.includes('BEGIN CERTIFICATE')) {
-    return 'the restore CA certificate must be PEM text (-----BEGIN CERTIFICATE-----)';
+  if (cfg[`${p}ca_cert`] && !cfg[`${p}ca_cert`].includes('BEGIN CERTIFICATE')) {
+    return `the ${label} CA certificate must be PEM text (-----BEGIN CERTIFICATE-----)`;
   }
-  cfg.restore_insecure_tls = cfg.restore_insecure_tls ? 1 : 0;
+  cfg[`${p}insecure_tls`] = cfg[`${p}insecure_tls`] ? 1 : 0;
   return null;
 }
 
 /**
- * A target's restore: off, or a wake + wait + one action, with the action's
- * method chosen independently of how the target itself is reached.
+ * One step of a restore: where it connects, and what it does there. `p` is the
+ * step's field prefix — `restore_` for step 1, `post_restore_` for step 3 — and
+ * `label` names the step in the error messages, since the two are configured in
+ * different places on the page.
  *
- * `restore_inherit` reuses the target's own connection and credentials, and is
- * only on offer when the method matches the target's kind — an HTTP target has
- * no SSH login to lend an SSH restore, so that combination brings its own.
+ * Inheriting reuses the target's own connection and credentials, and is only on
+ * offer when the step's method matches the target's kind — an HTTP target has no
+ * SSH login to lend an SSH step, so that combination brings its own.
+ *
+ * Mutates `cfg`; returns an error string, or null when it's valid.
+ */
+function parseRestoreStep(cfg, src, p, stepKind, kind, label) {
+  const get = (name) => cfg[p + name];
+  const set = (name, value) => { cfg[p + name] = value; };
+
+  // "The same machine or service, reached the same way" only exists when the
+  // step's method is the target's own kind.
+  const inherits = stepKind === kind && src[`${p}inherit`] ? 1 : 0;
+  set('inherit', inherits);
+
+  switch (stepKind) {
+    // A wake is configured by the wol_ fields, which belong to the restore as a
+    // whole (see parseWake); 'none' is the absence of a step. Neither connects
+    // anywhere or carries an action of its own.
+    case 'wol':
+    case 'none':
+      return null;
+
+    case 'ssh':
+    case 'winrm':
+      if (!inherits) {
+        if (!get('host')) return `a host is required for the ${label} connection`;
+        if (!get('username')) return `a username is required for the ${label} connection`;
+        set('port', intInRange(src[`${p}port`], 1, 65_535, stepKind === 'ssh' ? 22 : 5985));
+        if (stepKind === 'ssh') {
+          if (get('auth_method') && !['password', 'key'].includes(get('auth_method'))) {
+            return `${label} auth_method must be 'password' or 'key'`;
+          }
+          set('auth_method', get('auth_method') ?? 'password');
+        }
+      }
+      if (!get('command')) return `a ${label} command is required for this method`;
+      return null;
+
+    case 'k8s': {
+      if (!inherits) {
+        const error = parseStepK8sConnection(cfg, p, label);
+        if (error) return error;
+      }
+      set('uncordon', src[`${p}uncordon`] ? 1 : 0);
+      set('restart_deployments', src[`${p}restart_deployments`] ? 1 : 0);
+      if (get('method') && !K8S_METHODS.includes(get('method'))) {
+        return `${label} request method must be one of ${K8S_METHODS.join('/')}`;
+      }
+      if (get('path')) set('method', get('method') ?? 'PATCH');
+      if (!get('uncordon') && !get('restart_deployments') && !get('path')) {
+        return `pick at least one thing for the ${label} cluster step to do`;
+      }
+      return null;
+    }
+
+    case 'http': {
+      if (!inherits) {
+        const error = parseStepHttpAuth(cfg, p, label);
+        if (error) return error;
+      }
+      if (!get('url')) return `a ${label} URL is required for this method`;
+      try {
+        const u = new URL(get('url'));
+        if (u.protocol !== 'https:' && u.protocol !== 'http:') return `${label} URL must be http(s)`;
+      } catch {
+        return `${label} URL must be a valid URL`;
+      }
+      if (get('method') && !HTTP_METHODS.includes(get('method'))) {
+        return `${label} request method must be ${HTTP_METHODS.join('/')}`;
+      }
+      set('method', get('method') ?? 'POST');
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * A target's restore: off, or step 1 + the wait + an optional step 3, with each
+ * step's method chosen independently of how the target itself is reached.
  *
  * Mutates `cfg`; returns an error string, or null when it's valid.
  */
@@ -277,73 +376,38 @@ function parseRestore(cfg, src, kind) {
   cfg.auto_restore = src.auto_restore ? 1 : 0;
   cfg.restore_wait_seconds = intInRange(src.restore_wait_seconds, 0, MAX_RESTORE_WAIT_SECONDS, 300);
 
-  const wakeError = parseWake(cfg, src);
-  if (wakeError) return wakeError;
-
   if (cfg.restore_kind && !RESTORE_KINDS.includes(cfg.restore_kind)) {
     return `restore method must be one of ${RESTORE_KINDS.join('/')}`;
   }
-  cfg.restore_kind ??= 'none';
-  // Inheriting means "the same machine or service, reached the same way", which
-  // only exists when the method is the target's own kind.
-  cfg.restore_inherit = cfg.restore_kind === kind && src.restore_inherit ? 1 : 0;
+  cfg.restore_kind ??= 'wol';
+  if (cfg.post_restore_kind && !POST_RESTORE_KINDS.includes(cfg.post_restore_kind)) {
+    return `post-restore action must be one of ${POST_RESTORE_KINDS.join('/')}`;
+  }
+  cfg.post_restore_kind ??= 'none';
 
-  if (cfg.restore_kind === 'none' && !cfg.wol_mac) {
-    return 'a restore needs a wake or a method — otherwise there is nothing for it to do';
+  if (cfg.restore_kind === 'wol') {
+    const wakeError = parseWake(cfg, src);
+    if (wakeError) return wakeError;
+    // A blank MAC is how "the machine is already on, just do the follow-up" is
+    // said — but with no follow-up either, the restore does nothing at all.
+    if (!cfg.wol_mac && cfg.post_restore_kind === 'none') {
+      return 'a restore needs a MAC to wake or a post-restore action — otherwise there is nothing for it to do';
+    }
   }
 
-  let error = null;
-  switch (cfg.restore_kind) {
-    case 'ssh':
-    case 'winrm':
-      if (!cfg.restore_inherit) error = parseRestoreShell(cfg, src, cfg.restore_kind);
-      if (!error && !cfg.restore_command) error = 'a restore command is required for this restore method';
-      break;
-    case 'k8s':
-      if (!cfg.restore_inherit) error = parseRestoreK8sConnection(cfg, src);
-      if (!error) {
-        cfg.restore_uncordon = src.restore_uncordon ? 1 : 0;
-        cfg.restore_restart_deployments = src.restore_restart_deployments ? 1 : 0;
-        if (cfg.restore_method && !K8S_METHODS.includes(cfg.restore_method)) {
-          error = `restore method must be one of ${K8S_METHODS.join('/')}`;
-        } else if (cfg.restore_path) {
-          cfg.restore_method ??= 'PATCH';
-        }
-        if (!error && !cfg.restore_uncordon && !cfg.restore_restart_deployments && !cfg.restore_path) {
-          error = 'pick at least one thing for the cluster restore to do';
-        }
-      }
-      break;
-    case 'http':
-      if (!cfg.restore_inherit) error = parseRestoreHttpAuth(cfg);
-      if (!error) {
-        if (!cfg.restore_url) {
-          error = 'a restore URL is required for this restore method';
-        } else {
-          try {
-            const u = new URL(cfg.restore_url);
-            if (u.protocol !== 'https:' && u.protocol !== 'http:') error = 'restore URL must be http(s)';
-          } catch {
-            error = 'restore URL must be a valid URL';
-          }
-        }
-        if (!error && cfg.restore_method && !HTTP_METHODS.includes(cfg.restore_method)) {
-          error = `restore method must be ${HTTP_METHODS.join('/')}`;
-        }
-        cfg.restore_method ??= 'POST';
-      }
-      break;
-  }
+  const error = parseRestoreStep(cfg, src, 'restore_', cfg.restore_kind, kind, 'restore')
+    ?? parseRestoreStep(cfg, src, 'post_restore_', cfg.post_restore_kind, kind, 'post-restore');
   if (error) return error;
 
   // Everything belonging to a method that is not the chosen one — and the
-  // connection fields of one that inherits — would sit in the blob unreachable
-  // from the form. The same reason the http kind clears a login it no longer
-  // uses.
+  // connection fields of a step that inherits — would sit in the blob
+  // unreachable from the form. The same reason the http kind clears a login it
+  // no longer uses.
   const keep = new Set([
     ...RESTORE_COMMON_FIELDS,
-    ...RESTORE_ACTION_FIELDS[cfg.restore_kind],
-    ...(cfg.restore_inherit ? [] : RESTORE_CONNECTION_FIELDS[cfg.restore_kind])
+    ...(cfg.restore_kind === 'wol' ? WAKE_FIELDS : []),
+    ...stepFields('restore_', [cfg.restore_kind], cfg.restore_inherit),
+    ...stepFields('post_restore_', [cfg.post_restore_kind], cfg.post_restore_inherit)
   ]);
   for (const field of RESTORE_FIELDS) {
     if (!keep.has(field)) delete cfg[field];
