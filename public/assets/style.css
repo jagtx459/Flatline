@@ -62,6 +62,7 @@ a:hover { text-decoration: underline; }
 
 /* ---- header / nav ---- */
 header.site {
+  position: relative; /* the mobile menu hangs off the header */
   display: flex;
   align-items: baseline;
   gap: 24px;
@@ -96,6 +97,37 @@ header.site .icon-link:hover { color: var(--text-primary); }
 header.site .icon-link svg { width: 20px; height: 20px; display: block; }
 header.site button.icon-link { background: none; border: 0; padding: 0; cursor: pointer; }
 header.site .header-version { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* ---- mobile header menu ----
+   Four nav tabs, the brand and the icons do not share one line on a phone, so
+   below the breakpoint at the foot of this file header.js moves the tabs and
+   the Log out button into this dropdown, behind the hamburger. The panel is
+   built on every page but stays hidden until the button is showing. */
+header.site .hamburger { display: none; }
+header.site .header-menu {
+  position: absolute;
+  z-index: 45;
+  top: 100%;
+  right: 0;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+header.site .header-menu[hidden] { display: none; }
+header.site .header-menu nav { flex-direction: column; gap: 2px; }
+header.site .header-menu nav a { padding: 9px 12px; border-radius: 7px; }
+/* The header's underline marks the current tab across a row; stacked, it reads
+   as a divider instead, so the active item is filled rather than underlined. */
+header.site .header-menu nav a.active {
+  border-bottom: none;
+  padding-bottom: 9px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+header.site .header-menu .menu-sep { border-top: 1px solid var(--border); margin: 6px 4px; }
+header.site .header-menu .btn { width: 100%; padding: 8px 12px; }
 
 /* ---- sub-tabs (config page): one page's worth of cards split into panels,
        styled to echo the header nav's underlined active item ---- */
@@ -438,7 +470,11 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 /* ---- forms (config page) ---- */
 form .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  /* min() so the last column left standing can shrink below the track floor
+     rather than overflowing it: auto-fill always lays down at least one track,
+     and on a phone a bare 200px/300px floor is wider than the card holding it,
+     which pushes the whole page sideways. */
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
   gap: 12px;
 }
 label.field { display: flex; flex-direction: column; }
@@ -446,7 +482,7 @@ label.field .cap { display: block; color: var(--text-secondary); font-size: 12px
 /* Rows with a secret field carry a long "· stored ✓ (leave blank to keep)"
    caption once a value is saved. Widen every column in those rows equally so
    the caption stays on one line and all inputs keep a consistent width. */
-form .grid:has(> label.field.secret) { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+form .grid:has(> label.field.secret) { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
 /* Belt-and-suspenders: if a caption still wraps (very narrow viewport), keep
    inputs bottom-aligned across the row instead of letting one drop. */
 label.field > input, label.field > select, label.field > textarea { margin-top: auto; }
@@ -569,6 +605,8 @@ table.endpoints tr:last-child td { border-bottom: none; }
 table.endpoints .mono { font-variant-numeric: tabular-nums; }
 table.endpoints .target-cell { color: var(--text-secondary); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the Edit/Delete/… buttons a row's last cell carries (crud.js actionsCell) */
+.row-btns { display: inline-flex; gap: 6px; }
 
 /* Last activity while a restore is running. The phase wraps under the pill
    rather than being cut off — it is the only sign anything is happening. */
@@ -726,7 +764,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   margin-bottom: 6px;
   background: var(--page);
 }
-.step-row .step-num { color: var(--text-muted); font-variant-numeric: tabular-nums; width: 20px; }
 .step-row .step-name { flex: 1; font-weight: 600; }
 .step-row .step-name .hint { font-weight: 400; color: var(--text-muted); }
 .step-row .step-name .step-reuse { font-weight: 400; font-size: 12px; color: var(--accent); }
@@ -856,4 +893,93 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .filter-row { flex-wrap: wrap; }
   .filter-row .summary { width: 100%; margin-left: 0; }
   .endpoint-card .uptime { margin-left: 0; }
+}
+
+/* ---- phones ----
+   All of a piece: a page far narrower than the content was laid out for. The
+   header nav folds into a menu, every table stops being a table, and the rows
+   that read as a sentence across one line wrap instead. The dashboard is
+   untouched — it is already a column of cards, and its own card headers already
+   wrap. The form grids are not here either; they size themselves (see
+   `form .grid`). */
+@media (max-width: 720px) {
+  .container { padding: 0 14px 40px; }
+
+  header.site { gap: 12px; }
+  header.site .header-actions { gap: 13px; }
+  header.site .hamburger { display: inline-flex; align-self: center; }
+
+  /* The config page's three sub-tabs are a shade wider than a phone. Scroll the
+     strip rather than the whole page; the buttons keep their own width so a
+     label never wraps mid-word. */
+  .tabs { overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex: none; }
+
+  /* Each row becomes its own card: the header row goes away and every cell
+     prints its column's heading beside itself instead (renderTable stamps it on
+     as data-label). The last cell holds the buttons and has no heading, so it
+     is laid out full-width under a rule. */
+  table.endpoints, table.endpoints tbody, table.endpoints tr { display: block; }
+  table.endpoints { table-layout: auto; }
+  table.endpoints thead, table.endpoints colgroup { display: none; }
+  table.endpoints tr {
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 6px 12px;
+    margin-bottom: 10px;
+    background: var(--page);
+  }
+  table.endpoints tr:last-child { margin-bottom: 0; }
+  table.endpoints td {
+    display: flex;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: none;
+  }
+  table.endpoints td[data-label]::before {
+    content: attr(data-label);
+    flex: none;
+    width: 38%;
+    max-width: 125px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.6;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  /* Columns that hold one clipped line across a wide table have the whole width
+     of the card here, so they wrap instead. */
+  table.endpoints td.target-cell, table.endpoints td.truncate, table.endpoints td.restoring-cell {
+    max-width: none;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* The only cell with more than one line of its own: the pill, the elapsed
+     time and the phase have to keep stacking, so its label leads the block
+     rather than sitting beside it. */
+  table.endpoints td.restoring-cell { display: block; }
+  table.endpoints td.restoring-cell::before { display: block; width: auto; max-width: none; }
+
+  table.endpoints td:not([data-label]) {
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--gridline);
+  }
+  table.endpoints .row-btns, table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  /* iOS zooms in on a focused input whose text is under 16px and does not zoom
+     back out afterwards, which strands the page half a screen wide. */
+  input[type="text"], input[type="url"], input[type="number"], input[type="password"],
+  select, textarea { font-size: 16px; }
+
+  /* The step and stage builders read as a sentence across one line — the step's
+     name, how long it may take, and its buttons. Only the name is a full line's
+     worth on a phone, so the controls that trail it wrap under it. */
+  .step-row { flex-wrap: wrap; }
+  .step-row .step-name { flex: 1 0 100%; }
+  .step-add { flex-wrap: wrap; }
+  .step-add select { flex: 1 0 100%; min-width: 0; }
 }
