@@ -200,7 +200,7 @@ export function editDeleteButtons({ onEdit, confirm, onDelete }) {
 
 /** The usual right-hand cell: the buttons laid out in a row. */
 export function actionsCell(...buttons) {
-  return el('td', {}, el('span', { style: 'display:inline-flex;gap:6px' }, ...buttons.flat()));
+  return el('td', {}, el('span', { class: 'row-btns' }, ...buttons.flat()));
 }
 
 /**
@@ -210,6 +210,12 @@ export function actionsCell(...buttons) {
  * colgroup, some a status pill of their own, some a cell that is not truncated.
  *
  * `empty` is a string, or [heading, explanation] for the two-line version.
+ *
+ * Every cell also carries its column's heading as `data-label`. On a phone the
+ * stylesheet drops the header row and prints that label beside the cell instead,
+ * so a row reads as a stacked card rather than eight columns off the side of the
+ * screen. The last column's heading is blank (it holds the buttons), and a cell
+ * with no label is laid out full-width.
  */
 export function renderTable(container, { headers, rows, cells, empty, colWidths, className = 'endpoints' }) {
   clear(container);
@@ -228,7 +234,11 @@ export function renderTable(container, { headers, rows, cells, empty, colWidths,
   }
   table.append(
     el('thead', {}, el('tr', {}, ...headers.map((h) => el('th', {}, h)))),
-    el('tbody', {}, ...rows.map((row) => el('tr', {}, ...cells(row))))
+    el('tbody', {}, ...rows.map((row) => {
+      const tds = cells(row);
+      tds.forEach((td, i) => { if (headers[i]) td.dataset.label = headers[i]; });
+      return el('tr', {}, ...tds);
+    }))
   );
   container.append(table);
 }
