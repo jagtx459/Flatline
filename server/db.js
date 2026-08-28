@@ -122,11 +122,20 @@ export function recentChecks(endpointId, limit) {
 }
 
 /**
+ * How wide one history bucket is for a range — which is also the interval at
+ * which a chart of that range can visibly change, so the dashboard uses it to
+ * decide how often the history below is worth recomputing.
+ */
+export function bucketWidthMs(fromTs, toTs, bucketCount) {
+  return Math.max(1000, Math.floor((toTs - fromTs) / bucketCount));
+}
+
+/**
  * History grouped into fixed time slices so the dashboard draws any range at a
  * constant point count. total/ok_count let the client compute exact uptime.
  */
 export function bucketedHistory(endpointId, fromTs, toTs, bucketCount) {
-  const bucketMs = Math.max(1000, Math.floor((toTs - fromTs) / bucketCount));
+  const bucketMs = bucketWidthMs(fromTs, toTs, bucketCount);
   const buckets = db.prepare(`
     SELECT
       CAST((ts - ?) / ? AS INTEGER)             AS bucket,
@@ -141,13 +150,6 @@ export function bucketedHistory(endpointId, fromTs, toTs, bucketCount) {
   return { bucketMs, fromTs, buckets };
 }
 
-export function uptimeStats(endpointId, fromTs) {
-  return db.prepare(`
-    SELECT COUNT(*) AS total, SUM(ok) AS ok_count
-    FROM checks WHERE endpoint_id = ? AND ts >= ?
-  `).get(endpointId, fromTs);
-}
-
 export function pruneHistory(olderThanTs) {
   db.prepare('DELETE FROM checks WHERE ts < ?').run(olderThanTs);
   db.prepare('DELETE FROM events WHERE ts < ?').run(olderThanTs);
@@ -158,12 +160,17 @@ export function pruneHistory(olderThanTs) {
 
 // ---- events ----
 
-// Every recorded event also flows to the notifier (see notify.js), which
-// registers itself here to avoid a circular import. Fire-and-forget: a
-// notification failure must never break the write path.
-let eventHook = null;
+// Every recorded event also flows to its subscribers: the notifier (notify.js)
+// and the live-update stream (server/index.js), both of which register here to
+// avoid a circular import. Fire-and-forget: a subscriber failing must never
+// break the write path.
+//
+// A set rather than a single hook, so registering one does not silently
+// displace another. Subscribers register a stable function reference, which
+// makes a repeated registration a no-op rather than a duplicate.
+const eventHooks = new Set();
 export function onEvent(hook) {
-  eventHook = hook;
+  eventHooks.add(hook);
 }
 
 export function recordEvent(ev) {
@@ -172,7 +179,7 @@ export function recordEvent(ev) {
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(ev.ts, ev.endpointId ?? null, ev.kind, ev.fromState ?? null,
          ev.toState ?? null, ev.message ?? null);
-  if (eventHook) queueMicrotask(() => eventHook(ev));
+  for (const hook of eventHooks) queueMicrotask(() => hook(ev));
 }
 
 export function listEvents(limit) {

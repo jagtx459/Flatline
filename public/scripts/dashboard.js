@@ -6,6 +6,7 @@ import {
   confirmDialog, alertDialog
 } from './dom.js';
 import { initHeaderAuth } from './header.js';
+import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
 
 initHeaderAuth();
 
@@ -39,6 +40,9 @@ let groupBy = GROUP_BY_OPTIONS.some((o) => o.value === groupByParam)
   : (localStorage.getItem('flatline.groupBy') ?? 'group');
 let data = null;
 let fetchedAt = 0; // local clock at fetch, for countdown drift correction
+// Whether `data` came from the server this page load or from a snapshot. The
+// banners are drawn only when it is live — see renderBanners.
+let dataIsLive = false;
 
 const $banners = document.getElementById('banners');
 const $filters = document.getElementById('filters');
@@ -50,6 +54,7 @@ async function refresh() {
   try {
     data = await getDashboard(rangeHours);
     fetchedAt = Date.now();
+    dataIsLive = true;
     render();
   } catch (err) {
     console.error('dashboard refresh failed:', err);
@@ -73,6 +78,10 @@ const dismissedBanners = new Set();
 
 function renderBanners() {
   clear($banners);
+  // A group that is armed or triggered is precisely what must not be drawn one
+  // navigation out of date, so the banners wait for the live payload rather
+  // than coming back from a snapshot. It lands a round trip later.
+  if (!dataIsLive) return;
   const live = new Set();
 
   for (const g of data.groups) {
@@ -823,4 +832,22 @@ function scheduleRefresh() {
   const live = data?.action_runs.some((r) => r.status === 'running' || r.status === 'paused');
   setTimeout(() => void refresh().finally(scheduleRefresh), live ? ACTIVE_REFRESH_MS : REFRESH_MS);
 }
+
+// Draw last session's payload straight away so the page is populated while the
+// live one is still in flight. Only for the range being shown — a snapshot of a
+// different range would redraw every chart a moment later.
+const snapshot = loadSnapshot('dashboard');
+if (snapshot?.range_hours === rangeHours) {
+  data = snapshot;
+  render();
+}
+saveSnapshotOnExit('dashboard', () => (dataIsLive ? data : null));
+
 void refresh().finally(scheduleRefresh);
+
+// The poll above is a floor, not a deadline. A group arming or triggering is
+// the thing this page exists to show, and waiting out the interval to show it
+// is too slow, so the server pings when something has actually happened and the
+// page refreshes on the spot. EventSource reconnects on its own if the stream
+// drops, and the poll carries the page while it does.
+new EventSource('/api/stream').addEventListener('change', () => void refresh());
