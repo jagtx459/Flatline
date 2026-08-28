@@ -271,8 +271,11 @@ function mapEvent(ev) {
   }
 }
 
+// A stable reference, so calling startNotifier twice subscribes once.
+const notifyOnEvent = (ev) => void handleEvent(ev);
+
 export function startNotifier() {
-  store.onEvent((ev) => void handleEvent(ev));
+  store.onEvent(notifyOnEvent);
 }
 
 async function handleEvent(ev) {

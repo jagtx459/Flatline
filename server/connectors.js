@@ -421,8 +421,20 @@ async function runHttp(config, secrets, timeoutMs) {
  * extraction without sending the target's real request. The static schemes have
  * no such no-op, so their test stays what it has always been — the real request.
  */
+/**
+ * Whether testing this target actually sends its configured action, rather than
+ * probing it harmlessly. True only for the http targets covered above: they have
+ * no no-op to send instead.
+ *
+ * It matters to anything that tests on a timer. Checking one of these more often
+ * does not just cost more — it sends someone's real trigger request more often.
+ */
+export function testSendsRealAction(kind, config) {
+  return kind === 'http' && config?.auth_scheme !== 'login';
+}
+
 async function testHttp(config, secrets) {
-  if (config.auth_scheme !== 'login') return runHttp(config, secrets, TEST_TIMEOUT_MS);
+  if (testSendsRealAction('http', config)) return runHttp(config, secrets, TEST_TIMEOUT_MS);
   const login = await performLogin(config, secrets, TEST_TIMEOUT_MS);
   return login.ok
     ? { ok: true, message: `${login.message} — the trigger request was not sent` }

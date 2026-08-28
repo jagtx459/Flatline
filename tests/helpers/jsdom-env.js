@@ -20,7 +20,7 @@ const GLOBALS = [
   'window', 'document', 'location', 'localStorage', 'sessionStorage',
   'HTMLElement', 'Element', 'Node', 'Event', 'CustomEvent', 'MouseEvent', 'KeyboardEvent',
   'FileReader', 'Blob', 'URL', 'getComputedStyle', 'requestAnimationFrame',
-  'cancelAnimationFrame', 'matchMedia'
+  'cancelAnimationFrame', 'matchMedia', 'EventSource'
 ];
 
 const saved = new Map();
@@ -35,6 +35,15 @@ export function setupDom(html = '<!doctype html><html><body></body></html>', url
 
   // Not implemented by jsdom, and called whenever a form switches to edit mode.
   window.Element.prototype.scrollIntoView = function scrollIntoView() {};
+
+  // Also not implemented by jsdom (a documented gap). The dashboard opens one
+  // for live updates on top of its poll; the poll is what the tests drive, so a
+  // stub that connects to nothing is enough to let the module load.
+  window.EventSource = class EventSource {
+    constructor(url) { this.url = url; }
+    addEventListener() {}
+    close() {}
+  };
 
   for (const key of GLOBALS) {
     if (!(key in window)) continue;
