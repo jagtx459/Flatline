@@ -11,8 +11,11 @@ import {
 } from './crud.js';
 import { initHeaderAuth } from './header.js';
 import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
-import { hostInNetwork } from '/shared/net.js';
-import { RESTORE_SECRET_FIELDS } from '/shared/restoreSecrets.js';
+// Relative, not '/shared/…': public/ is served at / and shared/ at /shared/, so
+// this resolves to /shared/net.js in the browser and to the file on disk under
+// Node — which is what lets this module be imported by a test.
+import { hostInNetwork } from '../../shared/net.js';
+import { RESTORE_SECRET_FIELDS } from '../../shared/restoreSecrets.js';
 
 initHeaderAuth();
 initHelp();
