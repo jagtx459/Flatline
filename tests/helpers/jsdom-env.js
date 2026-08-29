@@ -45,6 +45,18 @@ export function setupDom(html = '<!doctype html><html><body></body></html>', url
     close() {}
   };
 
+  // Another documented jsdom omission, and unavoidable for any page loaded whole:
+  // the site header reaches it twice, for its 720px breakpoint and for
+  // prefers-color-scheme. Nothing here matches — the wide header and the light
+  // theme — which is the plain case every suite but header-ui wants. That one
+  // replaces this with a list it can flip; see stubMatchMedia there.
+  window.matchMedia = (query) => ({
+    media: query,
+    matches: false,
+    addEventListener() {},
+    removeEventListener() {}
+  });
+
   for (const key of GLOBALS) {
     if (!(key in window)) continue;
     if (!saved.has(key)) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));

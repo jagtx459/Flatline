@@ -1377,7 +1377,7 @@ const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
 // only match paths into our own tree, so the nav links (/actions, /config) and
 // the external GitHub link are left alone.
 const HTML_ASSET_REF = /\b(href|src)="(\/(?:assets|scripts|shared)\/[^"?#]+)"/g;
-const JS_MODULE_REF = /(\bfrom\s*['"])(\.\/[^'"]+\.js|\/shared\/[^'"]+\.js)(['"])/g;
+const JS_MODULE_REF = /(\bfrom\s*['"])(\.{1,2}\/[^'"]+\.js|\/shared\/[^'"]+\.js)(['"])/g;
 
 function addBuildToken(text, ext, token) {
   if (ext === '.html') return text.replace(HTML_ASSET_REF, `$1="$2?v=${token}"`);
