@@ -30,12 +30,12 @@ const POLL_MS = 15_000;
 const RESERVE_KEY = 'flatline.banners.height';
 
 /**
- * Wires the page's #banners container. Returns { update } — call it with the
- * group states and the server clock they were read at.
+ * Wires the page's #banners container, which every page that calls this carries.
+ * Returns { update } — call it with the group states and the server clock they
+ * were read at.
  */
 export function initBanners() {
   const container = document.getElementById('banners');
-  if (!container) return { update() {}, release() {} };
 
   // Hand the next page the height to hold open while its own banners are in
   // flight; theme-init.js reads it before that page paints.

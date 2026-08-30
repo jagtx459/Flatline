@@ -426,10 +426,8 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 .endpoint-card .uptime .value { font-size: 18px; font-weight: 650; }
 .endpoint-card .uptime .label { color: var(--text-muted); font-size: 11px; }
 
-/* The chart is drawn a frame late (it needs its rendered width), so reserve its
-   height up front — otherwise every refresh briefly shortens the page and the
-   browser clamps the scroll position back towards the top. Matches the chart
-   height in dashboard.js. */
+/* A floor matching the chart height in dashboard.js, so a card is the same
+   height whether its chart has points to draw or is still collecting. */
 .chart-wrap { margin-top: 10px; min-height: 130px; }
 .chart-wrap svg { display: block; width: 100%; }
 

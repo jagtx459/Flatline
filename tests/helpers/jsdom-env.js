@@ -19,8 +19,7 @@ import { JSDOM } from 'jsdom';
 const GLOBALS = [
   'window', 'document', 'location', 'localStorage', 'sessionStorage',
   'HTMLElement', 'Element', 'Node', 'Event', 'CustomEvent', 'MouseEvent', 'KeyboardEvent',
-  'FileReader', 'Blob', 'URL', 'getComputedStyle', 'requestAnimationFrame',
-  'cancelAnimationFrame', 'matchMedia', 'EventSource'
+  'FileReader', 'Blob', 'URL', 'matchMedia', 'EventSource'
 ];
 
 const saved = new Map();

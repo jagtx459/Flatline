@@ -31,7 +31,6 @@ export function onServerChange(fn, { health = false } = {}) {
   let source = null;
 
   function open() {
-    if (source) return;
     source = new EventSource(url);
     // EventSource reconnects on its own if the stream drops; the caller's poll
     // carries the page while it does.
@@ -53,6 +52,11 @@ export function onServerChange(fn, { health = false } = {}) {
   // Restored from that cache: live again, but carrying whatever it last knew.
   // Reconnecting alone would leave it stale until the next ping, so it refetches
   // rather than waiting to be told something changed.
+  //
+  // `persisted` is what makes this a restore rather than an ordinary load, which
+  // fires this too and already has its stream from open() above. A restore is
+  // always preceded by the pagehide that closed it, so open() here never has a
+  // live connection to strand.
   window.addEventListener('pageshow', (e) => {
     if (!e.persisted) return;
     open();

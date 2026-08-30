@@ -80,8 +80,8 @@ const EVENT_LABELS = {
 
 // The "initial templating": defaults used when a channel doesn't override
 // them, and pre-filled into the config-page form for new channels.
-export const DEFAULT_TITLE_TEMPLATE = 'Flatline: {event}';
-export const DEFAULT_BODY_TEMPLATE = '{message}\n{time}';
+const DEFAULT_TITLE_TEMPLATE = 'Flatline: {event}';
+const DEFAULT_BODY_TEMPLATE = '{message}\n{time}';
 
 const MAX_TEMPLATE_LEN = 500;
 
