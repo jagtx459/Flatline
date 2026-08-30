@@ -49,6 +49,12 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+/* Reserve the scrollbar's gutter everywhere, not only on the pages long enough
+   to need one. Without it the centred .container below sits ~8px further left on
+   a page that scrolls (Config) than on one that doesn't (Dashboard, Actions,
+   Flatline, whose forms start collapsed). Phones use overlay scrollbars, where
+   the gutter is zero-width and this does nothing. */
+html { scrollbar-gutter: stable; }
 body {
   background: var(--page);
   color: var(--text-primary);
@@ -152,6 +158,19 @@ header.site .header-menu .btn { width: 100%; padding: 8px 12px; }
 .tabs button:hover { color: var(--text-primary); }
 .tabs button.active { color: var(--text-primary); border-bottom-color: var(--accent); }
 .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Which panel is open before initTabs loads. The markup opens General, so these
+   are needed only for the other two, and only until the deferred module runs —
+   theme-init.js stamps the root from localStorage and initTabs drops the stamp
+   the moment it takes over, after which `hidden` alone decides.
+
+   Naming the panels keeps an unrecognised stamp harmless: it matches nothing and
+   the markup's own choice stands, rather than hiding every panel and leaving the
+   page blank. The reveal ties with the hide on specificity and wins on order. */
+:root[data-tab-config="notifications"] [data-panel],
+:root[data-tab-config="relays"] [data-panel] { display: none; }
+:root[data-tab-config="notifications"] [data-panel="notifications"],
+:root[data-tab-config="relays"] [data-panel="relays"] { display: block; }
 
 /* ---- cards ---- */
 .card {
@@ -291,6 +310,17 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 }
 
 /* ---- shutdown banner ---- */
+/* The banners arrive a round trip after the page paints, and they sit above
+   everything, so landing in a zero-height box shoved the whole page down as you
+   arrived on it. theme-init.js sets --banners-reserved from the height they had
+   on the page you left, holding the space open until the live ones fill it;
+   banners.js drops it the moment they do. flow-root so the last banner's margin
+   is counted in that height instead of collapsing out of it. */
+#banners {
+  display: flow-root;
+  min-height: var(--banners-reserved, 0px);
+}
+
 .banner {
   display: none;
   align-items: center;

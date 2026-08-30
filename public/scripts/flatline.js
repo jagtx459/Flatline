@@ -3,9 +3,11 @@ import { el, clear, enabledPill, initCollapsible, initDirtyNote, initHelp } from
 import { initEntityForm, renderTable, editDeleteButtons, actionsCell } from './crud.js';
 import { initHeaderAuth } from './header.js';
 import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
+import { watchBanners } from './banners.js';
 
 initHeaderAuth();
 initHelp();
+watchBanners();
 
 let groups = [];
 let actionGroupList = [];

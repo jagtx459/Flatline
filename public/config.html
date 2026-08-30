@@ -9,10 +9,12 @@
   <link rel="icon" type="image/png" href="/assets/Logo.png">
   <script src="/scripts/theme-init.js"></script>
   <link rel="modulepreload" href="/scripts/api.js">
+  <link rel="modulepreload" href="/scripts/banners.js">
   <link rel="modulepreload" href="/scripts/crud.js">
   <link rel="modulepreload" href="/scripts/dom.js">
   <link rel="modulepreload" href="/scripts/header.js">
   <link rel="modulepreload" href="/scripts/snapshot.js">
+  <link rel="modulepreload" href="/scripts/stream.js">
   <link rel="modulepreload" href="/scripts/theme.js">
 </head>
 
@@ -43,6 +45,9 @@
       </div>
     </header>
 
+    <!-- Above the tabs: an armed group is not one tab's news. -->
+    <div id="banners"></div>
+
     <div class="tabs" role="tablist" id="config-tabs">
       <button type="button" role="tab" data-tab="general" aria-selected="true">General</button>
       <button type="button" role="tab" data-tab="notifications" aria-selected="false">Notifications</button>
@@ -71,7 +76,12 @@
                   editing, leave a credential blank to keep the stored value.</p>
               </span></span></h2>
         </div>
-        <div class="card-body" id="channel-form-body">
+        <!-- Collapsed here as well as in initCollapsible, which only runs once
+             the deferred module has loaded — by which point this has already
+             painted open, and everything below it vanishes as the page settles.
+             An inline style rather than [hidden] because toggleByData reveals a
+             section with style.display = '', which [hidden] would survive. -->
+        <div class="card-body" id="channel-form-body" style="display:none">
           <form id="channel-form" method="post">
             <div class="grid">
               <label class="field">
@@ -443,7 +453,7 @@
                   when editing to keep the stored value.</p>
               </span></span></h2>
         </div>
-        <div class="card-body" id="relay-form-body">
+        <div class="card-body" id="relay-form-body" style="display:none">
           <form id="relay-form" method="post">
             <div class="grid">
               <label class="field">

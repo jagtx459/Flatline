@@ -11,6 +11,7 @@ import {
 } from './crud.js';
 import { initHeaderAuth } from './header.js';
 import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
+import { watchBanners } from './banners.js';
 // Relative, not '/shared/…': public/ is served at / and shared/ at /shared/, so
 // this resolves to /shared/net.js in the browser and to the file on disk under
 // Node — which is what lets this module be imported by a test.
@@ -1444,7 +1445,9 @@ void refreshAll();
 // Picks up the background connectivity dot (server rechecks targets ~every minute).
 setInterval(() => void refreshAll(), 20_000);
 
-// The sweep above reconciles the whole page; this reacts to what actually
-// happened. A run's steps land seconds apart, so waiting out the interval to
-// show each one made a live sequence read as a stalled one.
-new EventSource('/api/stream').addEventListener('change', () => void refreshTargets());
+// The banners are on every page and own this page's change stream; the target
+// rows ride along on it. The sweep above reconciles the whole page, while this
+// reacts to what actually happened — a run's steps land seconds apart, so
+// waiting out the interval to show each one made a live sequence read as a
+// stalled one. health: this page shows the targets' connectivity dots.
+watchBanners({ health: true, onChange: () => void refreshTargets() });

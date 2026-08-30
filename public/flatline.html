@@ -8,10 +8,12 @@
   <link rel="icon" type="image/png" href="/assets/Logo.png">
   <script src="/scripts/theme-init.js"></script>
   <link rel="modulepreload" href="/scripts/api.js">
+  <link rel="modulepreload" href="/scripts/banners.js">
   <link rel="modulepreload" href="/scripts/crud.js">
   <link rel="modulepreload" href="/scripts/dom.js">
   <link rel="modulepreload" href="/scripts/header.js">
   <link rel="modulepreload" href="/scripts/snapshot.js">
+  <link rel="modulepreload" href="/scripts/stream.js">
   <link rel="modulepreload" href="/scripts/theme.js">
 </head>
 <body>
@@ -37,6 +39,8 @@
       </div>
     </header>
 
+    <div id="banners"></div>
+
     <div class="card">
       <h2>Flatline endpoints</h2>
       <div id="endpoint-table"></div>
@@ -60,7 +64,10 @@
               them to actions — nothing triggers until they are in one.</p>
           </span></span></h2>
       </div>
-      <div class="card-body" id="form-body">
+      <!-- Collapsed here as well as in initCollapsible, which only runs once the
+           deferred module has loaded — by which point this has already painted
+           open, and everything below it vanishes as the page settles. -->
+      <div class="card-body" id="form-body" style="display:none">
       <form id="endpoint-form" method="post">
         <div class="grid">
           <label class="field">
@@ -150,7 +157,7 @@
               are what actually run when it triggers.</p>
           </span></span></h2>
       </div>
-      <div class="card-body" id="group-form-body">
+      <div class="card-body" id="group-form-body" style="display:none">
       <form id="group-form" method="post">
         <div class="grid">
           <label class="field">

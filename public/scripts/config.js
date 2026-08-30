@@ -14,9 +14,11 @@ import {
 } from './crud.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
 import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
+import { watchBanners } from './banners.js';
 
 initHeaderAuth();
 initHelp();
+watchBanners();
 
 // Sub-tabs split this page's cards into panels. They only hide and show, so
 // every getElementById below still resolves whichever tab is open.

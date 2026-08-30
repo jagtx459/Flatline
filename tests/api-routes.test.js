@@ -184,6 +184,22 @@ describe('sub-routes are not swallowed by the generic :id handler', () => {
     }
   });
 
+  test('GET /groups/states answers the banners, not "id = states"', async () => {
+    // Its own name: flatline_groups declares one unique, and the CRUD suite
+    // above uses the fixture's default.
+    const g = await POST('/api/groups', NEW.groups({ name: 'states-probe' }));
+    const res = await GET('/api/groups/states');
+
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(Number.isInteger(res.body.now), 'carries the server clock the countdown anchors on');
+    assert.ok(Array.isArray(res.body.groups), 'and a group per Flatline group');
+    const state = res.body.groups.find((s) => s.group_id === g.body.id);
+    assert.ok(state, 'the group just created is in there');
+    assert.equal(state.armed, false, 'nothing is down, so nothing is armed');
+
+    await DELETE(`/api/groups/${g.body.id}`);
+  });
+
   test('GET /actions/targets/:id/restore reports status rather than 404ing', async () => {
     const t = await POST('/api/actions/targets', NEW['actions/targets']());
     const res = await GET(`/api/actions/targets/${t.body.id}/restore`);

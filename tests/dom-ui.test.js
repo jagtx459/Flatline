@@ -275,6 +275,21 @@ describe('initTabs', () => {
     assert.equal(panel('general').hidden, false);
   });
 
+  test('the pre-paint stamp is dropped, so CSS stops forcing that panel open', async () => {
+    const document = await boot(`<!doctype html><body>${MARKUP}</body>`);
+    // What theme-init.js leaves on the root to keep the right panel painted
+    // while this module is still loading.
+    document.documentElement.setAttribute('data-tab-cfg', 'relays');
+    dom.initTabs('cfg', document.getElementById('tabs'));
+
+    assert.equal(document.documentElement.hasAttribute('data-tab-cfg'), false);
+
+    // Left on, the stylesheet would hold Relays open through this.
+    click(document.querySelector('[data-tab="general"]'));
+    assert.equal(panel('general').hidden, false);
+    assert.equal(panel('relays').hidden, true);
+  });
+
   test('arrow keys move between tabs and wrap around', async () => {
     const document = await boot(`<!doctype html><body>${MARKUP}</body>`);
     const tablist = document.getElementById('tabs');

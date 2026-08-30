@@ -461,12 +461,14 @@ function dashboardPayload(hours) {
  * dashboard route, free to drift from the first.
  */
 const streamClients = new Set();
+// The subset of them showing action-target connectivity dots — see below.
+const healthClients = new Set();
 const STREAM_HEARTBEAT_MS = 25_000;
 // A burst — a dozen endpoints failing together, or a group arming off the back
 // of one — should wake a page once, not a dozen times.
 const STREAM_COALESCE_MS = 250;
 
-function openEventStream(req, res) {
+function openEventStream(req, res, wantsHealth) {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -476,10 +478,16 @@ function openEventStream(req, res) {
   });
   res.write(': connected\n\n');
   streamClients.add(res);
-  // An open stream is the signal that someone is looking, which is what puts the
-  // target health poller on its fast cadence. Both pages that open one show
-  // health: the dots on Actions, the up/down counts on the dashboard.
-  setWatched(true);
+  // Watching the dots is what puts the target health poller on its fast cadence,
+  // and every page now opens a stream — the armed/triggered banners are on all
+  // of them. But only two show health: the dots on Actions and the up/down
+  // counts on the dashboard. So a page has to say so, otherwise leaving Config
+  // open all day would mean a real SSH or WinRM connection to every target every
+  // ten seconds for dots nobody is looking at.
+  if (wantsHealth) {
+    healthClients.add(res);
+    setWatched(true);
+  }
 
   // Proxies close connections that go quiet; a comment line costs nothing and
   // keeps this one open through an idle night.
@@ -487,7 +495,8 @@ function openEventStream(req, res) {
   req.on('close', () => {
     clearInterval(heartbeat);
     streamClients.delete(res);
-    setWatched(streamClients.size > 0);
+    healthClients.delete(res);
+    setWatched(healthClients.size > 0);
   });
 }
 
@@ -590,6 +599,16 @@ async function handleApi(req, res, url) {
   if (method === 'GET' && url.pathname === '/api/dashboard') {
     const hours = Math.min(24 * 14, Math.max(0.25, Number(url.searchParams.get('hours') ?? 24) || 24));
     sendJson(res, 200, dashboardPayload(hours));
+    return;
+  }
+
+  // GET /api/groups/states — just the armed/triggered state of each Flatline
+  // group, for the banners every page carries. The dashboard reads the same
+  // thing off its own payload; this is for the pages that would otherwise have
+  // to fetch that whole payload — endpoint history and all — to draw one line.
+  // Matched ahead of the CRUD resources, the way /api/endpoints/test is.
+  if (method === 'GET' && parts[1] === 'groups' && parts[2] === 'states' && parts.length === 3) {
+    sendJson(res, 200, { now: Date.now(), groups: getGroupStates() });
     return;
   }
 
@@ -772,7 +791,7 @@ async function handleApi(req, res, url) {
   // GET /api/stream — server-sent events: a bare "something changed" ping, so a
   // page reacts to an outage as it happens rather than on its next poll.
   if (method === 'GET' && url.pathname === '/api/stream') {
-    openEventStream(req, res);
+    openEventStream(req, res, url.searchParams.get('health') === '1');
     return;
   }
 

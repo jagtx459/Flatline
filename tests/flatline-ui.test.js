@@ -1,4 +1,4 @@
-import { test, describe, afterEach } from 'node:test';
+import { test, describe, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { setupDom, importFresh, click, flush } from './helpers/jsdom-env.js';
@@ -17,9 +17,10 @@ import { setupDom, importFresh, click, flush } from './helpers/jsdom-env.js';
  * and any drift between the markup and the ids the script reaches for shows up
  * here as a failure.
  *
- * No mock timers: this page has no poll loop. It loads its three lists once and
- * only re-reads them after an edit, so there is no clock to drive and nothing
- * left armed to keep the test process alive.
+ * Mock timers, like the other page suites: the page itself has no poll loop —
+ * it loads its three lists once and only re-reads them after an edit — but the
+ * banners every page carries poll for group states, and a real interval left
+ * running would keep the test process alive for good.
  *
  * Loading the real page brings the site header with it, so every boot also
  * fetches /api/version and /api/auth. `paths()` drops those — they belong to
@@ -66,13 +67,20 @@ const actionGroup = (over = {}) => ({ id: 1, name: 'Shutdown', ...over });
  * session storage first, for the fold state and the snapshot the module reads
  * at import time.
  */
-async function boot({ endpoints = [], groups = [], actionGroups = [], storage, session, fetchImpl } = {}) {
+async function boot({
+  endpoints = [], groups = [], actionGroups = [], groupStates = [], storage, session, fetchImpl
+} = {}) {
   env = setupDom(HTML, 'http://localhost/flatline');
   doc = env.document;
   for (const [k, v] of Object.entries(storage ?? {})) env.window.localStorage.setItem(k, v);
   for (const [k, v] of Object.entries(session ?? {})) env.window.sessionStorage.setItem(k, v);
 
-  data = { endpoints, groups, actionGroups };
+  // Not 'Date': the snapshot tests below reckon their own staleness against the
+  // real clock, and freezing it would make a minute-old snapshot look current.
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+
+  // The banners every page carries read this; nothing armed unless a test says so.
+  data = { endpoints, groups, actionGroups, groupStates };
   calls = [];
   globalThis.fetch = fetchImpl ?? defaultFetch;
 
@@ -86,6 +94,7 @@ const BODIES = {
   '/api/auth': () => ({ auth_required: false }),
   '/api/endpoints': () => data.endpoints,
   '/api/groups': () => data.groups,
+  '/api/groups/states': () => ({ now: Date.now(), groups: data.groupStates }),
   '/api/actions/groups': () => data.actionGroups
 };
 
@@ -107,14 +116,19 @@ async function defaultFetch(path, init) {
 const settle = () => flush(6);
 
 afterEach(() => {
+  mock.timers.reset();
   env.cleanup();
   globalThis.fetch = realFetch;
 });
 
 /** The requests the page made, less the two the shared header always makes. */
+/** The requests this page made, less the ones every page makes: the header's
+ *  two and the banners' group states. */
 const paths = (method = 'GET') => calls
-  .filter((c) => c.method === method && c.path !== '/api/version' && c.path !== '/api/auth')
+  .filter((c) => c.method === method && !SHARED_PATHS.has(c.path))
   .map((c) => c.path);
+
+const SHARED_PATHS = new Set(['/api/version', '/api/auth', '/api/groups/states']);
 
 const sent = (method) => calls.find((c) => c.method === method)?.body;
 

@@ -7,8 +7,13 @@ import {
 } from './dom.js';
 import { initHeaderAuth } from './header.js';
 import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
+import { initBanners } from './banners.js';
+import { onServerChange } from './stream.js';
 
 initHeaderAuth();
+// This page fetches group states as part of its own payload, so it feeds the
+// banners rather than letting them fetch again — see render().
+const banners = initBanners();
 
 const RANGES = [
   { label: '1h', hours: 1 },
@@ -39,12 +44,10 @@ let groupBy = GROUP_BY_OPTIONS.some((o) => o.value === groupByParam)
   ? groupByParam
   : (localStorage.getItem('flatline.groupBy') ?? 'group');
 let data = null;
-let fetchedAt = 0; // local clock at fetch, for countdown drift correction
-// Whether `data` came from the server this page load or from a snapshot. The
-// banners are drawn only when it is live — see renderBanners.
+// Whether `data` came from the server this page load or from a snapshot — a
+// half-populated view must not be saved back as one.
 let dataIsLive = false;
 
-const $banners = document.getElementById('banners');
 const $filters = document.getElementById('filters');
 const $endpoints = document.getElementById('endpoints');
 const $actionPanel = document.getElementById('action-panel');
@@ -53,8 +56,13 @@ const $events = document.getElementById('events');
 async function refresh() {
   try {
     data = await getDashboard(rangeHours);
-    fetchedAt = Date.now();
     dataIsLive = true;
+    // Here rather than in render(), which also runs on a resize and a grouping
+    // change: the banners' countdown anchors on the clock reading it is handed,
+    // so replaying an old payload into it would wind the countdown back up. It
+    // also keeps the snapshot below out of them, which is the point — an armed
+    // group must never be drawn one navigation out of date.
+    banners.update(data.groups, data.now);
     render();
   } catch (err) {
     console.error('dashboard refresh failed:', err);
@@ -63,86 +71,11 @@ async function refresh() {
 
 function render() {
   if (!data) return;
-  renderBanners();
   renderFilters();
   renderEndpoints();
   renderActionPanel();
   renderEvents();
 }
-
-// ---- per-group action banners ----
-
-// Banners the user has cleared, by group and state. Kept in memory only: a
-// dismissal hides a notice, it must never hide it for good.
-const dismissedBanners = new Set();
-
-function renderBanners() {
-  clear($banners);
-  // A group that is armed or triggered is precisely what must not be drawn one
-  // navigation out of date, so the banners wait for the live payload rather
-  // than coming back from a snapshot. It lands a round trip later.
-  if (!dataIsLive) return;
-  const live = new Set();
-
-  for (const g of data.groups) {
-    if (!g.armed) continue;
-
-    // A group escalating from armed to triggered is a new notice, so clearing
-    // the countdown doesn't also swallow "TRIGGERED".
-    const key = `${g.group_id}:${g.triggered ? 'triggered' : 'armed'}`;
-    live.add(key);
-    if (dismissedBanners.has(key)) continue;
-
-    const banner = el('div', { class: `banner ${g.triggered ? 'triggered' : 'armed'}` });
-    const actions = g.action_group_names.length ? g.action_group_names.join(', ') : 'no action groups assigned';
-
-    if (g.triggered) {
-      banner.append(
-        el('span', { class: 'icon' }, '⛔'),
-        el('span', {}, `"${g.name}" TRIGGERED — running action group(s): ${actions}.`),
-        el('span', { class: 'countdown' }, g.triggered_ts ? fmtDateTime(g.triggered_ts) : '')
-      );
-    } else {
-      const cd = el('span', { class: 'countdown' }, countdownText(g.deadline_ts));
-      cd.dataset.deadline = String(g.deadline_ts ?? '');
-      banner.append(
-        el('span', { class: 'icon' }, '⚠️'),
-        el('span', {}, `Group "${g.name}" failed (${g.down_count}/${g.endpoint_count} down) — will run: ${actions}.`),
-        cd
-      );
-    }
-
-    const close = el('button', { class: 'banner-x', type: 'button', title: 'Clear', 'aria-label': 'Clear' }, '×');
-    close.addEventListener('click', () => {
-      dismissedBanners.add(key);
-      banner.remove();
-    });
-    banner.append(close);
-
-    $banners.append(banner);
-  }
-
-  // Forget the dismissal once the group recovers, so a later outage says so.
-  for (const key of dismissedBanners) {
-    if (!live.has(key)) dismissedBanners.delete(key);
-  }
-}
-
-function countdownText(deadlineTs) {
-  if (!deadlineTs || !data) return '';
-  const serverNowEstimate = data.now + (Date.now() - fetchedAt);
-  const remaining = Math.max(0, deadlineTs - serverNowEstimate);
-  const mins = Math.floor(remaining / 60_000);
-  const secs = Math.floor((remaining % 60_000) / 1000);
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-}
-
-setInterval(() => {
-  for (const node of $banners.querySelectorAll('[data-deadline]')) {
-    const deadline = Number(node.dataset.deadline);
-    if (deadline) node.textContent = countdownText(deadline);
-  }
-}, 1000);
 
 // ---- filter row ----
 
@@ -188,7 +121,11 @@ function renderFilters() {
 
 function renderEndpoints() {
   clear($endpoints);
+  buildEndpointCards();
+  drawPendingCharts();
+}
 
+function buildEndpointCards() {
   if (data.endpoints.length === 0) {
     $endpoints.append(el('div', { class: 'card' },
       el('div', { class: 'empty' },
@@ -266,9 +203,11 @@ function toggleSection(key, heading, body, eps) {
   heading.setAttribute('aria-expanded', String(!nowCollapsed));
   body.style.display = nowCollapsed ? 'none' : '';
   // Cards are built the first time the section is actually visible — a chart
-  // measured while hidden would come out the wrong width.
+  // measured while hidden would come out the wrong width. The body is shown
+  // above, so by here they measure correctly.
   if (!nowCollapsed && !body.firstChild) {
     for (const ep of eps) body.append(endpointCard(ep));
+    drawPendingCharts();
   }
 }
 
@@ -298,18 +237,36 @@ function endpointCard(ep) {
 
   const chartWrap = el('div', { class: 'chart-wrap' });
   card.append(chartWrap);
-  // Chart needs the rendered width; defer until the card is in the DOM.
-  requestAnimationFrame(() => {
-    const width = chartWrap.clientWidth || 600;
-    if (ep.history.buckets.length === 0) {
-      chartWrap.append(el('div', { class: 'beats-label' }, 'Collecting data…'));
-    } else {
-      chartWrap.append(latencyChart(ep, width));
-    }
-  });
+  // The chart needs its rendered width, so it waits for the card to reach the
+  // document; whoever puts it there runs drawPendingCharts.
+  pendingCharts.push([chartWrap, ep]);
 
   card.append(beatsStrip(ep));
   return card;
+}
+
+/** Charts built but not yet measured, queued by endpointCard. */
+const pendingCharts = [];
+
+/**
+ * Draws the queued charts, and must be called synchronously in the same task
+ * that put their cards in the document.
+ *
+ * Measuring is what forces the wait, but deferring it to the next frame — which
+ * is how this worked — let the browser paint the cards chart-less first. Every
+ * render then blinked the charts out and back: twice on arriving at the page
+ * (the snapshot, then the live payload) and again on every poll and stream
+ * event. `min-height` on .chart-wrap holds the space open, so filling it in
+ * moves nothing.
+ */
+function drawPendingCharts() {
+  for (const [chartWrap, ep] of pendingCharts) {
+    const width = chartWrap.clientWidth || 600;
+    chartWrap.append(ep.history.buckets.length === 0
+      ? el('div', { class: 'beats-label' }, 'Collecting data…')
+      : latencyChart(ep, width));
+  }
+  pendingCharts.length = 0;
 }
 
 // ---- heartbeat strip (one cell per recent check) ----
@@ -848,6 +805,9 @@ void refresh().finally(scheduleRefresh);
 // The poll above is a floor, not a deadline. A group arming or triggering is
 // the thing this page exists to show, and waiting out the interval to show it
 // is too slow, so the server pings when something has actually happened and the
-// page refreshes on the spot. EventSource reconnects on its own if the stream
-// drops, and the poll carries the page while it does.
-new EventSource('/api/stream').addEventListener('change', () => void refresh());
+// page refreshes on the spot. health: this page shows the up/down counts, so it
+// asks for the fast target cadence.
+//
+// Unlike the other three this page does not go through watchBanners — it feeds
+// the banners off its own payload — so it opens the stream itself.
+onServerChange(() => void refresh(), { health: true });

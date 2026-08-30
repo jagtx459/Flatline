@@ -74,7 +74,7 @@ const relay = (over = {}) => ({
 // ---------- harness ----------
 
 async function boot({
-  targets = [], igroups = [], flatlineGroups = [], relays = [], storage, session
+  targets = [], igroups = [], flatlineGroups = [], relays = [], groupStates = [], storage, session
 } = {}) {
   env = setupDom(HTML, 'http://localhost/actions');
   doc = env.document;
@@ -84,7 +84,8 @@ async function boot({
   mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: NOW });
   installStream();
 
-  data = { targets, igroups, flatlineGroups, relays };
+  // The banners every page carries read this; nothing armed unless a test says so.
+  data = { targets, igroups, flatlineGroups, relays, groupStates };
   calls = [];
   globalThis.fetch = defaultFetch;
 
@@ -96,11 +97,14 @@ async function boot({
 /** An EventSource that keeps hold of its 'change' listener, so a test can fire
  *  the nudge the server sends when something on this page moved. */
 function installStream() {
-  stream = { url: null, listeners: [], fire() { for (const fn of this.listeners) fn(); } };
+  stream = {
+    url: null, opened: 0, closed: 0, listeners: [],
+    fire() { for (const fn of this.listeners) fn(); }
+  };
   globalThis.EventSource = class {
-    constructor(url) { stream.url = url; }
+    constructor(url) { stream.url = url; stream.opened += 1; }
     addEventListener(type, fn) { if (type === 'change') stream.listeners.push(fn); }
-    close() {}
+    close() { stream.closed += 1; }
   };
 }
 
@@ -110,6 +114,7 @@ const BODIES = {
   '/api/actions/targets': () => data.targets,
   '/api/actions/groups': () => data.igroups,
   '/api/groups': () => data.flatlineGroups,
+  '/api/groups/states': () => ({ now: Date.now(), groups: data.groupStates }),
   '/api/relays': () => data.relays
 };
 
@@ -148,9 +153,13 @@ afterEach(() => {
   globalThis.EventSource = realEventSource;
 });
 
+/** The requests this page made, less the ones every page makes: the header's
+ *  two and the banners' group states. */
 const paths = (method = 'GET') => calls
-  .filter((c) => c.method === method && c.path !== '/api/version' && c.path !== '/api/auth')
+  .filter((c) => c.method === method && !SHARED_PATHS.has(c.path))
   .map((c) => c.path);
+
+const SHARED_PATHS = new Set(['/api/version', '/api/auth', '/api/groups/states']);
 
 const sent = (method) => calls.find((c) => c.method === method)?.body;
 const allSent = (method) => calls.filter((c) => c.method === method).map((c) => c.body);
@@ -215,8 +224,49 @@ describe('boot', () => {
 
   test('it subscribes to the change stream', async () => {
     await boot();
-    assert.equal(stream.url, '/api/stream');
+    // health=1: this page shows the targets' connectivity dots, which is what
+    // puts the server's target poller on its fast cadence. One connection, not
+    // two — the banners own it and the target rows ride along.
+    assert.equal(stream.url, '/api/stream?health=1');
     assert.equal(stream.listeners.length, 1);
+  });
+
+  // A browser allows only about six connections to one origin, and an open
+  // stream holds one for as long as its page lives. A page in the back/forward
+  // cache is not destroyed, so streams left open there stack up until nothing
+  // can get a connection — not even the HTML of the page being navigated to.
+  test('the stream is released when the page goes away', async () => {
+    await boot();
+    assert.equal(stream.closed, 0);
+
+    env.window.dispatchEvent(new env.window.Event('pagehide'));
+    assert.equal(stream.closed, 1);
+  });
+
+  test('coming back from the back/forward cache reconnects and refetches', async () => {
+    await boot();
+    env.window.dispatchEvent(new env.window.Event('pagehide'));
+    const before = paths().length;
+
+    const restored = new env.window.Event('pageshow');
+    Object.defineProperty(restored, 'persisted', { value: true });
+    env.window.dispatchEvent(restored);
+    await settle();
+
+    assert.equal(stream.opened, 2, 'a fresh connection, the closed one being no use');
+    assert.ok(paths().length > before, 'and what it missed while the page was away');
+  });
+
+  test('an ordinary load is not mistaken for a cache restore', async () => {
+    await boot();
+    const opened = stream.opened;
+
+    // persisted: false — the page was built from scratch, and already has a
+    // stream from module load. Reopening here would leak one per navigation.
+    env.window.dispatchEvent(new env.window.Event('pageshow'));
+    await settle();
+
+    assert.equal(stream.opened, opened);
   });
 });
 

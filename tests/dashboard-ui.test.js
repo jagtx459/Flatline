@@ -136,13 +136,6 @@ async function boot(data = dashboard(), { url, storage } = {}) {
  *  so a countdown asserted right after boot reads its exact starting value. */
 const settle = () => flush(5);
 
-/** Runs the pending requestAnimationFrame callbacks — the endpoint cards defer
- *  building their charts to one. Costs 20ms of mocked clock. */
-async function frame() {
-  mock.timers.tick(20);
-  await settle();
-}
-
 afterEach(() => {
   mock.timers.reset();
   env.cleanup();
@@ -518,17 +511,13 @@ describe('latency chart', () => {
 
   test('an endpoint with no history says it is still collecting', async () => {
     await boot(dashboard({ endpoints: [endpoint()] }), { storage: { 'flatline.groupBy': 'none' } });
-    assert.equal(doc.querySelector('.chart-wrap svg'), null, 'nothing drawn before the frame runs');
-
-    await frame();
     assert.equal(text('.chart-wrap'), 'Collecting data…');
   });
 
-  test('history draws a chart once the frame runs', async () => {
+  test('history draws a chart in the render that builds the card', async () => {
     await boot(dashboard({
       endpoints: [endpoint({ history: history([{ bucket: 0, total: 4, ok_count: 4, avg_latency: 12 }]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     const chart = doc.querySelector('.chart-wrap svg');
     assert.ok(chart);
@@ -544,7 +533,6 @@ describe('latency chart', () => {
         { bucket: 2, total: 4, ok_count: 2, avg_latency: 30 }
       ]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     const bands = [...doc.querySelectorAll('.chart-wrap rect')]
       .filter((r) => r.getAttribute('style').includes('--status-critical'));
@@ -563,7 +551,6 @@ describe('latency chart', () => {
         { bucket: 5, total: 4, ok_count: 4, avg_latency: 22 }
       ]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     const lines = [...doc.querySelectorAll('.chart-wrap path')]
       .filter((p) => p.getAttribute('style').includes('stroke:var(--series-1)'));
@@ -574,7 +561,6 @@ describe('latency chart', () => {
     await boot(dashboard({
       endpoints: [endpoint({ history: history([{ bucket: 0, total: 4, ok_count: 4, avg_latency: 12 }]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     assert.equal(doc.querySelectorAll('.chart-wrap circle').length, 1);
     assert.equal(

@@ -67,7 +67,7 @@ const security = (over = {}) => ({
 // ---------- harness ----------
 
 async function boot({
-  channels = [], relays = [],
+  channels = [], relays = [], groupStates = [],
   settings: s = settings(), key = keyStatus(), securityConfig = security(),
   storage, session, url = 'http://localhost/config'
 } = {}) {
@@ -78,7 +78,8 @@ async function boot({
 
   mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
 
-  data = { channels, relays, settings: s, key, security: securityConfig };
+  // The banners every page carries read this; nothing armed unless a test says so.
+  data = { channels, relays, groupStates, settings: s, key, security: securityConfig };
   calls = [];
   globalThis.fetch = defaultFetch;
 
@@ -90,6 +91,7 @@ async function boot({
 const BODIES = {
   '/api/version': () => ({ version: '1.0.0' }),
   '/api/auth': () => ({ auth_required: false }),
+  '/api/groups/states': () => ({ now: Date.now(), groups: data.groupStates }),
   '/api/notifications': () => data.channels,
   '/api/relays': () => data.relays,
   '/api/settings': () => data.settings,
@@ -125,9 +127,13 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+/** The requests this page made, less the ones every page makes: the header's
+ *  two and the banners' group states. */
 const paths = (method = 'GET') => calls
-  .filter((c) => c.method === method && c.path !== '/api/version' && c.path !== '/api/auth')
+  .filter((c) => c.method === method && !SHARED_PATHS.has(c.path))
   .map((c) => c.path);
+
+const SHARED_PATHS = new Set(['/api/version', '/api/auth', '/api/groups/states']);
 
 const sent = (method) => calls.find((c) => c.method === method)?.body;
 
@@ -1158,6 +1164,104 @@ describe('polling', () => {
   });
 });
 
+// ---------- the banners every page carries ----------
+
+describe('armed-group banners', () => {
+  const armedGroup = (over = {}) => ({
+    group_id: 1, name: 'Rack', endpoint_count: 3, down_count: 2,
+    action_group_names: ['Shutdown'], armed: true, deadline_ts: null,
+    triggered: false, triggered_ts: null, ...over
+  });
+
+  test('an armed group is announced here too, not only on the dashboard', async () => {
+    await boot({ groupStates: [armedGroup()] });
+
+    const banner = doc.querySelector('#banners .banner');
+    assert.ok(banner, 'the Config page carries the banners');
+    assert.match(banner.className, /\barmed\b/);
+    assert.match(banner.textContent, /Group "Rack" failed \(2\/3 down\) — will run: Shutdown\./);
+  });
+
+  test('a group that is not armed gets no banner', async () => {
+    await boot({ groupStates: [armedGroup({ armed: false })] });
+    assert.equal(doc.querySelector('#banners .banner'), null);
+  });
+
+  test('a group arming between polls is picked up', async () => {
+    await boot();
+    assert.equal(doc.querySelector('#banners .banner'), null);
+
+    data.groupStates = [armedGroup()];
+    mock.timers.tick(15_000);
+    await settle();
+
+    assert.ok(doc.querySelector('#banners .banner'), 'the backstop poll caught it');
+  });
+
+  test('the banners are read from their own route, not the whole dashboard', async () => {
+    await boot();
+    assert.equal(calls.some((c) => c.path.startsWith('/api/dashboard')), false);
+    assert.ok(calls.some((c) => c.path === '/api/groups/states'));
+  });
+
+  // The banners sit above everything and only land a round trip in, so without a
+  // reservation the whole page lurches downward as they arrive. theme-init.js
+  // makes it before first paint; jsdom runs no scripts, so these put it on by
+  // hand and check what the module does with it afterwards.
+  describe('holding the space open across a navigation', () => {
+    const RESERVE_KEY = 'flatline.banners.height';
+    const reserved = () => env.document.documentElement.style.getPropertyValue('--banners-reserved');
+    const stampReservation = () =>
+      env.document.documentElement.style.setProperty('--banners-reserved', '96px');
+
+    test('leaving the page hands the height on to the next one', async () => {
+      await boot({ groupStates: [armedGroup()] });
+      env.window.dispatchEvent(new env.window.Event('pagehide'));
+
+      // jsdom lays nothing out, so the measurement itself is 0 — what is under
+      // test is that it is taken and handed on at all.
+      assert.notEqual(env.window.sessionStorage.getItem(RESERVE_KEY), null);
+    });
+
+    test('the reservation is dropped once the live banners are up', async () => {
+      await boot({ groupStates: [armedGroup()] });
+      stampReservation();
+
+      mock.timers.tick(15_000);
+      await settle();
+
+      assert.ok(doc.querySelector('#banners .banner'), 'still armed');
+      assert.equal(reserved(), '', 'what is on the page now is the truth');
+    });
+
+    test('a group that recovered while away does not leave a gap behind', async () => {
+      await boot({ groupStates: [armedGroup()] });
+      stampReservation();
+
+      data.groupStates = [];
+      mock.timers.tick(15_000);
+      await settle();
+
+      assert.equal(doc.querySelector('#banners .banner'), null);
+      assert.equal(reserved(), '', 'the held space goes with the banner');
+    });
+
+    test('a failed read drops it too, rather than holding a gap for nothing', async () => {
+      await boot();
+      stampReservation();
+
+      globalThis.fetch = async (path) => {
+        if (path === '/api/groups/states') throw new Error('offline');
+        return { ok: true, status: 200, json: async () => [] };
+      };
+      mock.timers.tick(15_000);
+      await settle();
+
+      assert.equal(reserved(), '');
+    });
+  });
+});
+
 // ---------- the session snapshot ----------
 
 describe('the session snapshot', () => {
@@ -1217,7 +1321,10 @@ describe('the session snapshot', () => {
     globalThis.fetch = async (path) => (path === '/api/relays'
       ? new Promise(() => {})
       : { ok: true, status: 200, json: async () => (BODIES[path] ? BODIES[path]() : []) });
-    data = { channels: [channel()], relays: [], settings: settings(), key: keyStatus(), security: security() };
+    data = {
+      channels: [channel()], relays: [], groupStates: [],
+      settings: settings(), key: keyStatus(), security: security()
+    };
 
     await importFresh(CONFIG);
     await settle();
