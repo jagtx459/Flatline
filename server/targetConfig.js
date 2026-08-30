@@ -32,8 +32,8 @@ import { RESTORE_SECRETS_BY_KIND, POST_RESTORE_SECRETS_BY_KIND } from '../shared
  * you cannot SSH into a machine that is off — so a shell command is a step-3
  * action, never the thing that starts the restore.
  */
-export const RESTORE_KINDS = ['wol', 'k8s', 'http'];
-export const POST_RESTORE_KINDS = ['none', 'ssh', 'winrm', 'k8s', 'http'];
+const RESTORE_KINDS = ['wol', 'k8s', 'http'];
+const POST_RESTORE_KINDS = ['none', 'ssh', 'winrm', 'k8s', 'http'];
 
 // Every per-step field is its own bare name under one of two prefixes —
 // `restore_` for step 1, `post_restore_` for step 3 — so both steps are parsed
@@ -176,7 +176,7 @@ const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
 // `sudo -S` and the host isn't set up with passwordless sudo (preferred).
 // http's login_password is the credential its 'login' auth scheme sends — an
 // account password or an API key, depending on what the endpoint wants.
-export const KIND_SECRET_FIELDS = {
+const KIND_SECRET_FIELDS = {
   ssh:  ['password', 'private_key', 'passphrase', 'sudo_password'],
   winrm: ['password'],
   k8s:  ['token', 'kubeconfig'],

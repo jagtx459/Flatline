@@ -2,13 +2,17 @@ import { endpoints as endpointsApi, groups as groupsApi, actionGroups } from './
 import { el, clear, enabledPill, initCollapsible, initDirtyNote, initHelp } from './dom.js';
 import { initEntityForm, renderTable, editDeleteButtons, actionsCell } from './crud.js';
 import { initHeaderAuth } from './header.js';
+import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
+import { watchBanners } from './banners.js';
 
 initHeaderAuth();
 initHelp();
+watchBanners();
 
 let groups = [];
 let actionGroupList = [];
 let endpoints = [];
+let loaded = false; // true once the live lists have arrived at least once
 
 // ---------- Flatline groups ----------
 
@@ -268,10 +272,7 @@ function renderEndpointTable() {
 
 // ---------- boot ----------
 
-async function refreshAll() {
-  [groups, actionGroupList, endpoints] = await Promise.all([
-    groupsApi.list(), actionGroups.list(), endpointsApi.list()
-  ]);
+function renderAll() {
   renderGroupTable();
   renderEndpointTable();
   // Keep form selection valid without clobbering an in-progress edit.
@@ -280,6 +281,24 @@ async function refreshAll() {
   }
 }
 
+async function refreshAll() {
+  [groups, actionGroupList, endpoints] = await Promise.all([
+    groupsApi.list(), actionGroups.list(), endpointsApi.list()
+  ]);
+  loaded = true;
+  renderAll();
+}
+
 groupForm.toAddMode();
 endpointForm.toAddMode();
+
+// Fill the tables from last session's data so the page is not blank while the
+// live lists are in flight; refreshAll replaces them a round trip later.
+const snapshot = loadSnapshot('flatline');
+if (snapshot) {
+  ({ groups, actionGroupList, endpoints } = snapshot);
+  renderAll();
+}
+saveSnapshotOnExit('flatline', () => (loaded ? { groups, actionGroupList, endpoints } : null));
+
 void refreshAll();

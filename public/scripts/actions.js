@@ -10,8 +10,13 @@ import {
   initEntityForm, initSecretFields, renderTable, editDeleteButtons, actionsCell
 } from './crud.js';
 import { initHeaderAuth } from './header.js';
-import { hostInNetwork } from '/shared/net.js';
-import { RESTORE_SECRET_FIELDS } from '/shared/restoreSecrets.js';
+import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
+import { watchBanners } from './banners.js';
+// Relative, not '/shared/…': public/ is served at / and shared/ at /shared/, so
+// this resolves to /shared/net.js in the browser and to the file on disk under
+// Node — which is what lets this module be imported by a test.
+import { hostInNetwork } from '../../shared/net.js';
+import { RESTORE_SECRET_FIELDS } from '../../shared/restoreSecrets.js';
 
 initHeaderAuth();
 initHelp();
@@ -20,6 +25,7 @@ let targets = [];
 let igroups = [];
 let flatlineGroups = [];
 let relays = [];
+let loaded = false; // true once the live lists have arrived at least once
 
 const KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'Kubernetes', http: 'HTTP(S)' };
 const K8S_ACTION_LABELS = { drain: 'drain all nodes', custom: 'custom request' };
@@ -1378,10 +1384,7 @@ async function pollRestores() {
 
 // ---------- boot ----------
 
-async function refreshAll() {
-  [targets, igroups, flatlineGroups, relays] = await Promise.all([
-    actionTargets.list(), actionGroups.list(), flatlineGroupsApi.list(), relaysApi.list()
-  ]);
+function renderAll() {
   renderRelayOptions();
   renderTargetTable();
   renderIgTable();
@@ -1393,8 +1396,58 @@ async function refreshAll() {
     : flatlineGroups.filter((fg) => fg.action_group_ids.includes(editingIg)).map((fg) => fg.id));
 }
 
+async function refreshAll() {
+  [targets, igroups, flatlineGroups, relays] = await Promise.all([
+    actionTargets.list(), actionGroups.list(), flatlineGroupsApi.list(), relaysApi.list()
+  ]);
+  loaded = true;
+  renderAll();
+}
+
+/**
+ * Just the target rows. A step running or a run finishing changes what they say
+ * — last activity, health, restore progress — and nothing else on this page:
+ * the groups, relays and Flatline groups only change when someone edits them.
+ *
+ * So this deliberately does not call refreshAll, which would rebuild the forms,
+ * the stage editor and the relay pickers out from under whoever is using them.
+ * It is the same reason pollRestores redraws only this table.
+ *
+ * Note it leaves `loaded` alone: it populates one of the four lists, so it can
+ * never be the thing that qualifies the page to save a snapshot.
+ */
+async function refreshTargets() {
+  try {
+    targets = await actionTargets.list();
+    renderTargetTable();
+  } catch (err) {
+    console.error('target refresh failed:', err);
+  }
+}
+
 targetForm.toAddMode();
 igForm.toAddMode();
+
+// Fill the tables from last session's data so the page is not blank while the
+// live lists are in flight; refreshAll replaces them a round trip later.
+const snapshot = loadSnapshot('actions');
+if (snapshot) {
+  ({ targets, igroups, flatlineGroups, relays } = snapshot);
+  // A restore that was running when the snapshot was taken may well have
+  // finished since. Progress is live state, so it is dropped rather than
+  // replayed — the refresh below reports where each target actually is.
+  for (const t of targets) t.restore_progress = null;
+  renderAll();
+}
+saveSnapshotOnExit('actions', () => (loaded ? { targets, igroups, flatlineGroups, relays } : null));
+
 void refreshAll();
 // Picks up the background connectivity dot (server rechecks targets ~every minute).
 setInterval(() => void refreshAll(), 20_000);
+
+// The banners are on every page and own this page's change stream; the target
+// rows ride along on it. The sweep above reconciles the whole page, while this
+// reacts to what actually happened — a run's steps land seconds apart, so
+// waiting out the interval to show each one made a live sequence read as a
+// stalled one. health: this page shows the targets' connectivity dots.
+watchBanners({ health: true, onChange: () => void refreshTargets() });

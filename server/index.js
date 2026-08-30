@@ -11,7 +11,7 @@ import {
   keySource, parseKeyInput, rotateKey, recoverStagedKey
 } from './secrets.js';
 import { startPoller, reschedule } from './poller.js';
-import { startShutdownWatcher, getGroupStates } from './shutdown.js';
+import { startShutdownWatcher, getGroupStates, evaluateNow } from './shutdown.js';
 import {
   startActionGroupRun, pauseRun, resumeRun, cancelRun, isRunning,
   markInterruptedRuns, publicRun
@@ -28,7 +28,8 @@ import { resolveWakeRelay } from './autoRestore.js';
 import {
   startTargetHealthPoller, getTargetHealth, checkTargetNow,
   getTargetActivity, recordTargetActivity, clearTargetActivity,
-  getRestoreProgress, beginRestore, endRestore, isRestoring
+  getRestoreProgress, beginRestore, endRestore, isRestoring,
+  setWatched, onHealthChange
 } from './targetHealth.js';
 import {
   startNotifier, sendTest, parseChannelConfig, checkChannelSecrets,
@@ -359,13 +360,58 @@ function actionGroupSummaries() {
   });
 }
 
+/**
+ * The history charts, memoised on the cadence at which they can actually change.
+ *
+ * bucketedHistory is the only expensive query on this payload — it scans every
+ * check in the range, for every endpoint, and the dashboard polls every ten
+ * seconds. Its answer only moves when the clock crosses into a new bucket,
+ * which on the 14-day range is nearly three hours apart, so recomputing it per
+ * poll was work thrown away. Keyed by endpoint, range, and which bucket-width
+ * slot the clock is in: short ranges have small buckets and still recompute
+ * often, long ones barely recompute at all, which is where the cost was.
+ *
+ * The cost of that is a chart whose right-hand edge can trail the clock by up
+ * to one bucket: ~30s on the 1h range, ~12 min on 24h, ~2.8h on 14d. Only the
+ * charts and the uptime figure are affected. Everything the page alerts on —
+ * endpoint state, the recent-checks strip, group states, runs, events — is read
+ * fresh on every poll and never served from here, so an outage still shows up
+ * within one refresh however long the selected range is.
+ *
+ * To trade some of the saving back for a tighter edge, cap the slot width:
+ * Math.min(bucketWidthMs(...), 60_000) bounds the lag at a minute on every
+ * range, at the cost of recomputing the long ranges once a minute.
+ */
+const historyCache = new Map(); // `${endpointId}:${hours}` -> { slot, history }
+
+function cachedHistory(endpointId, hours, fromTs, now) {
+  const slot = Math.floor(now / store.bucketWidthMs(fromTs, now, DASHBOARD_BUCKETS));
+  const key = `${endpointId}:${hours}`;
+  const hit = historyCache.get(key);
+  if (hit && hit.slot === slot) return hit.history;
+
+  const history = store.bucketedHistory(endpointId, fromTs, now, DASHBOARD_BUCKETS);
+  // One entry per endpoint and range: a new slot replaces its predecessor
+  // rather than accumulating beside it, so the map stays the size of the
+  // endpoint list times the five ranges.
+  historyCache.set(key, { slot, history });
+  return history;
+}
+
 function dashboardPayload(hours) {
   const now = Date.now();
   const fromTs = now - hours * 3_600_000;
 
   const endpoints = store.listEndpoints().map((ep) => {
-    const history = store.bucketedHistory(ep.id, fromTs, now, DASHBOARD_BUCKETS);
-    const stats = store.uptimeStats(ep.id, fromTs);
+    const history = cachedHistory(ep.id, hours, fromTs, now);
+    // The buckets already count every check in the range, so uptime is summed
+    // from them rather than asking the database to scan the same rows again.
+    let total = 0;
+    let okCount = 0;
+    for (const b of history.buckets) {
+      total += b.total;
+      okCount += b.ok_count ?? 0;
+    }
     const recent = store.recentChecks(ep.id, RECENT_CHECKS);
     const lastCheck = recent.length > 0 ? recent[recent.length - 1] : null;
     return {
@@ -380,8 +426,8 @@ function dashboardPayload(hours) {
       state: ep.last_state,
       last_change_ts: ep.last_change_ts,
       last_check: lastCheck,
-      uptime_pct: stats.total > 0 ? (100 * (stats.ok_count ?? 0)) / stats.total : null,
-      check_count: stats.total,
+      uptime_pct: total > 0 ? (100 * okCount) / total : null,
+      check_count: total,
       history,
       recent
     };
@@ -398,6 +444,82 @@ function dashboardPayload(hours) {
     events: store.listEvents(25)
   };
 }
+
+// ---------- live updates ----------
+
+/**
+ * Open event streams, one per page that is watching.
+ *
+ * The pages poll on a timer, but a timer is a floor, not a deadline: an armed
+ * or triggered group would sit unseen for the rest of the interval, which is
+ * the wrong behaviour for the one thing this application exists to tell you
+ * about. So every recorded event pings the open pages and they refresh on the
+ * spot.
+ *
+ * The ping deliberately carries no data. The pages already know how to fetch
+ * their own payload, and sending one here would be a second copy of the
+ * dashboard route, free to drift from the first.
+ */
+const streamClients = new Set();
+// The subset of them showing action-target connectivity dots — see below.
+const healthClients = new Set();
+const STREAM_HEARTBEAT_MS = 25_000;
+// A burst — a dozen endpoints failing together, or a group arming off the back
+// of one — should wake a page once, not a dozen times.
+const STREAM_COALESCE_MS = 250;
+
+function openEventStream(req, res, wantsHealth) {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+    // Asks a buffering proxy to pass each chunk through as it is written.
+    'x-accel-buffering': 'no'
+  });
+  res.write(': connected\n\n');
+  streamClients.add(res);
+  // Watching the dots is what puts the target health poller on its fast cadence,
+  // and every page now opens a stream — the armed/triggered banners are on all
+  // of them. But only two show health: the dots on Actions and the up/down
+  // counts on the dashboard. So a page has to say so, otherwise leaving Config
+  // open all day would mean a real SSH or WinRM connection to every target every
+  // ten seconds for dots nobody is looking at.
+  if (wantsHealth) {
+    healthClients.add(res);
+    setWatched(true);
+  }
+
+  // Proxies close connections that go quiet; a comment line costs nothing and
+  // keeps this one open through an idle night.
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), STREAM_HEARTBEAT_MS);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    streamClients.delete(res);
+    healthClients.delete(res);
+    setWatched(healthClients.size > 0);
+  });
+}
+
+let pushTimer = null;
+function pushChange() {
+  if (pushTimer !== null || streamClients.size === 0) return;
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    for (const res of streamClients) res.write('event: change\ndata: 1\n\n');
+  }, STREAM_COALESCE_MS);
+}
+
+// A dot changing colour is not an event in the log, but it is a reason to
+// redraw — so it reaches the pages the same way everything else does.
+onHealthChange(pushChange);
+
+store.onEvent(function liveUpdateOnEvent(ev) {
+  // An endpoint flipping is what arms or disarms a group, and the watcher would
+  // otherwise not look again for another five seconds. Evaluating here means
+  // the group state the ping announces is already the current one.
+  if (ev.kind === 'state') evaluateNow();
+  pushChange();
+});
 
 async function handleApi(req, res, url) {
   const method = req.method ?? 'GET';
@@ -477,6 +599,16 @@ async function handleApi(req, res, url) {
   if (method === 'GET' && url.pathname === '/api/dashboard') {
     const hours = Math.min(24 * 14, Math.max(0.25, Number(url.searchParams.get('hours') ?? 24) || 24));
     sendJson(res, 200, dashboardPayload(hours));
+    return;
+  }
+
+  // GET /api/groups/states — just the armed/triggered state of each Flatline
+  // group, for the banners every page carries. The dashboard reads the same
+  // thing off its own payload; this is for the pages that would otherwise have
+  // to fetch that whole payload — endpoint history and all — to draw one line.
+  // Matched ahead of the CRUD resources, the way /api/endpoints/test is.
+  if (method === 'GET' && parts[1] === 'groups' && parts[2] === 'states' && parts.length === 3) {
+    sendJson(res, 200, { now: Date.now(), groups: getGroupStates() });
     return;
   }
 
@@ -656,6 +788,13 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // GET /api/stream — server-sent events: a bare "something changed" ping, so a
+  // page reacts to an outage as it happens rather than on its next poll.
+  if (method === 'GET' && url.pathname === '/api/stream') {
+    openEventStream(req, res, url.searchParams.get('health') === '1');
+    return;
+  }
+
   // GET /api/events?limit=50
   if (method === 'GET' && url.pathname === '/api/events') {
     const limit = intInRange(url.searchParams.get('limit'), 1, 500, 50);
@@ -706,6 +845,7 @@ async function handleApi(req, res, url) {
       return;
     }
     reschedule();                 // pick up the new endpoint set
+    historyCache.clear();         // the imported endpoints have their own history
     invalidateSecurityCache();    // allowed_hosts may have changed
     store.recordEvent({ ts: Date.now(), kind: 'config_imported', message: 'Configuration imported from file — endpoints, groups, actions, and channels replaced' });
     sendJson(res, 200, { ok: true, counts });
@@ -717,6 +857,7 @@ async function handleApi(req, res, url) {
   if (method === 'POST' && url.pathname === '/api/config/reset') {
     store.resetAll();
     reschedule();                 // no endpoints left to poll
+    historyCache.clear();         // and no history left to chart
     invalidateSecurityCache();    // password + allowed hosts are gone — auth is now off
     store.recordEvent({ ts: Date.now(), kind: 'config_reset', message: 'Application reset to a clean state from the config page — all config, history, and site password cleared' });
     sendJson(res, 200, { ok: true });
@@ -756,6 +897,7 @@ async function handleApi(req, res, url) {
       return;
     }
     reschedule();                 // poll the restored endpoint set
+    historyCache.clear();         // the backup's history replaced what was charted
     invalidateSecurityCache();    // password/allowed hosts came from the backup
     markInterruptedRuns();        // runs in the backup belong to another process
     store.recordEvent({ ts: Date.now(), kind: 'db_restored', message: 'Database restored from an uploaded backup' });
@@ -1126,7 +1268,9 @@ const RESOURCES = {
     // The poller's schedule is built from the endpoint set, so every write to it
     // has to rebuild the timers — a delete included.
     afterWrite: reschedule,
-    afterDelete: reschedule
+    // A delete takes the endpoint's checks with it (ON DELETE CASCADE), so the
+    // charts memoised from them have to go too.
+    afterDelete: () => { reschedule(); historyCache.clear(); }
   },
   groups: {
     notFound: 'group not found',
@@ -1247,36 +1391,46 @@ const PAGE_ROUTES = {
 // Text assets are worth precompressing; PNG/ico are already compressed.
 const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json']);
 
+// Where the build token gets stitched in: every href/src pointing into the
+// served tree, and every module specifier between the scripts. Both patterns
+// only match paths into our own tree, so the nav links (/actions, /config) and
+// the external GitHub link are left alone.
+const HTML_ASSET_REF = /\b(href|src)="(\/(?:assets|scripts|shared)\/[^"?#]+)"/g;
+const JS_MODULE_REF = /(\bfrom\s*['"])(\.{1,2}\/[^'"]+\.js|\/shared\/[^'"]+\.js)(['"])/g;
+
+function addBuildToken(text, ext, token) {
+  if (ext === '.html') return text.replace(HTML_ASSET_REF, `$1="$2?v=${token}"`);
+  if (ext === '.js') return text.replace(JS_MODULE_REF, `$1$2?v=${token}$3`);
+  return text;
+}
+
 // The served tree is small and never changes at runtime, so we read it once
 // into memory at startup with a content-hash ETag and precomputed brotli+gzip
-// variants. Requests then get cheap 304s (no re-download on every page nav) and
-// the smallest encoding the client accepts — the latter matters over a VPN.
+// variants, and stamp every asset reference with a build token.
+//
+// The token is what makes a tab switch cheap. Without it every asset carries
+// `no-cache`, which does not mean "don't cache" but "revalidate before each
+// use" — so navigating between pages spent a network round trip per file just
+// to be told nothing had changed. Over a VPN that was most of the wait. A
+// token-carrying URL names content that cannot change under it, so it is
+// served `immutable` and never asked about again. Pages themselves stay
+// revalidated, which is what lets a new token reach the browser at all.
+//
 // Trade-off: editing a file needs a server restart to take effect.
-const STATIC_CACHE = buildStaticCache();
+const { cache: STATIC_CACHE, token: BUILD_TOKEN } = buildStaticCache();
 
 function buildStaticCache() {
-  const cache = new Map();
+  const files = [];
 
   const walk = (base, dir, urlPrefix) => {
     for (const name of readdirSync(dir)) {
       const abs = path.join(dir, name);
       if (statSync(abs).isDirectory()) { walk(base, abs, urlPrefix); continue; }
-      const data = readFileSync(abs);
-      const key = urlPrefix + '/' + path.relative(base, abs).split(path.sep).join('/');
-      const ext = path.extname(abs).toLowerCase();
-      const entry = {
-        data,
-        mime: MIME[ext] ?? 'application/octet-stream',
-        etag: `"${createHash('sha1').update(data).digest('base64url')}"`,
-        variants: {}
-      };
-      if (COMPRESSIBLE.has(ext)) {
-        entry.variants.gzip = zlib.gzipSync(data, { level: 9 });
-        entry.variants.br = zlib.brotliCompressSync(data, {
-          params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 }
-        });
-      }
-      cache.set(key, entry);
+      files.push({
+        key: urlPrefix + '/' + path.relative(base, abs).split(path.sep).join('/'),
+        data: readFileSync(abs),
+        ext: path.extname(abs).toLowerCase()
+      });
     }
   };
 
@@ -1284,12 +1438,42 @@ function buildStaticCache() {
   // shared/ is imported by both sides: Node reads it off disk, the browser needs
   // it over HTTP, so it is served at /shared/* alongside the public tree.
   walk(SHARED_DIR, SHARED_DIR, '/shared');
-  return cache;
+  // Sorted so the token depends on the tree's contents and not on the order the
+  // filesystem happened to hand them over.
+  files.sort((a, b) => (a.key < b.key ? -1 : 1));
+
+  // One token for the whole tree rather than a hash per file: the tree is a few
+  // dozen KB, so re-fetching all of it after an upgrade is cheaper than the
+  // machinery to invalidate each file on its own.
+  const token = createHash('sha1')
+    .update(Buffer.concat(files.map((f) => f.data)))
+    .digest('base64url').slice(0, 12);
+
+  const cache = new Map();
+  for (const { key, data, ext } of files) {
+    const body = ext === '.html' || ext === '.js'
+      ? Buffer.from(addBuildToken(data.toString('utf8'), ext, token))
+      : data;
+    const entry = {
+      data: body,
+      mime: MIME[ext] ?? 'application/octet-stream',
+      etag: `"${createHash('sha1').update(body).digest('base64url')}"`,
+      variants: {}
+    };
+    if (COMPRESSIBLE.has(ext)) {
+      entry.variants.gzip = zlib.gzipSync(body, { level: 9 });
+      entry.variants.br = zlib.brotliCompressSync(body, {
+        params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 }
+      });
+    }
+    cache.set(key, entry);
+  }
+  return { cache, token };
 }
 
 // async only so the dispatcher's uniform `handler.catch(...)` still applies —
 // the body itself is synchronous (everything is served from memory).
-async function handleStatic(req, res, pathname) {
+async function handleStatic(req, res, pathname, version) {
   // When auth is enabled, pages redirect to/away from the login screen.
   // Assets (css/js/logo) stay open so the login page itself can render —
   // they contain no data; everything sensitive is behind the API gate.
@@ -1314,9 +1498,17 @@ async function handleStatic(req, res, pathname) {
     return;
   }
 
+  // A URL carrying the current build token names content that cannot change
+  // under it, so the browser is told to keep it and stop asking. Everything
+  // else — pages, and any stale-token URL left over from before an upgrade —
+  // revalidates as it always did.
+  const cacheControl = version === BUILD_TOKEN && entry.mime !== MIME['.html']
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache';
+
   // Revalidate cheaply: unchanged assets come back as an empty 304.
   if (req.headers['if-none-match'] === entry.etag) {
-    res.writeHead(304, { etag: entry.etag, 'cache-control': 'no-cache' });
+    res.writeHead(304, { etag: entry.etag, 'cache-control': cacheControl });
     res.end();
     return;
   }
@@ -1325,7 +1517,7 @@ async function handleStatic(req, res, pathname) {
   const body = (enc && entry.variants[enc]) ? entry.variants[enc] : entry.data;
   const headers = {
     'content-type': entry.mime,
-    'cache-control': 'no-cache',
+    'cache-control': cacheControl,
     etag: entry.etag,
     vary: 'Accept-Encoding'
   };
@@ -1362,7 +1554,7 @@ const server = http.createServer((req, res) => {
 
   const handler = pathname.startsWith('/api/')
     ? handleApi(req, res, url)
-    : handleStatic(req, res, pathname);
+    : handleStatic(req, res, pathname, url.searchParams.get('v'));
 
   handler.catch((err) => {
     if (err instanceof HttpError) {

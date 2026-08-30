@@ -13,9 +13,12 @@ import {
   initEntityForm, initSecretFields, renderTable, editDeleteButtons, actionsCell
 } from './crud.js';
 import { initHeaderAuth, refreshHeaderAuth } from './header.js';
+import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
+import { watchBanners } from './banners.js';
 
 initHeaderAuth();
 initHelp();
+watchBanners();
 
 // Sub-tabs split this page's cards into panels. They only hide and show, so
 // every getElementById below still resolves whichever tab is open.
@@ -25,6 +28,7 @@ const configTabs = initTabs('config', document.getElementById('config-tabs'));
 document.getElementById('baseurl-jump').addEventListener('click', () => configTabs.show('general'));
 
 let channels = [];
+let channelsLoaded = false; // true once the live list has arrived at least once
 
 const KIND_LABELS = {
   webhook: 'Webhook', discord: 'Discord', ntfy: 'ntfy', email: 'Email', apprise: 'Apprise'
@@ -309,6 +313,7 @@ function renderChannelTable() {
 
 async function refreshChannels() {
   channels = await notificationChannels.list();
+  channelsLoaded = true;
   renderChannelTable();
 }
 
@@ -484,6 +489,7 @@ const relaySecrets = initSecretFields($relayForm, {
 });
 
 let relays = [];
+let relaysLoaded = false; // true once the live list has arrived at least once
 
 const relayField = (name) => $relayForm.elements.namedItem(name);
 
@@ -653,6 +659,7 @@ function renderRelayTable() {
 
 async function loadRelays() {
   relays = await relaysApi.list();
+  relaysLoaded = true;
   renderRelayTable();
 }
 
@@ -974,6 +981,19 @@ $appReset.addEventListener('click', () => {
 
 channelForm.toAddMode();
 relayForm.toAddMode();
+
+// Fill the two tables from last session's data so they are not empty while the
+// live lists are in flight. Only these: the key, security and settings panels
+// below describe how this instance is secured right now, and a stale answer
+// there would be worse than a blank field for a moment.
+const snapshot = loadSnapshot('config');
+if (snapshot) {
+  ({ channels, relays } = snapshot);
+  renderChannelTable();
+  renderRelayTable();
+}
+saveSnapshotOnExit('config', () => (channelsLoaded && relaysLoaded ? { channels, relays } : null));
+
 void refreshChannels();
 void loadRelays();
 void loadSettings();

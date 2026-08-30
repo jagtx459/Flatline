@@ -38,6 +38,20 @@ export function startShutdownWatcher() {
   return setInterval(evaluate, EVAL_INTERVAL_MS);
 }
 
+/**
+ * Evaluates now instead of waiting out the interval.
+ *
+ * An endpoint changing state is the only input that can arm or disarm a group,
+ * so the server reacts to one the moment the poller reports it. Without this a
+ * banner trails the outage that caused it by up to EVAL_INTERVAL_MS, on top of
+ * however long the page then takes to notice. Safe to call from an event hook:
+ * evaluate never records a 'state' event, so it cannot re-enter through the
+ * subscriber that calls this.
+ */
+export function evaluateNow() {
+  evaluate();
+}
+
 /** Per-group countdown state for the dashboard. */
 export function getGroupStates() {
   const endpoints = store.listEndpoints();

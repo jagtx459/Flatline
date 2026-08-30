@@ -122,6 +122,23 @@ describe('renderTable', () => {
     assert.equal(host.querySelector('table').className, 'endpoints');
     assert.equal(host.querySelector('colgroup'), null);
   });
+
+  // On a phone the stylesheet hides the header row and prints each cell's
+  // data-label beside it instead, so a row reads as a stacked card. Without
+  // these attributes that layout is a column of unlabelled values.
+  test('every cell carries its column heading as data-label', () => {
+    const host = env.document.createElement('div');
+    crud.renderTable(host, { ...opts, rows: [{ id: 1 }, { id: 2 }] });
+
+    for (const row of host.querySelectorAll('tbody tr')) {
+      const tds = row.querySelectorAll('td');
+      assert.equal(tds[0].dataset.label, 'Name');
+      assert.equal(tds[1].dataset.label, 'Kind');
+      // The last column heads the buttons and is deliberately blank; the
+      // stylesheet keys the full-width, ruled-off cell on having no label.
+      assert.equal(tds[2].dataset.label, undefined);
+    }
+  });
 });
 
 // ---------- editDeleteButtons ----------

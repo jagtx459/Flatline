@@ -19,8 +19,7 @@ import { JSDOM } from 'jsdom';
 const GLOBALS = [
   'window', 'document', 'location', 'localStorage', 'sessionStorage',
   'HTMLElement', 'Element', 'Node', 'Event', 'CustomEvent', 'MouseEvent', 'KeyboardEvent',
-  'FileReader', 'Blob', 'URL', 'getComputedStyle', 'requestAnimationFrame',
-  'cancelAnimationFrame', 'matchMedia'
+  'FileReader', 'Blob', 'URL', 'matchMedia', 'EventSource'
 ];
 
 const saved = new Map();
@@ -35,6 +34,27 @@ export function setupDom(html = '<!doctype html><html><body></body></html>', url
 
   // Not implemented by jsdom, and called whenever a form switches to edit mode.
   window.Element.prototype.scrollIntoView = function scrollIntoView() {};
+
+  // Also not implemented by jsdom (a documented gap). The dashboard opens one
+  // for live updates on top of its poll; the poll is what the tests drive, so a
+  // stub that connects to nothing is enough to let the module load.
+  window.EventSource = class EventSource {
+    constructor(url) { this.url = url; }
+    addEventListener() {}
+    close() {}
+  };
+
+  // Another documented jsdom omission, and unavoidable for any page loaded whole:
+  // the site header reaches it twice, for its 720px breakpoint and for
+  // prefers-color-scheme. Nothing here matches — the wide header and the light
+  // theme — which is the plain case every suite but header-ui wants. That one
+  // replaces this with a list it can flip; see stubMatchMedia there.
+  window.matchMedia = (query) => ({
+    media: query,
+    matches: false,
+    addEventListener() {},
+    removeEventListener() {}
+  });
 
   for (const key of GLOBALS) {
     if (!(key in window)) continue;

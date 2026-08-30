@@ -174,6 +174,12 @@ export function initTabs(key, tablistEl) {
     let active = tabs[0]?.dataset.tab;
 
     function show(name, focus = false) {
+        // theme-init.js stamps the stored tab on <html> so the right panel is
+        // the one that paints, since this module is deferred and arrives too
+        // late to prevent the wrong one showing first. From here `hidden` below
+        // decides, and leaving the stamp on would have CSS force that panel open
+        // whichever tab is picked.
+        document.documentElement.removeAttribute(`data-tab-${key}`);
         active = tabs.some((t) => t.dataset.tab === name) ? name : tabs[0]?.dataset.tab;
         for (const tab of tabs) {
             const on = tab.dataset.tab === active;

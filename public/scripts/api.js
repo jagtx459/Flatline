@@ -55,6 +55,12 @@ export function getVersion() {
   return request('/api/version');
 }
 
+/** Armed/triggered state per Flatline group, for the banners. The dashboard has
+ *  this on its own payload already; the other pages read it from here. */
+export function getGroupStates() {
+  return request('/api/groups/states');
+}
+
 /** Runs a target's real configured action now, outside any group or grace period. */
 export function runActionTarget(id) {
   return post(`/api/actions/targets/${id}/run`);

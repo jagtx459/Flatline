@@ -1,5 +1,6 @@
 import { test, describe, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { setupDom, importFresh, click, flush } from './helpers/jsdom-env.js';
 
 /**
@@ -18,6 +19,13 @@ import { setupDom, importFresh, click, flush } from './helpers/jsdom-env.js';
  * would never exit), and it also turns the countdown ticker and the "poll faster
  * while a run is live" cadence into things that can be asserted directly.
  *
+ * The page is the real public/index.html, as in the other three page suites:
+ * jsdom parses it but does not run its `<script type="module">`, so the import
+ * below is still what boots the dashboard — and any drift between the markup and
+ * the ids the script reaches for shows up here as a failure. It brings the site
+ * header with it, which fetches /api/version and /api/auth on every boot;
+ * `paths()` drops those, since they belong to header.js and its own suite.
+ *
  * Out of reach here, as in the other jsdom suites: anything that needs real
  * layout. capList() sizes the scrolling lists off getBoundingClientRect(), which
  * is all zeroes, and the chart falls back to its 600px default because
@@ -26,18 +34,7 @@ import { setupDom, importFresh, click, flush } from './helpers/jsdom-env.js';
  */
 
 const DASH = new URL('../public/scripts/dashboard.js', import.meta.url).href;
-
-// The dashboard's own containers, as index.html lays them out. The site header
-// is left off on purpose — it belongs to header.js, and including it would add
-// that module's /api/version and /api/auth calls to every assertion about which
-// requests the dashboard made.
-const HTML = `<!doctype html><html><body><div class="container">
-  <div id="banners"></div>
-  <div id="filters" class="filter-row"></div>
-  <div id="endpoints"></div>
-  <div id="action-panel" class="dash-split"></div>
-  <div id="events" class="card"></div>
-</div></body></html>`;
+const HTML = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
 const NOW = 1_700_000_000_000;
 const HOUR = 3_600_000;
@@ -103,6 +100,13 @@ function dashboard(over = {}) {
 
 // ---------- harness ----------
 
+/** What the shared header asks for on every page. Not the dashboard's business,
+ *  but it is on the page, so something has to answer. */
+const HEADER_BODIES = {
+  '/api/version': { version: '1.0.0' },
+  '/api/auth': { auth_required: false }
+};
+
 /**
  * Stands up the page: a DOM, a fetch answering with `data`, then the import that
  * boots it. `storage` seeds localStorage first, for the preferences the module
@@ -119,7 +123,7 @@ async function boot(data = dashboard(), { url, storage } = {}) {
   calls = [];
   globalThis.fetch = async (path, init) => {
     calls.push({ path, method: init?.method ?? 'GET' });
-    const body = path.startsWith('/api/dashboard') ? payload : {};
+    const body = path.startsWith('/api/dashboard') ? payload : HEADER_BODIES[path] ?? {};
     return { ok: true, status: 200, json: async () => body };
   };
 
@@ -132,20 +136,16 @@ async function boot(data = dashboard(), { url, storage } = {}) {
  *  so a countdown asserted right after boot reads its exact starting value. */
 const settle = () => flush(5);
 
-/** Runs the pending requestAnimationFrame callbacks — the endpoint cards defer
- *  building their charts to one. Costs 20ms of mocked clock. */
-async function frame() {
-  mock.timers.tick(20);
-  await settle();
-}
-
 afterEach(() => {
   mock.timers.reset();
   env.cleanup();
   globalThis.fetch = realFetch;
 });
 
-const paths = (method = 'GET') => calls.filter((c) => c.method === method).map((c) => c.path);
+/** The requests the dashboard made, less the two the shared header always makes. */
+const paths = (method = 'GET') => calls
+  .filter((c) => c.method === method && !(c.path in HEADER_BODIES))
+  .map((c) => c.path);
 
 /** The buttons in the dialog confirmDialog()/alertDialog() puts on the page. */
 function dialogButtons() {
@@ -511,17 +511,13 @@ describe('latency chart', () => {
 
   test('an endpoint with no history says it is still collecting', async () => {
     await boot(dashboard({ endpoints: [endpoint()] }), { storage: { 'flatline.groupBy': 'none' } });
-    assert.equal(doc.querySelector('.chart-wrap svg'), null, 'nothing drawn before the frame runs');
-
-    await frame();
     assert.equal(text('.chart-wrap'), 'Collecting data…');
   });
 
-  test('history draws a chart once the frame runs', async () => {
+  test('history draws a chart in the render that builds the card', async () => {
     await boot(dashboard({
       endpoints: [endpoint({ history: history([{ bucket: 0, total: 4, ok_count: 4, avg_latency: 12 }]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     const chart = doc.querySelector('.chart-wrap svg');
     assert.ok(chart);
@@ -537,7 +533,6 @@ describe('latency chart', () => {
         { bucket: 2, total: 4, ok_count: 2, avg_latency: 30 }
       ]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     const bands = [...doc.querySelectorAll('.chart-wrap rect')]
       .filter((r) => r.getAttribute('style').includes('--status-critical'));
@@ -556,7 +551,6 @@ describe('latency chart', () => {
         { bucket: 5, total: 4, ok_count: 4, avg_latency: 22 }
       ]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     const lines = [...doc.querySelectorAll('.chart-wrap path')]
       .filter((p) => p.getAttribute('style').includes('stroke:var(--series-1)'));
@@ -567,7 +561,6 @@ describe('latency chart', () => {
     await boot(dashboard({
       endpoints: [endpoint({ history: history([{ bucket: 0, total: 4, ok_count: 4, avg_latency: 12 }]) })]
     }), { storage: { 'flatline.groupBy': 'none' } });
-    await frame();
 
     assert.equal(doc.querySelectorAll('.chart-wrap circle').length, 1);
     assert.equal(
