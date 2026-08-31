@@ -256,13 +256,15 @@ async function runSsh(config, secrets, timeoutMs) {
 
 // ---------------- WinRM ----------------
 // See winrm.js — commands run on the Windows host via remote PowerShell over
-// WinRM (NTLMv2 auth, message sealing). The stored password is the only secret.
+// WinRM (NTLMv2 auth, sealed over plain HTTP or carried by TLS over HTTPS). The
+// stored password is the only secret.
 
 async function testWinrm(config, secrets) {
   try {
     const { code } = await winrmExec(config, secrets, 'Write-Output flatline-ok', TEST_TIMEOUT_MS);
+    const port = config.port ?? (config.use_tls ? 5986 : 5985);
     return code === 0
-      ? { ok: true, message: `connected to ${config.username}@${config.host}:${config.port ?? 5985} (WinRM)` }
+      ? { ok: true, message: `connected to ${config.username}@${config.host}:${port} (WinRM${config.use_tls ? ' over HTTPS' : ''})` }
       : { ok: false, message: `WinRM reachable but the test command exited ${code}` };
   } catch (err) {
     return { ok: false, message: err.message };

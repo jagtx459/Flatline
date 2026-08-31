@@ -511,7 +511,8 @@
             <!-- WinRM relay -->
             <div class="relay-section" data-relay-kind="winrm">
               <p class="hint-row">Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>);
-                the default port is 5985.</p>
+                the default port is 5985, or 5986 over HTTPS. Signs in over NTLM with a local or
+                domain account — Kerberos is not supported.</p>
               <div class="grid">
                 <label class="field"><span class="cap">Host</span>
                   <input type="text" name="winrm_host" maxlength="2000" placeholder="10.1.20.11"></label>
@@ -526,6 +527,22 @@
                 <label class="field secret" data-secret="password">
                   <span class="cap">Password <span class="secret-state"></span></span>
                   <input type="password" name="winrm_password" autocomplete="new-password"></label>
+              </div>
+              <div style="margin-top:12px">
+                <label class="check">
+                  <input type="checkbox" name="winrm_use_tls">
+                  <span>Use HTTPS (port 5986)</span>
+                </label>
+              </div>
+              <div class="relay-winrm-tls" hidden>
+                <label class="check" style="margin-top:10px">
+                  <input type="checkbox" name="winrm_insecure_tls">
+                  <span>Accept untrusted certificate</span>
+                </label>
+                <label class="field" style="margin-top:10px"><span class="cap">CA certificate</span>
+                  <textarea name="winrm_ca_cert" rows="3" spellcheck="false"
+                    placeholder="-----BEGIN CERTIFICATE-----&#10;..."></textarea>
+                </label>
               </div>
             </div>
 

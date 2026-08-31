@@ -1,13 +1,21 @@
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 
 /**
- * Runs a command on a Windows host over WinRM (WS-Management SOAP on port
- * 5985) using NTLMv2 authentication with message sealing. This is the path
- * that works against a stock `Enable-PSRemoting` host: no host-side config
- * changes, local or domain accounts, and — because WinRM's default
- * AllowUnencrypted is false — every SOAP payload is RC4-encrypted with the
- * NTLM session key.
+ * Runs a command on a Windows host over WinRM (WS-Management SOAP), using
+ * NTLMv2 authentication over either transport WinRM offers:
+ *
+ *   HTTP  (5985, the default) — works against a stock `Enable-PSRemoting` host
+ *         with no host-side config changes. WinRM's AllowUnencrypted defaults
+ *         to false, so every SOAP payload is RC4-encrypted with the NTLM
+ *         session key.
+ *   HTTPS (5986, opt-in) — needs an HTTPS listener and a certificate on the
+ *         host. TLS does the encrypting, so the SOAP payload goes in the clear
+ *         and NTLM only authenticates.
+ *
+ * Either way the account may be local or domain. Kerberos is not implemented,
+ * so a domain that has disabled NTLM cannot be reached by either transport.
  *
  * It's all dependency-free on purpose. MD4 (the NT hash) and RC4 (the seal
  * cipher) aren't reliably available through node:crypto on OpenSSL 3, so both
@@ -19,6 +27,7 @@ import crypto from 'node:crypto';
  */
 
 const DEFAULT_PORT = 5985;
+const DEFAULT_TLS_PORT = 5986;
 const WORKSTATION = 'FLATLINE';
 const WSMAN_TIMEOUT_FAULT = '2150858793'; // ERROR_WINRM_OPERATION_TIMEOUT — means "retry Receive"
 
@@ -275,9 +284,13 @@ function unsealMessage(sec, sealed, sig) {
 
 // ---------------- HTTP transport ----------------
 
-function httpRequest(agent, host, port, headers, body, timeoutMs) {
+function httpRequest(conn, headers, body, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ agent, host, port, path: '/wsman', method: 'POST', headers, timeout: timeoutMs }, (res) => {
+    const mod = conn.tls ? https : http;
+    const req = mod.request({
+      agent: conn.agent, host: conn.host, port: conn.port,
+      path: '/wsman', method: 'POST', headers, timeout: timeoutMs
+    }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -289,8 +302,20 @@ function httpRequest(agent, host, port, headers, body, timeoutMs) {
   });
 }
 
+const PLAIN_CONTENT_TYPE = 'application/soap+xml;charset=UTF-8';
 const ENCRYPTED_CONTENT_TYPE =
   'multipart/encrypted;protocol="application/HTTP-SPNEGO-session-encrypted";boundary="Encrypted Boundary"';
+
+/**
+ * Over HTTP the SOAP body must be sealed with the NTLM session key — WinRM's
+ * AllowUnencrypted defaults to false and rejects anything else. Over HTTPS the
+ * listener expects the body in the clear, because TLS is already doing the
+ * encrypting; NTLM still runs, but only to authenticate. So the body wrapping
+ * is chosen by transport, not by preference.
+ */
+const contentTypeFor = (conn) => (conn.tls ? PLAIN_CONTENT_TYPE : ENCRYPTED_CONTENT_TYPE);
+const encodeBody = (conn, xml) => (conn.tls ? Buffer.from(xml, 'utf8') : wrapEncrypted(conn.sec, xml));
+const decodeBody = (conn, body) => (conn.tls ? body.toString('utf8') : unwrapEncrypted(conn.sec, body));
 
 function wrapEncrypted(sec, xml) {
   const plaintext = Buffer.from(xml, 'utf8');
@@ -344,7 +369,7 @@ function envelope(conn, { action, shellId, body, options = '', operationTimeoutS
     + ' xmlns:p="http://schemas.microsoft.com/wbem/wsman/1/wsman.xsd"'
     + ' xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">'
     + '<s:Header>'
-    + `<a:To>http://${xmlEscape(conn.host)}:${conn.port}/wsman</a:To>`
+    + `<a:To>${conn.tls ? 'https' : 'http'}://${xmlEscape(conn.host)}:${conn.port}/wsman</a:To>`
     + `<w:ResourceURI s:mustUnderstand="true">${RESOURCE}</w:ResourceURI>`
     + '<a:ReplyTo><a:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo>'
     + `<a:Action s:mustUnderstand="true">${action}</a:Action>`
@@ -371,14 +396,14 @@ function extractFault(xml) {
 /** Sends one encrypted SOAP request and returns { status, xml }. HTTP faults
  *  (500) still carry an encrypted body, so we decrypt before interpreting. */
 async function post(conn, xml) {
-  const body = wrapEncrypted(conn.sec, xml);
-  const res = await httpRequest(conn.agent, conn.host, conn.port, {
-    'Content-Type': ENCRYPTED_CONTENT_TYPE,
+  const body = encodeBody(conn, xml);
+  const res = await httpRequest(conn, {
+    'Content-Type': contentTypeFor(conn),
     'Content-Length': String(body.length),
     Connection: 'Keep-Alive'
   }, body, conn.timeoutMs);
   if (res.status === 401) throw new Error('WinRM authentication was rejected after the handshake');
-  const respXml = unwrapEncrypted(conn.sec, res.body);
+  const respXml = decodeBody(conn, res.body);
   return { status: res.status, xml: respXml };
 }
 
@@ -395,7 +420,7 @@ async function postOrThrow(conn, xml) {
  *  (NTLM authenticates the connection, not the request). */
 async function authenticate(conn, creds) {
   const negotiate = buildNegotiate();
-  const first = await httpRequest(conn.agent, conn.host, conn.port, {
+  const first = await httpRequest(conn, {
     Authorization: `Negotiate ${negotiate.toString('base64')}`,
     'Content-Length': '0',
     Connection: 'Keep-Alive'
@@ -422,15 +447,15 @@ async function createShell(conn) {
     + '<w:Option Name="WINRS_CODEPAGE">65001</w:Option></w:OptionSet>';
   const xml = envelope(conn, { action: ACTION.create, body, options, operationTimeoutSec: conn.opTimeoutSec });
 
-  const encrypted = wrapEncrypted(conn.sec, xml);
-  const res = await httpRequest(conn.agent, conn.host, conn.port, {
+  const encoded = encodeBody(conn, xml);
+  const res = await httpRequest(conn, {
     Authorization: conn.authHeader,
-    'Content-Type': ENCRYPTED_CONTENT_TYPE,
-    'Content-Length': String(encrypted.length),
+    'Content-Type': contentTypeFor(conn),
+    'Content-Length': String(encoded.length),
     Connection: 'Keep-Alive'
-  }, encrypted, conn.timeoutMs);
+  }, encoded, conn.timeoutMs);
   if (res.status === 401) throw new Error('WinRM authentication failed — check the username, password, and domain');
-  const respXml = unwrapEncrypted(conn.sec, res.body);
+  const respXml = decodeBody(conn, res.body);
   if (res.status >= 400) throw new Error(extractFault(respXml)?.message || `WinRM shell create failed (HTTP ${res.status})`);
 
   const shellId = respXml.match(/<rsp:ShellId>([^<]+)<\/rsp:ShellId>/)?.[1]
@@ -495,19 +520,27 @@ async function deleteShell(conn, shellId) {
 /**
  * Runs `command` (as a PowerShell script) on a Windows host over WinRM.
  * Resolves to { code, stdout, stderr }; rejects on any connection, auth, or
- * protocol failure. config: { host, port?, domain?, username }, secrets:
- * { password }.
+ * protocol failure. config: { host, port?, domain?, username, use_tls?,
+ * insecure_tls?, ca_cert? }, secrets: { password }.
  */
 export async function winrmExec(config, secrets, command, timeoutMs) {
   if (!config.host || !config.username) throw new Error('host and username are required');
   if (!secrets.password) throw new Error('no password stored for this target');
 
+  const tls = Boolean(config.use_tls);
   const conn = {
     host: config.host,
-    port: config.port ?? DEFAULT_PORT,
+    port: config.port ?? (tls ? DEFAULT_TLS_PORT : DEFAULT_PORT),
+    tls,
     timeoutMs,
     opTimeoutSec: Math.max(5, Math.min(60, Math.floor(timeoutMs / 1000) - 2)),
-    agent: new http.Agent({ keepAlive: true, maxSockets: 1 })
+    agent: tls
+      ? new https.Agent({
+          keepAlive: true, maxSockets: 1,
+          rejectUnauthorized: !config.insecure_tls,
+          ...(config.ca_cert ? { ca: config.ca_cert } : {})
+        })
+      : new http.Agent({ keepAlive: true, maxSockets: 1 })
   };
   const creds = { host: config.host, domain: config.domain ?? '', username: config.username, password: secrets.password };
 

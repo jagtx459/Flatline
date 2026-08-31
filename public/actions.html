@@ -187,6 +187,38 @@ New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies
   -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force
 Restart-Service WinRM</pre>
               <p>Then set Username <code>flatline</code>, leave Domain blank, and keep port 5985.</p>
+              <p>To use HTTPS instead, do the above first, then add a certificate and an HTTPS
+                listener. <code>Enable-PSRemoting</code> sets up the HTTP listener on 5985 only —
+                nothing listens on 5986 until step 2 below, and Flatline cannot set it up for you:</p>
+              <pre># 1. A certificate in LocalMachine\My. $dns must be the name Flatline
+#    connects to. Already have one (a domain CA cert, say)? Skip this and
+#    set $c with: $c = Get-Item Cert:\LocalMachine\My\&lt;thumbprint&gt;
+$dns = 'win-host.example.com'
+$c = New-SelfSignedCertificate -DnsName $dns -CertStoreLocation Cert:\LocalMachine\My
+
+# 2. The HTTPS listener — this is what puts WinRM on 5986. Any existing one
+#    is removed first, so re-running this is safe.
+Get-ChildItem WSMan:\localhost\Listener |
+  Where-Object { $_.Keys -contains 'Transport=HTTPS' } | Remove-Item -Recurse -Force
+New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * `
+  -HostName $dns -CertificateThumbPrint $c.Thumbprint -Force
+
+# 3. Open the port. Enable-PSRemoting opened 5985, not this one.
+New-NetFirewallRule -DisplayName 'WinRM HTTPS' -Direction Inbound `
+  -LocalPort 5986 -Protocol TCP -Action Allow
+
+# 4. Confirm it took — you should see a Transport=HTTPS listener, Enabled=true.
+winrm enumerate winrm/config/Listener
+
+# 5. Optional: print the certificate as PEM, to paste into CA certificate
+#    below so Flatline verifies against it instead of trusting blindly.
+"-----BEGIN CERTIFICATE-----"
+[Convert]::ToBase64String($c.RawData, 'InsertLineBreaks')
+"-----END CERTIFICATE-----"</pre>
+              <p>Then tick <strong>Use HTTPS</strong> below and set Host to the name on the
+                certificate (<code>$dns</code>) — an IP address will fail verification unless the
+                certificate names it too. A self-signed certificate needs either its PEM in
+                <strong>CA certificate</strong>, or <strong>Accept untrusted certificate</strong>.</p>
             </div>
           </details>
           <div class="grid">
@@ -204,12 +236,49 @@ Restart-Service WinRM</pre>
                   class="secret-state"></span></span>
               <input type="password" name="winrm_password" autocomplete="new-password"></label>
           </div>
+
+          <!-- Transport: HTTP seals the SOAP body with the NTLM session key;
+               HTTPS sends it in the clear and lets TLS do the encrypting. -->
+          <div style="margin-top:12px">
+            <label class="check">
+              <input type="checkbox" name="winrm_use_tls">
+              <span>Use HTTPS (port 5986)</span>
+            </label>
+            <span class="help">
+              <button type="button" class="help-btn" aria-expanded="false" aria-label="About the WinRM transport">?</button>
+              <span class="help-pop" role="tooltip" hidden>
+                <p>Off (default): plain WinRM on 5985. The connection is still encrypted — the SOAP
+                  body is sealed with the NTLM session key — and it works against a stock
+                  <code>Enable-PSRemoting</code> host with nothing else to set up.</p>
+                <p>On: WinRM over TLS on 5986. Needs an HTTPS listener and a certificate on the host
+                  (see the setup notes above). Sign-in is still NTLM; TLS replaces the NTLM sealing
+                  and authenticates the host to Flatline.</p>
+              </span></span>
+          </div>
+          <div class="winrm-tls" hidden>
+            <label class="check" style="margin-top:10px">
+              <input type="checkbox" name="winrm_insecure_tls">
+              <span>Accept untrusted certificate</span>
+            </label>
+            <label class="field" style="margin-top:10px"><span class="cap">Public CA certificate <span class="help">
+                <button type="button" class="help-btn" aria-expanded="false" aria-label="About the WinRM CA certificate">?</button>
+                <span class="help-pop" role="tooltip" hidden>
+                  <p>Verify against this CA instead of the system store — for a domain CA, or the
+                    host's self-signed certificate pasted in. Leave blank to use the system store.</p>
+                </span></span></span>
+              <textarea name="winrm_ca_cert" rows="3" spellcheck="false"
+                placeholder="-----BEGIN CERTIFICATE-----&#10;..."></textarea>
+            </label>
+          </div>
+
           <label class="field" style="margin-top:10px"><span class="cap">Command <span class="help">
               <button type="button" class="help-btn" aria-expanded="false" aria-label="About the trigger command">?</button>
               <span class="help-pop" role="tooltip" hidden>
                 <p>PowerShell, run on the Windows host over WinRM when the action triggers.</p>
                 <p>Needs WinRM enabled on the host (<code>Enable-PSRemoting -Force</code>); the
-                  default port is 5985. Works with a local or domain account (NTLM).</p>
+                  default port is 5985, or 5986 over HTTPS. Signs in with a local or domain account
+                  over NTLM — Kerberos is not supported, so a domain that has disabled NTLM cannot
+                  be reached.</p>
               </span></span></span>
             <input type="text" name="winrm_command" maxlength="10000"
               placeholder="shutdown /s /t 60 /c &quot;Flatline: graceful shutdown&quot;">
@@ -873,7 +942,15 @@ Cookies        leave "send login cookies" ticked</pre>
                         style="align-self:flex-start; margin-top:8px">Upload from file</button>
                       <input type="file" id="post-restore-kubeconfig-upload" hidden>
                     </label>
-                    <div data-prk="http" style="margin-top:10px">
+                    <div data-prk="winrm" style="margin-top:10px">
+                      <label class="check">
+                        <input type="checkbox" name="post_restore_use_tls">
+                        <span>Use HTTPS (port 5986)</span>
+                      </label>
+                    </div>
+                    <!-- Shared by the http method and the winrm method's HTTPS
+                         transport — only one is ever the step's method. -->
+                    <div id="post-restore-tls" data-prk="http winrm" style="margin-top:10px">
                       <label class="check">
                         <input type="checkbox" name="post_restore_insecure_tls">
                         <span>Accept untrusted certificate</span>

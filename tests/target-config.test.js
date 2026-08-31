@@ -444,6 +444,49 @@ describe('http target config', () => {
   });
 });
 
+// ---- the winrm kind ----
+
+describe('winrm target config', () => {
+  const winrm = (over = {}) => parseInfraConfig('winrm', { host: '10.0.0.6', username: 'admin', command: 'shutdown /s', ...over });
+
+  test('the transport picks the port default, and a typed port still wins', () => {
+    assert.equal(winrm().use_tls, 0);
+    assert.equal(winrm().port, 5985);
+    assert.equal(winrm({ use_tls: true }).use_tls, 1);
+    assert.equal(winrm({ use_tls: true }).port, 5986);
+    assert.equal(winrm({ use_tls: true, port: 5985 }).port, 5985, 'HTTPS on a non-default port is allowed');
+  });
+
+  test('the certificate settings only survive with HTTPS on', () => {
+    // They would be invisible in the form but still stored, and would come back
+    // the moment someone ticked HTTPS again.
+    const cfg = winrm({ insecure_tls: true, ca_cert: '-----BEGIN CERTIFICATE-----\nabc' });
+    assert.equal(cfg.insecure_tls, 0);
+    assert.equal('ca_cert' in cfg, false);
+
+    const tls = winrm({ use_tls: true, insecure_tls: true, ca_cert: '-----BEGIN CERTIFICATE-----\nabc' });
+    assert.equal(tls.insecure_tls, 1);
+    assert.match(tls.ca_cert, /BEGIN CERTIFICATE/);
+  });
+
+  test('a pinned CA has to be PEM text', () => {
+    assert.match(winrm({ use_tls: true, ca_cert: 'just some bytes' }), /must be PEM text/);
+  });
+
+  test('a post-restore winrm action carries its own transport', () => {
+    const undo = (over) => http({
+      restore_enabled: 1, wol_mac: 'AA:BB:CC:DD:EE:FF',
+      post_restore_kind: 'winrm', post_restore_command: 'Restart-Service app',
+      post_restore_host: '10.0.0.9', post_restore_username: 'admin', ...over
+    });
+    assert.equal(undo({}).post_restore_port, 5985);
+    assert.equal(undo({ post_restore_use_tls: true }).post_restore_port, 5986);
+    assert.equal(undo({ post_restore_use_tls: true, post_restore_insecure_tls: true }).post_restore_insecure_tls, 1);
+    assert.equal(undo({ post_restore_insecure_tls: true }).post_restore_insecure_tls, 0, 'no TLS, no certificate settings');
+    assert.match(undo({ post_restore_use_tls: true, post_restore_ca_cert: 'nope' }), /must be PEM text/);
+  });
+});
+
 // ---- the k8s kind ----
 
 describe('k8s target config', () => {

@@ -496,8 +496,23 @@ const relayField = (name) => $relayForm.elements.namedItem(name);
 function syncRelayKind() {
   toggleByData($relayForm, 'relay-kind', $relayKind.value);
   toggleByData($relayForm, 'relay-ssh-auth', relayField('ssh_auth_method').value);
+  syncRelayWinrmTls();
   $relayTestResult.textContent = '';
 }
+
+/** The certificate fields only mean anything over HTTPS. */
+function syncRelayWinrmTls() {
+  $relayForm.querySelector('.relay-winrm-tls').hidden = !relayField('winrm_use_tls').checked;
+}
+
+// As on the action-target form: move the port to the new transport's default
+// only while it still holds the old one, so a hand-typed port survives.
+relayField('winrm_use_tls').addEventListener('change', () => {
+  const on = relayField('winrm_use_tls').checked;
+  const $port = relayField('winrm_port');
+  if ($port.value === (on ? '5985' : '5986')) $port.value = on ? '5986' : '5985';
+  syncRelayWinrmTls();
+});
 
 $relayKind.addEventListener('change', () => {
   // Switching type makes the other type's command meaningless, so follow it —
@@ -529,9 +544,12 @@ function collectRelayConfig(kind) {
       }
     : {
         host: relayField('winrm_host').value,
-        port: Number(relayField('winrm_port').value) || 5985,
+        port: Number(relayField('winrm_port').value) || (relayField('winrm_use_tls').checked ? 5986 : 5985),
         domain: relayField('winrm_domain').value,
-        username: relayField('winrm_username').value
+        username: relayField('winrm_username').value,
+        use_tls: relayField('winrm_use_tls').checked,
+        insecure_tls: relayField('winrm_insecure_tls').checked,
+        ca_cert: relayField('winrm_ca_cert').value
       };
 }
 
@@ -569,9 +587,12 @@ const relayForm = initEntityForm({
       relayField('ssh_auth_method').value = c.auth_method ?? 'password';
     } else {
       relayField('winrm_host').value = c.host ?? '';
-      relayField('winrm_port').value = String(c.port ?? 5985);
+      relayField('winrm_port').value = String(c.port ?? (c.use_tls ? 5986 : 5985));
       relayField('winrm_domain').value = c.domain ?? '';
       relayField('winrm_username').value = c.username ?? '';
+      relayField('winrm_use_tls').checked = !!c.use_tls;
+      relayField('winrm_insecure_tls').checked = !!c.insecure_tls;
+      relayField('winrm_ca_cert').value = c.ca_cert ?? '';
     }
 
     relaySecrets.render(r.kind, r.secret_fields);

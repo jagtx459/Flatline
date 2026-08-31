@@ -45,7 +45,7 @@ A small self-hosted system monitor that pings or probes endpoints for availabili
     | Type           | Details                                                                                         |
     | -------------- | ----------------------------------------------------------------------------------------------- |
     | **SSH**        | Password or private key                                                                         |
-    | **WinRM**      | Windows host via remote PowerShell (NTLM)                                                       |
+    | **WinRM**      | Windows host via remote PowerShell (NTLM), over HTTP (5985) or HTTPS (5986, with per-target TLS) |
     | **Kubernetes** | Cordons and drains every node or raw API request with Bearer token or kubeconfig                |
     | **HTTP(S)**    | REST API with no auth, Bearer/JWT, custom header token, Basic auth, or 2-step auth. Per-target TLS (accept self-signed, or verify against a supplied CA) |
 

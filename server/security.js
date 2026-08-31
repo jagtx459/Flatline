@@ -78,7 +78,11 @@ export async function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
 // ---------------- settings-backed config (cached) ----------------
 
 const ENV_ALLOWED_HOSTS = process.env.FLATLINE_ALLOWED_HOSTS; // undefined = not set
-const ENV_PASSWORD = process.env.FLATLINE_PASSWORD || null;
+// Hashed once at startup so the plaintext isn't held for the process lifetime
+// and both auth paths verify the same way.
+const ENV_PASSWORD_HASH = process.env.FLATLINE_PASSWORD
+  ? hashPassword(process.env.FLATLINE_PASSWORD)
+  : null;
 
 const SETTINGS_CACHE_MS = 5000;
 let settingsCache = { ts: 0, passwordHash: null, allowedHosts: new Set() };
@@ -240,19 +244,12 @@ setInterval(() => {
 
 /** 'env' (FLATLINE_PASSWORD), 'settings' (set from the config page), or null. */
 export function passwordSource() {
-  if (ENV_PASSWORD) return 'env';
+  if (ENV_PASSWORD_HASH) return 'env';
   return cachedSettings().passwordHash ? 'settings' : null;
 }
 
 export function authRequired() {
   return passwordSource() !== null;
-}
-
-function timingSafeEquals(a, b) {
-  // Hash both sides so lengths match and the comparison is constant time.
-  const ha = crypto.createHash('sha256').update(String(a)).digest();
-  const hb = crypto.createHash('sha256').update(String(b)).digest();
-  return crypto.timingSafeEqual(ha, hb);
 }
 
 // scrypt for the settings-stored password — the hash sits in the same DB as
@@ -273,7 +270,7 @@ function verifyPassword(password, stored) {
 
 function checkPassword(password) {
   if (typeof password !== 'string' || password.length === 0) return false;
-  if (ENV_PASSWORD) return timingSafeEquals(password, ENV_PASSWORD);
+  if (ENV_PASSWORD_HASH) return verifyPassword(password, ENV_PASSWORD_HASH);
   const stored = cachedSettings().passwordHash;
   return stored ? verifyPassword(password, stored) : false;
 }
