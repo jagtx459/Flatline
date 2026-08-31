@@ -10,9 +10,10 @@
 # instead and granted cap_net_raw via a file capability — that one binary can
 # open ICMP sockets and nothing else in the container is privileged. libcap
 # is only needed for the setcap call and is removed again.
-FROM node:26.5-alpine
+FROM node:26.8.1-alpine
 
-RUN apk add --no-cache iputils-ping \
+RUN apk upgrade --no-cache \
+ && apk add --no-cache iputils-ping \
  && apk add --no-cache libcap \
  && setcap cap_net_raw+ep "$(readlink -f "$(command -v ping)")" \
  && apk del libcap
