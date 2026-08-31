@@ -111,6 +111,7 @@ function syncKindSections() {
   toggleByData($form, 'kind', $kind.value);
   syncHttpAuthFields();
   syncSshAuthFields();
+  syncWinrmTlsFields();
   syncK8sAuthFields();
   syncK8sActionFields();
   syncRestoreFields();
@@ -128,7 +129,8 @@ function syncRestoreFields() {
   // Left blank the port falls back to the method's default, so say which one
   // that would be rather than showing SSH's on a WinRM action.
   if (postKind === 'ssh' || postKind === 'winrm') {
-    field('post_restore_port').placeholder = postKind === 'ssh' ? '22' : '5985';
+    field('post_restore_port').placeholder = postKind === 'ssh' ? '22'
+      : (field('post_restore_use_tls').checked ? '5986' : '5985');
   }
 
   toggleByData($form, 'wake-mode', field('wake_mode').value);
@@ -172,6 +174,12 @@ function syncRestoreStep({ p, id, kindAttr, authAttr }) {
     const authMatch = node.dataset[authAttr] == null || !authName
       || node.dataset[authAttr].split(' ').includes(auth);
     node.style.display = kindMatch && authMatch ? '' : 'none';
+  }
+
+  // The certificate fields are shared with this step's http method, where they
+  // always apply; under winrm they only apply once its HTTPS transport is on.
+  if (stepKind === 'winrm') {
+    document.getElementById(`${id}tls`).style.display = field(`${p}use_tls`).checked ? '' : 'none';
   }
 
   renderRequestMethods(document.getElementById(`${id}request-method`), stepKind);
@@ -296,6 +304,21 @@ function syncSshAuthFields() {
   toggleByData($form, 'ssh-auth', $sshAuthMethod.value);
 }
 
+/** The certificate fields only mean anything over HTTPS. */
+function syncWinrmTlsFields() {
+  $form.querySelector('.winrm-tls').hidden = !field('winrm_use_tls').checked;
+}
+
+/** Toggling the transport moves the port to the new default, but only while it
+ *  still holds the old one — a port typed by hand is left alone, and a saved
+ *  target is never rewritten (this runs on the toggle, not on form fill). */
+function onWinrmTlsToggle() {
+  const on = field('winrm_use_tls').checked;
+  const $port = field('winrm_port');
+  if ($port.value === (on ? '5985' : '5986')) $port.value = on ? '5986' : '5985';
+  syncWinrmTlsFields();
+}
+
 function syncK8sAuthFields() {
   toggleByData($form, 'k8s-auth', $k8sAuthMethod.value);
 }
@@ -308,13 +331,14 @@ $kind.addEventListener('change', syncKindSections);
 $httpScheme.addEventListener('change', syncHttpAuthFields);
 $form.querySelector('[data-token-source-select]').addEventListener('change', syncHttpTokenFields);
 $sshAuthMethod.addEventListener('change', syncSshAuthFields);
+field('winrm_use_tls').addEventListener('change', onWinrmTlsToggle);
 $k8sAuthMethod.addEventListener('change', syncK8sAuthFields);
 $k8sAction.addEventListener('change', syncK8sActionFields);
 // Everything the Restore panel's visibility depends on, in one pass.
 for (const name of ['restore_enabled', 'auto_restore', 'wake_mode',
   'restore_kind', 'restore_inherit', 'restore_k8s_auth', 'restore_auth_scheme',
   'post_restore_kind', 'post_restore_inherit', 'post_restore_auth_method',
-  'post_restore_k8s_auth', 'post_restore_auth_scheme']) {
+  'post_restore_k8s_auth', 'post_restore_auth_scheme', 'post_restore_use_tls']) {
   field(name).addEventListener('change', syncRestoreFields);
 }
 // The summary line and the relay-reach warning both follow typed text, not just
@@ -405,6 +429,7 @@ function collectRestore() {
     post_restore_url: field('post_restore_url').value,
     post_restore_auth_scheme: field('post_restore_auth_scheme').value,
     post_restore_header_name: field('post_restore_header_name').value,
+    post_restore_use_tls: field('post_restore_use_tls').checked,
     post_restore_insecure_tls: field('post_restore_insecure_tls').checked,
     post_restore_ca_cert: field('post_restore_ca_cert').value,
     post_restore_method: field('post_restore_method').value,
@@ -453,6 +478,7 @@ function fillRestore(c) {
   field('post_restore_url').value = c.post_restore_url ?? '';
   field('post_restore_auth_scheme').value = c.post_restore_auth_scheme ?? 'none';
   field('post_restore_header_name').value = c.post_restore_header_name ?? '';
+  field('post_restore_use_tls').checked = !!c.post_restore_use_tls;
   field('post_restore_insecure_tls').checked = !!c.post_restore_insecure_tls;
   field('post_restore_ca_cert').value = c.post_restore_ca_cert ?? '';
 
@@ -482,9 +508,12 @@ function collectConfig(kind) {
     };
     case 'winrm': return {
       host: field('winrm_host').value,
-      port: Number(field('winrm_port').value) || 5985,
+      port: Number(field('winrm_port').value) || (field('winrm_use_tls').checked ? 5986 : 5985),
       domain: field('winrm_domain').value,
       username: field('winrm_username').value,
+      use_tls: field('winrm_use_tls').checked,
+      insecure_tls: field('winrm_insecure_tls').checked,
+      ca_cert: field('winrm_ca_cert').value,
       command: field('winrm_command').value,
       ...restore
     };
@@ -551,9 +580,12 @@ function fillTargetForm(t) {
       break;
     case 'winrm':
       field('winrm_host').value = c.host ?? '';
-      field('winrm_port').value = String(c.port ?? 5985);
+      field('winrm_port').value = String(c.port ?? (c.use_tls ? 5986 : 5985));
       field('winrm_domain').value = c.domain ?? '';
       field('winrm_username').value = c.username ?? '';
+      field('winrm_use_tls').checked = !!c.use_tls;
+      field('winrm_insecure_tls').checked = !!c.insecure_tls;
+      field('winrm_ca_cert').value = c.ca_cert ?? '';
       field('winrm_command').value = c.command ?? '';
       break;
     case 'k8s':

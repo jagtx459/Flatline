@@ -56,7 +56,7 @@ const STEP_CONNECTION_FIELDS = {
   wol: [],
   none: [],
   ssh: ['host', 'port', 'username', 'auth_method'],
-  winrm: ['host', 'port', 'domain', 'username'],
+  winrm: ['host', 'port', 'domain', 'username', 'use_tls', 'insecure_tls', 'ca_cert'],
   k8s: ['api_url', 'k8s_auth'],
   http: ['auth_scheme', 'header_name', 'username', 'insecure_tls', 'ca_cert']
 };
@@ -101,7 +101,8 @@ const HTTP_LOGIN_FIELDS = [
 // is dropped, so secret material can never sneak into the plaintext column.
 export const KIND_CONFIG_FIELDS = {
   ssh:  ['host', 'port', 'username', 'auth_method', 'command', ...RESTORE_FIELDS],
-  winrm: ['host', 'port', 'domain', 'username', 'command', ...RESTORE_FIELDS],
+  winrm: ['host', 'port', 'domain', 'username', 'use_tls', 'insecure_tls', 'ca_cert', 'command',
+          ...RESTORE_FIELDS],
   k8s:  ['api_url', 'auth_method', 'action', 'command_method', 'command_path', 'command_body',
          ...RESTORE_FIELDS],
   http: ['url', 'method', 'auth_scheme', 'header_name', 'username', 'body',
@@ -307,12 +308,20 @@ function parseRestoreStep(cfg, src, p, stepKind, kind, label) {
       if (!inherits) {
         if (!get('host')) return `a host is required for the ${label} connection`;
         if (!get('username')) return `a username is required for the ${label} connection`;
-        set('port', intInRange(src[`${p}port`], 1, 65_535, stepKind === 'ssh' ? 22 : 5985));
         if (stepKind === 'ssh') {
+          set('port', intInRange(src[`${p}port`], 1, 65_535, 22));
           if (get('auth_method') && !['password', 'key'].includes(get('auth_method'))) {
             return `${label} auth_method must be 'password' or 'key'`;
           }
           set('auth_method', get('auth_method') ?? 'password');
+        } else {
+          set('use_tls', src[`${p}use_tls`] ? 1 : 0);
+          set('port', intInRange(src[`${p}port`], 1, 65_535, get('use_tls') ? 5986 : 5985));
+          set('insecure_tls', get('use_tls') && src[`${p}insecure_tls`] ? 1 : 0);
+          if (!get('use_tls')) delete cfg[`${p}ca_cert`];
+          if (get('ca_cert') && !String(get('ca_cert')).includes('BEGIN CERTIFICATE')) {
+            return `the ${label} CA certificate must be PEM text (-----BEGIN CERTIFICATE-----)`;
+          }
         }
       }
       if (!get('command')) return `a ${label} command is required for this method`;
@@ -509,7 +518,15 @@ export function parseInfraConfig(kind, raw) {
     case 'winrm': {
       if (!cfg.host) return 'host is required';
       if (!cfg.username) return 'username is required';
-      cfg.port = intInRange(src.port, 1, 65_535, 5985);
+      // Over HTTPS the transport encrypts, so WinRM wants the SOAP body in the
+      // clear on a different listener — hence a different default port.
+      cfg.use_tls = src.use_tls ? 1 : 0;
+      cfg.port = intInRange(src.port, 1, 65_535, cfg.use_tls ? 5986 : 5985);
+      cfg.insecure_tls = cfg.use_tls && src.insecure_tls ? 1 : 0;
+      if (!cfg.use_tls) delete cfg.ca_cert;
+      if (cfg.ca_cert && !cfg.ca_cert.includes('BEGIN CERTIFICATE')) {
+        return 'the CA certificate must be PEM text (-----BEGIN CERTIFICATE-----)';
+      }
       break;
     }
     case 'k8s': {
@@ -594,7 +611,7 @@ export function parseInfraConfig(kind, raw) {
 export const RELAY_KINDS = ['ssh', 'winrm'];
 const RELAY_CONFIG_FIELDS = {
   ssh: ['host', 'port', 'username', 'auth_method'],
-  winrm: ['host', 'port', 'domain', 'username']
+  winrm: ['host', 'port', 'domain', 'username', 'use_tls', 'insecure_tls', 'ca_cert']
 };
 export const RELAY_SECRET_FIELDS = {
   ssh: ['password', 'private_key', 'passphrase', 'sudo_password'],
@@ -609,7 +626,7 @@ export function parseRelayConfig(kind, raw) {
   for (const field of RELAY_CONFIG_FIELDS[kind]) {
     const v = src[field];
     if (v === undefined || v === null || v === '') continue;
-    cfg[field] = cleanString(String(v), 2000);
+    cfg[field] = cleanString(String(v), BIG_CONFIG_FIELDS.includes(field) ? 10_000 : 2000);
   }
   if (!cfg.host) return 'host is required';
   if (!cfg.username) return 'username is required';
@@ -621,7 +638,13 @@ export function parseRelayConfig(kind, raw) {
     }
     cfg.auth_method ??= 'password';
   } else {
-    cfg.port = intInRange(src.port, 1, 65_535, 5985);
+    cfg.use_tls = src.use_tls ? 1 : 0;
+    cfg.port = intInRange(src.port, 1, 65_535, cfg.use_tls ? 5986 : 5985);
+    cfg.insecure_tls = cfg.use_tls && src.insecure_tls ? 1 : 0;
+    if (!cfg.use_tls) delete cfg.ca_cert;
+    if (cfg.ca_cert && !cfg.ca_cert.includes('BEGIN CERTIFICATE')) {
+      return 'the CA certificate must be PEM text (-----BEGIN CERTIFICATE-----)';
+    }
   }
   return cfg;
 }

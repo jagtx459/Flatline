@@ -663,6 +663,37 @@ describe('the target form', () => {
     assert.equal(shown(key), true);
   });
 
+  test('WinRM\'s certificate fields appear only over HTTPS', async () => {
+    await boot();
+    chooseKind('winrm');
+    const tls = doc.querySelector('.winrm-tls');
+    assert.equal(tls.hidden, true, 'plain HTTP is the default');
+
+    tField('winrm_use_tls').checked = true;
+    change(tField('winrm_use_tls'));
+    assert.equal(tls.hidden, false);
+  });
+
+  test('toggling the WinRM transport moves the port, but never one typed by hand', async () => {
+    await boot();
+    chooseKind('winrm');
+    const port = tField('winrm_port');
+    assert.equal(port.value, '5985');
+
+    tField('winrm_use_tls').checked = true;
+    change(tField('winrm_use_tls'));
+    assert.equal(port.value, '5986', 'the default follows the transport');
+
+    tField('winrm_use_tls').checked = false;
+    change(tField('winrm_use_tls'));
+    assert.equal(port.value, '5985');
+
+    port.value = '5999';
+    tField('winrm_use_tls').checked = true;
+    change(tField('winrm_use_tls'));
+    assert.equal(port.value, '5999', 'a port set deliberately is left alone');
+  });
+
   test('the cluster\'s custom-request fields appear only for a custom action', async () => {
     await boot();
     chooseKind('k8s');
