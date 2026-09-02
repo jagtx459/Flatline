@@ -9,12 +9,10 @@ export async function refreshHeaderAuth() {
   try {
     const s = await getAuthStatus();
     btn.style.display = s.auth_required ? '' : 'none';
-    // In the mobile menu the button sits under a rule of its own, which has
-    // nothing to divide once the button is gone.
     const sep = document.getElementById('header-menu-sep');
     if (sep) sep.style.display = s.auth_required ? '' : 'none';
   } catch {
-    // Leave it as-is — a failed status check shouldn't surface a broken button.
+    // Leave it as-is, a failed status check shouldn't surface a broken button.
   }
 }
 
@@ -26,7 +24,7 @@ async function initHeaderVersion() {
     const { version } = await getVersion();
     el.textContent = `v${version}`;
   } catch {
-    // Leave it blank — a failed version fetch shouldn't break the header.
+    // Leave it blank, a failed version fetch shouldn't break the header.
   }
 }
 
@@ -87,7 +85,6 @@ function initHeaderMenu() {
     btn.setAttribute('aria-expanded', String(opening));
   });
   document.addEventListener('click', (e) => {
-    // The button's own handler has already toggled by the time this runs.
     if (!panel.hidden && !e.target.closest('#header-menu, #header-menu-btn')) close();
   });
   document.addEventListener('keydown', (e) => {

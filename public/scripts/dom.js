@@ -46,8 +46,7 @@ export function toggleByData(root, attr, value) {
         node.style.display = node.dataset[key].split(' ').includes(value) ? '' : 'none';
     }
 }
-/** Plain enabled/disabled label for things with no live health/state to show
- *  (Flatline groups, action groups) — just the on/off switch, no dot. */
+
 export function enabledPill(enabled) {
     return el('span', { class: `pill ${enabled ? 'up' : 'disabled'}` }, enabled ? 'ENABLED' : 'DISABLED');
 }
@@ -70,9 +69,7 @@ export function initCollapsible(key, headerEl, bodyEl) {
         localStorage.setItem(storageKey, collapsed ? '1' : '0');
         apply();
     }
-    // A "?" beside the title is not part of the fold control. initHelp is
-    // delegated from the document, so its stopPropagation lands too late to
-    // keep the click from reaching this listener first — it is skipped here.
+
     headerEl.addEventListener('click', (e) => {
         if (e.target.closest('.help'))
             return;
@@ -157,15 +154,11 @@ export function initHelp() {
             close();
     });
 }
-/**
- * Wires a tab bar to its panels: each [role="tab"] button carries data-tab, and
- * the panel it reveals carries a matching data-panel. The choice is remembered
- * per-browser; a URL hash beats that on load, so another page can deep-link to
- * one tab (e.g. /config#relays).
- *
- * Panels are hidden, never detached — every element inside stays in the DOM, so
- * the getElementById lookups the page does at load keep working whichever tab
- * happens to be showing.
+/*
+ Wires a tab bar to its panels: each [role="tab"] button carries data-tab, and
+ the panel it reveals carries a matching data-panel. The choice is remembered
+ per-browser; a URL hash beats that on load, so another page can deep-link to
+ one tab (e.g. /config#relays).
  */
 export function initTabs(key, tablistEl) {
     const storageKey = `flatline:tab:${key}`;
@@ -174,18 +167,12 @@ export function initTabs(key, tablistEl) {
     let active = tabs[0]?.dataset.tab;
 
     function show(name, focus = false) {
-        // theme-init.js stamps the stored tab on <html> so the right panel is
-        // the one that paints, since this module is deferred and arrives too
-        // late to prevent the wrong one showing first. From here `hidden` below
-        // decides, and leaving the stamp on would have CSS force that panel open
-        // whichever tab is picked.
         document.documentElement.removeAttribute(`data-tab-${key}`);
         active = tabs.some((t) => t.dataset.tab === name) ? name : tabs[0]?.dataset.tab;
         for (const tab of tabs) {
             const on = tab.dataset.tab === active;
             tab.classList.toggle('active', on);
             tab.setAttribute('aria-selected', String(on));
-            // Only the selected tab is in the tab order; arrows move between them.
             tab.tabIndex = on ? 0 : -1;
             if (on && focus) tab.focus();
         }
@@ -245,9 +232,9 @@ export function hideTooltip() {
         tooltipEl.style.display = 'none';
 }
 // ---- styled dialogs (replace native confirm()/alert()) ----
-/** Shared dialog. `body` is a string or array of paragraphs. Resolves true when
- *  confirmed, false when cancelled/dismissed. With no cancelText it's an alert
- *  (single button, resolves true). Enter confirms, Escape/backdrop cancels. */
+/* Shared dialog. `body` is a string or array of paragraphs. Resolves true when
+   confirmed, false when cancelled/dismissed. With no cancelText it's an alert
+   (single button, resolves true). Enter confirms, Escape/backdrop cancels. */
 export function showDialog({ title = '', body = [], confirmText = 'OK', cancelText = null, danger = false } = {}) {
     const lines = (Array.isArray(body) ? body : [body]).filter(Boolean);
     return new Promise((resolve) => {

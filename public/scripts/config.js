@@ -20,21 +20,17 @@ initHeaderAuth();
 initHelp();
 watchBanners();
 
-// Sub-tabs split this page's cards into panels. They only hide and show, so
-// every getElementById below still resolves whichever tab is open.
 const configTabs = initTabs('config', document.getElementById('config-tabs'));
-// The {url} placeholder hint on the Notifications tab points at the setting
-// that fills it, which lives on General.
+
 document.getElementById('baseurl-jump').addEventListener('click', () => configTabs.show('general'));
 
 let channels = [];
-let channelsLoaded = false; // true once the live list has arrived at least once
+let channelsLoaded = false; 
 
 const KIND_LABELS = {
   webhook: 'Webhook', discord: 'Discord', ntfy: 'ntfy', email: 'Email', apprise: 'Apprise'
 };
 
-// Maps a kind's secret field -> form input name (same pattern as actions.js).
 const SECRET_INPUTS = {
   webhook: { url: 'webhook_url_field', token: 'webhook_token' },
   discord: { webhook_url: 'discord_webhook_url' },
@@ -328,8 +324,6 @@ const $keyUploadBtn = document.getElementById('key-upload-btn');
 const $keyUpload = document.getElementById('key-upload');
 const $keyNote = document.getElementById('key-note');
 const $keyError = document.getElementById('key-error');
-// No savedEl: $keyNote also carries the "Generated locally…" hint, which a
-// dirty-clear would wipe. The key form clears its own dirty note on submit.
 const keyDirty = initDirtyNote($keyForm, document.getElementById('key-dirty'));
 
 async function refreshKeyStatus() {
@@ -451,11 +445,6 @@ $settingsForm.addEventListener('submit', (e) => {
 });
 
 // ---------- wake-on-lan relays ----------
-// A machine on the target's network that Flatline asks to broadcast the magic
-// packet, for targets it cannot reach a broadcast to itself. The connection
-// half mirrors an ssh/winrm action target; the wake command is a template
-// holding {mac}, so one relay serves every machine on its network.
-
 const RELAY_KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
 
 /** Default wake command per relay kind. Windows needs nothing installed; the
@@ -489,7 +478,7 @@ const relaySecrets = initSecretFields($relayForm, {
 });
 
 let relays = [];
-let relaysLoaded = false; // true once the live list has arrived at least once
+let relaysLoaded = false;
 
 const relayField = (name) => $relayForm.elements.namedItem(name);
 
@@ -505,8 +494,6 @@ function syncRelayWinrmTls() {
   $relayForm.querySelector('.relay-winrm-tls').hidden = !relayField('winrm_use_tls').checked;
 }
 
-// As on the action-target form: move the port to the new transport's default
-// only while it still holds the old one, so a hand-typed port survives.
 relayField('winrm_use_tls').addEventListener('change', () => {
   const on = relayField('winrm_use_tls').checked;
   const $port = relayField('winrm_port');
@@ -515,8 +502,6 @@ relayField('winrm_use_tls').addEventListener('change', () => {
 });
 
 $relayKind.addEventListener('change', () => {
-  // Switching type makes the other type's command meaningless, so follow it —
-  // but never overwrite something the user typed themselves.
   const cmd = relayField('wake_command');
   if (!cmd.value || Object.values(DEFAULT_WAKE_COMMAND).includes(cmd.value)) {
     cmd.value = DEFAULT_WAKE_COMMAND[$relayKind.value];
@@ -686,9 +671,7 @@ async function loadRelays() {
 
 // ---------- site URL ----------
 // Consumed by notification templates as {url}. FLATLINE_BASE_URL wins when set,
-// in which case the field is shown read-only rather than hidden — an operator
-// looking for it should find it and see why it can't be edited here.
-
+// in which case the field is shown read-only rather than hidden
 const $baseUrlForm = document.getElementById('baseurl-form');
 const $baseUrlStatus = document.getElementById('baseurl-status');
 const $baseUrlNote = document.getElementById('baseurl-note');
@@ -887,7 +870,7 @@ $configExport.addEventListener('click', () => {
 $configImportBtn.addEventListener('click', () => $configImport.click());
 $configImport.addEventListener('change', () => {
   const file = $configImport.files[0];
-  $configImport.value = ''; // allow re-picking the same file
+  $configImport.value = '';
   if (!file) return;
   void (async () => {
     $configError.textContent = '';
@@ -1003,10 +986,6 @@ $appReset.addEventListener('click', () => {
 channelForm.toAddMode();
 relayForm.toAddMode();
 
-// Fill the two tables from last session's data so they are not empty while the
-// live lists are in flight. Only these: the key, security and settings panels
-// below describe how this instance is secured right now, and a stale answer
-// there would be worse than a blank field for a moment.
 const snapshot = loadSnapshot('config');
 if (snapshot) {
   ({ channels, relays } = snapshot);
@@ -1020,5 +999,5 @@ void loadRelays();
 void loadSettings();
 void refreshKeyStatus();
 void refreshSecurity();
-// Picks up delivery results from real (non-test) events as they happen.
+
 setInterval(() => void refreshChannels(), 20_000);

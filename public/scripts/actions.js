@@ -12,9 +12,6 @@ import {
 import { initHeaderAuth } from './header.js';
 import { loadSnapshot, saveSnapshotOnExit } from './snapshot.js';
 import { watchBanners } from './banners.js';
-// Relative, not '/shared/…': public/ is served at / and shared/ at /shared/, so
-// this resolves to /shared/net.js in the browser and to the file on disk under
-// Node — which is what lets this module be imported by a test.
 import { hostInNetwork } from '../../shared/net.js';
 import { RESTORE_SECRET_FIELDS } from '../../shared/restoreSecrets.js';
 
@@ -25,7 +22,7 @@ let targets = [];
 let igroups = [];
 let flatlineGroups = [];
 let relays = [];
-let loaded = false; // true once the live lists have arrived at least once
+let loaded = false; 
 
 const KIND_LABELS = { ssh: 'SSH', winrm: 'WinRM', k8s: 'Kubernetes', http: 'HTTP(S)' };
 const K8S_ACTION_LABELS = { drain: 'drain all nodes', custom: 'custom request' };
@@ -39,30 +36,19 @@ const SECRET_INPUTS = {
   http: { token: 'http_token', password: 'http_password', login_password: 'http_login_password' }
 };
 
-// RESTORE_SECRET_FIELDS (imported above) is both restore steps' own credentials,
-// used only where a step does not inherit the target's. One panel serves every
-// kind, and each step's inputs are named for its own fields — no mapping through.
-
+// RESTORE_SECRET_FIELDS 
 const PROTO_LABELS = { ssh: 'SSH', winrm: 'WinRM' };
 const DEFAULT_RESTORE_WAIT = 300;
-/**
- * The restore's two configurable steps, which are the same shape and so share
- * their wiring: `p` prefixes every field name, `id` every element id, and the
- * two data attributes tag the markup belonging to each.
- */
 const RESTORE_STEPS = [
   { p: 'restore_', id: 'restore-', kindAttr: 'rk', authAttr: 'rauth' },
   { p: 'post_restore_', id: 'post-restore-', kindAttr: 'prk', authAttr: 'prauth' }
 ];
-/** Verbs offered to a step's request, per method. Kubernetes takes PATCH; the
- *  HTTP kind does not. One select per step serves both, repopulated on change. */
+
 const REQUEST_METHODS = {
   k8s: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   http: ['GET', 'POST', 'PUT', 'DELETE']
 };
-/** Which of a step's connection selects names its sub-auth, per method — the
- *  second axis the connection fields are shown on (see syncRestoreStep). WinRM
- *  is absent because it has only one way to sign in. */
+
 const STEP_AUTH_FIELD = {
   ssh: 'auth_method',
   k8s: 'k8s_auth',
@@ -90,13 +76,10 @@ const $restoreEnabled = $form.elements.namedItem('restore_enabled');
 const $restoreSummary = document.getElementById('restore-summary');
 const targetFormSection = initCollapsible('actions:target-form',
   document.getElementById('target-form-header'), document.getElementById('target-form-body'));
-// The Restore panel is the longest part of the form and most targets never
-// change it after setup, so it folds away on its own.
+
 initCollapsible('actions:restore',
   document.getElementById('restore-header'), document.getElementById('restore-body'));
 const targetDirty = initDirtyNote($form, document.getElementById('target-dirty'), $formSaveNote);
-/** One Restore panel serves all four kinds, so its credentials sit outside every
- *  .kind-section — hence unsectionedIsGlobal. */
 const targetSecrets = initSecretFields($form, {
   sectionAttr: 'kind',
   unsectionedIsGlobal: true,
@@ -118,16 +101,12 @@ function syncKindSections() {
   $formTestResult.textContent = '';
 }
 
-/** The whole Restore panel: whether it is on at all, then each of its two
- *  configurable steps. */
 function syncRestoreFields() {
   document.getElementById('restore-config').style.display = $restoreEnabled.checked ? '' : 'none';
 
   syncRestoreStep(RESTORE_STEPS[0]);
   const postKind = syncRestoreStep(RESTORE_STEPS[1]);
 
-  // Left blank the port falls back to the method's default, so say which one
-  // that would be rather than showing SSH's on a WinRM action.
   if (postKind === 'ssh' || postKind === 'winrm') {
     field('post_restore_port').placeholder = postKind === 'ssh' ? '22'
       : (field('post_restore_use_tls').checked ? '5986' : '5985');
@@ -138,24 +117,9 @@ function syncRestoreFields() {
   renderRestoreSummary();
 }
 
-/**
- * One restore step: which method it uses and — when it connects somewhere of its
- * own — that method's connection fields. Returns the chosen method.
- *
- * A field shows when the step's kind attribute names the chosen method and,
- * where present, its auth attribute names that method's current sub-auth (SSH's
- * password/key, the cluster's token/kubeconfig, HTTP's scheme). Everything
- * inside the step's connection block is additionally hidden while it inherits,
- * since then there is nothing of its own to fill in.
- */
 function syncRestoreStep({ p, id, kindAttr, authAttr }) {
   const stepKind = field(`${p}kind`).value;
-
-  // Inheriting means "the same machine, reached the same way", which only
-  // exists when the method is the target's own kind. The choice is only hidden
-  // while that does not hold, not reset — so switching away from a method and
-  // back does not quietly turn "same as target" into "its own". The server drops
-  // the flag for a method that cannot inherit anyway.
+  
   const canInherit = stepKind === $kind.value;
   document.getElementById(`${id}inherit-field`).style.display = canInherit ? '' : 'none';
   const inherits = canInherit && field(`${p}inherit`).value === '1';
@@ -163,10 +127,6 @@ function syncRestoreStep({ p, id, kindAttr, authAttr }) {
   document.getElementById(`${id}connection`).style.display =
     !inherits && stepKind !== 'wol' && stepKind !== 'none' ? '' : 'none';
 
-  // Two axes here rather than one, so this stays a hand-rolled loop: a field
-  // shows only when its method AND that method's sub-auth both match. A method
-  // with no sub-auth to pick (WinRM) skips the second axis rather than failing
-  // it, or its own fields would never show.
   const authName = STEP_AUTH_FIELD[stepKind];
   const auth = authName ? field(p + authName).value : null;
   for (const node of $form.querySelectorAll(`[data-${kindAttr}]`)) {
@@ -176,8 +136,6 @@ function syncRestoreStep({ p, id, kindAttr, authAttr }) {
     node.style.display = kindMatch && authMatch ? '' : 'none';
   }
 
-  // The certificate fields are shared with this step's http method, where they
-  // always apply; under winrm they only apply once its HTTPS transport is on.
   if (stepKind === 'winrm') {
     document.getElementById(`${id}tls`).style.display = field(`${p}use_tls`).checked ? '' : 'none';
   }
@@ -186,9 +144,6 @@ function syncRestoreStep({ p, id, kindAttr, authAttr }) {
   return stepKind;
 }
 
-/** A step's request-method select is shared by its Kubernetes and HTTP methods,
- *  which do not accept the same verbs. Repopulated rather than duplicated, so
- *  there is only ever one such input per step. */
 function renderRequestMethods(select, stepKind) {
   const methods = REQUEST_METHODS[stepKind];
   if (!methods) return;
@@ -198,8 +153,6 @@ function renderRequestMethods(select, stepKind) {
   select.value = methods.includes(chosen) ? chosen : (stepKind === 'k8s' ? 'PATCH' : 'POST');
 }
 
-/** A folded panel still has to say whether a restore exists, and roughly what
- *  it does — it is the one part of the form that is off by default. */
 function renderRestoreSummary() {
   if (!$restoreEnabled.checked) {
     $restoreSummary.textContent = 'off';
@@ -215,10 +168,6 @@ function renderRestoreSummary() {
   $restoreSummary.textContent = parts.join(' · ');
 }
 
-/** The address the woken machine is expected to answer on, for the relay check
- *  below. That is whatever the restore is about to connect to once the packet is
- *  out: the post-restore action's own host where it has one, otherwise the
- *  target's own address. */
 function wakeHost() {
   const postKind = field('post_restore_kind').value;
   if (postKind === 'ssh' || postKind === 'winrm') {
@@ -237,8 +186,7 @@ function wakeHost() {
 
 /**
  * Warns when the chosen relay cannot reach the address the target answers on. A
- * magic packet sent to the wrong network fails silently — nothing ever answers
- * one — so this is the only point at which the mistake is visible.
+ * magic packet sent to the wrong network fails silently
  */
 function renderRelayWarning() {
   const note = document.getElementById('relay-note');
@@ -265,10 +213,6 @@ function renderRelayWarning() {
   }
 }
 
-/** Fills the relay picker. Kept as its own pass so the relay list can refresh
- *  without disturbing an edit in progress — the current selection is restored
- *  when the relay still exists, and a relay that has since been deleted stays
- *  visible as a marked option rather than silently becoming "the first one". */
 function renderRelayOptions() {
   for (const select of $form.querySelectorAll('[data-relay-picker]')) {
     const chosen = select.value;
@@ -294,8 +238,6 @@ function syncHttpAuthFields() {
   syncHttpTokenFields();
 }
 
-/** Inside the login block, the one field that names where the token is — a path
- *  into the body, a response header, or a cookie. */
 function syncHttpTokenFields() {
   toggleByData($form, 'token-source', field('http_token_source').value);
 }
@@ -309,9 +251,6 @@ function syncWinrmTlsFields() {
   $form.querySelector('.winrm-tls').hidden = !field('winrm_use_tls').checked;
 }
 
-/** Toggling the transport moves the port to the new default, but only while it
- *  still holds the old one — a port typed by hand is left alone, and a saved
- *  target is never rewritten (this runs on the toggle, not on form fill). */
 function onWinrmTlsToggle() {
   const on = field('winrm_use_tls').checked;
   const $port = field('winrm_port');
@@ -334,25 +273,20 @@ $sshAuthMethod.addEventListener('change', syncSshAuthFields);
 field('winrm_use_tls').addEventListener('change', onWinrmTlsToggle);
 $k8sAuthMethod.addEventListener('change', syncK8sAuthFields);
 $k8sAction.addEventListener('change', syncK8sActionFields);
-// Everything the Restore panel's visibility depends on, in one pass.
+
 for (const name of ['restore_enabled', 'auto_restore', 'wake_mode',
   'restore_kind', 'restore_inherit', 'restore_k8s_auth', 'restore_auth_scheme',
   'post_restore_kind', 'post_restore_inherit', 'post_restore_auth_method',
   'post_restore_k8s_auth', 'post_restore_auth_scheme', 'post_restore_use_tls']) {
   field(name).addEventListener('change', syncRestoreFields);
 }
-// The summary line and the relay-reach warning both follow typed text, not just
-// the selects: the MAC decides whether a wake is part of the summary, and the
-// warning compares the relay's network against whichever host the restore will
-// connect to.
+
 field('wol_mac').addEventListener('input', renderRestoreSummary);
 field('wake_relay_id').addEventListener('change', renderRelayWarning);
 for (const name of ['post_restore_host', 'ssh_host', 'winrm_host', 'k8s_api_url', 'http_url']) {
   field(name).addEventListener('input', renderRelayWarning);
 }
 
-// The file inputs live inside $form, so their change events bubble up and mark
-// the form dirty via initDirtyNote — no explicit markDirty needed here.
 wireFileUpload(
   document.getElementById('ssh-key-upload-btn'),
   document.getElementById('ssh-key-upload'),
@@ -391,7 +325,7 @@ function collectRestore() {
     auto_restore: field('auto_restore').checked,
     restore_wait_seconds: Number(field('restore_wait_seconds').value) || 0,
 
-    // step 1 — the restore itself
+    // step 1 — the restore
     restore_kind: field('restore_kind').value,
     restore_inherit: field('restore_inherit').value === '1',
     wol_mac: field('wol_mac').value,
@@ -412,7 +346,7 @@ function collectRestore() {
     restore_method: field('restore_method').value,
     restore_body: field('restore_body').value,
 
-    // step 3 — the optional post-restore action
+    // step 3 — optional post-restore action
     post_restore_kind: field('post_restore_kind').value,
     post_restore_inherit: field('post_restore_inherit').value === '1',
     post_restore_host: field('post_restore_host').value,
@@ -450,8 +384,6 @@ function fillRestore(c) {
   field('wol_broadcast').value = c.wol_broadcast ?? '';
   field('restore_api_url').value = c.restore_api_url ?? '';
   field('restore_k8s_auth').value = c.restore_k8s_auth ?? 'token';
-  // Both default on for a new target, so an existing one saved before the
-  // field existed must fall back to off, not on.
   field('restore_uncordon').checked = !!c.restore_uncordon;
   field('restore_restart_deployments').checked = !!c.restore_restart_deployments;
   field('restore_path').value = c.restore_path ?? '';
@@ -493,8 +425,6 @@ function fillRestore(c) {
   field('post_restore_body').value = c.post_restore_body ?? '';
 }
 
-/** The target's own connection and trigger action. The Restore panel is spread
- *  in on top of every kind, since it is the same for all of them. */
 function collectConfig(kind) {
   const restore = collectRestore();
   switch (kind) {
@@ -616,8 +546,6 @@ function fillTargetForm(t) {
       field('http_token_header').value = c.token_header ?? '';
       field('http_session_cookie_name').value = c.session_cookie_name ?? '';
       field('http_session_cookie_json_path').value = c.session_cookie_json_path ?? '';
-      // Ticked by default for a new target, so an existing one that has never
-      // been saved with the field must fall back to on, not off.
       field('http_send_cookies').checked = c.send_cookies ?? true;
       field('http_insecure_tls').checked = !!c.insecure_tls;
       field('http_ca_cert').value = c.ca_cert ?? '';
@@ -744,10 +672,6 @@ function targetActivityText(t) {
 function targetActivityCell(t) {
   const p = t.restore_progress;
   if (!p) return el('td', { class: 'truncate' }, targetActivityText(t));
-
-  // Not truncated: the phase is the whole point of the cell while a restore is
-  // running, and this column is too narrow to hold it on one line. It wraps
-  // under the pill instead, and the row goes back to one line when it finishes.
   const elapsed = Math.max(0, Math.round((Date.now() - p.startedAt) / 1000));
   return el('td', { class: 'restoring-cell', title: `${p.phase} — ${elapsed}s elapsed` },
     el('div', { class: 'elapsed' },
@@ -764,11 +688,7 @@ function fmtElapsed(seconds) {
 }
 
 /**
- * The target's restore spelled out, one sentence per step — shown in the Restore
- * button's tooltip and in its confirm dialog, which describe the same thing.
- *
- * The shape is the same whatever the target's kind: the restore itself, the wait
- * it needs, then the optional post-restore action.
+ * The target's restore 
  */
 function restoreSteps(t) {
   const c = t.config;
@@ -817,8 +737,6 @@ function stepSentences(c, p, stepKind, wait) {
       c[`${p}restart_deployments`] ? 'Restart every Deployment outside kube-system.' : null
     ].filter(Boolean);
     case 'http': return [
-      // Only a target that logs in has a probe safe to retry; every other HTTP
-      // request is sent once.
       c[`${p}inherit`] && c.auth_scheme === 'login' && wait > 0
         ? `Wait up to ${wait}s for ${c.login_url} to accept the login.`
         : null,
@@ -844,8 +762,6 @@ function renderTargetTable() {
     cells: (t) => targetRowCells(t)
   });
 
-  // Whatever put a restore on screen — this page starting one, an auto-restore
-  // the watcher started, or another browser — keeps the phase line moving.
   if (targets.some((t) => t.restore_progress)) scheduleRestorePoll();
 }
 
@@ -891,9 +807,6 @@ function targetRowCells(t) {
 
   const restoreBtn = el('button', { class: 'btn ghost small' }, t.restore_progress ? 'Restoring…' : 'Restore');
   if (t.restore_progress) {
-    // Already coming back — starting a second pass would send the restore
-    // request twice, and it need not be idempotent. The server refuses it
-    // too; this is so the button never offers it.
     restoreBtn.disabled = true;
     restoreBtn.title = `Restore in progress: ${t.restore_progress.phase}`;
   } else if (!hasRestore(t)) {
@@ -940,8 +853,7 @@ function targetRowCells(t) {
     el('td', { class: 'target-cell', title: targetConnection(t) }, targetConnection(t)),
     el('td', { class: 'target-cell', title: targetAction(t) }, targetAction(t)),
     el('td', { class: 'truncate', title: credentials }, credentials),
-    targetActivityCell(t),
-    // Not actionsCell(): this row's four buttons have their own cell class.
+    targetActivityCell(t),    
     el('td', { class: 'actions-cell' }, editBtn, delBtn, runBtn, restoreBtn)
   ];
 }
@@ -1007,8 +919,6 @@ function renderStages() {
   }
   const stageMap = targetStageMap();
   stages.forEach((stage, si) => {
-    // The gap belongs between two cards, so the first stage never shows one —
-    // a triggered run starts acting straight away.
     if (si > 0) $stageList.append(renderStageWait(stage, si));
     $stageList.append(renderStage(stage, si, stageMap));
   });
@@ -1308,8 +1218,6 @@ const igForm = initEntityForm({
     enabled: $igForm.elements.namedItem('enabled').checked,
     stages: stages.filter((st) => st.steps.length > 0)
   }),
-  // The assignment lives on each Flatline group, so it is written separately —
-  // before the reload, so the refreshed list already reflects it.
   refresh: async (saved) => {
     await applyFlatlineGroupAssignments(saved.id, selectedIgFlatlineGroupIds());
     await refreshAll();
@@ -1317,7 +1225,6 @@ const igForm = initEntityForm({
   findSaved: (id) => igroups.find((g) => g.id === id)
 });
 
-/** One stage as text: "k8s + NAS, wait 10s, Windows" — batch, wait, batch. */
 function stageStepText(stage) {
   const parts = [];
   let batch = [];
@@ -1340,8 +1247,6 @@ function renderIgTable() {
     rows: igroups,
     empty: ['No action groups yet', 'Create an ordered sequence of targets using the form below.'],
     cells: (g) => {
-      // "+" joins what runs at once, "," what follows it once a wait is up, and
-      // "→" separates stages, carrying the gap held between them.
       const stageText = g.stages.length
         ? g.stages.map((st, i) => {
             const gap = i === 0 ? '' : st.wait_seconds > 0 ? `  →(${st.wait_seconds}s)→  ` : '  →  ';
@@ -1436,18 +1341,6 @@ async function refreshAll() {
   renderAll();
 }
 
-/**
- * Just the target rows. A step running or a run finishing changes what they say
- * — last activity, health, restore progress — and nothing else on this page:
- * the groups, relays and Flatline groups only change when someone edits them.
- *
- * So this deliberately does not call refreshAll, which would rebuild the forms,
- * the stage editor and the relay pickers out from under whoever is using them.
- * It is the same reason pollRestores redraws only this table.
- *
- * Note it leaves `loaded` alone: it populates one of the four lists, so it can
- * never be the thing that qualifies the page to save a snapshot.
- */
 async function refreshTargets() {
   try {
     targets = await actionTargets.list();
@@ -1465,9 +1358,6 @@ igForm.toAddMode();
 const snapshot = loadSnapshot('actions');
 if (snapshot) {
   ({ targets, igroups, flatlineGroups, relays } = snapshot);
-  // A restore that was running when the snapshot was taken may well have
-  // finished since. Progress is live state, so it is dropped rather than
-  // replayed — the refresh below reports where each target actually is.
   for (const t of targets) t.restore_progress = null;
   renderAll();
 }
@@ -1477,9 +1367,4 @@ void refreshAll();
 // Picks up the background connectivity dot (server rechecks targets ~every minute).
 setInterval(() => void refreshAll(), 20_000);
 
-// The banners are on every page and own this page's change stream; the target
-// rows ride along on it. The sweep above reconciles the whole page, while this
-// reacts to what actually happened — a run's steps land seconds apart, so
-// waiting out the interval to show each one made a live sequence read as a
-// stalled one. health: this page shows the targets' connectivity dots.
 watchBanners({ health: true, onChange: () => void refreshTargets() });

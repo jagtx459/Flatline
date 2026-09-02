@@ -64,8 +64,6 @@
       <div class="card">
         <div class="card-header" id="channel-form-header">
           <span class="chevron">▸</span>
-          <!-- The title text is its own span so the script can rewrite it to
-             "Edit channel: …" without taking the help button with it. -->
           <h2><span id="channel-form-title">Add notification channel</span> <span class="help">
               <button type="button" class="help-btn" aria-expanded="false"
                 aria-label="About notification channels">?</button>
@@ -76,11 +74,6 @@
                   editing, leave a credential blank to keep the stored value.</p>
               </span></span></h2>
         </div>
-        <!-- Collapsed here as well as in initCollapsible, which only runs once
-             the deferred module has loaded — by which point this has already
-             painted open, and everything below it vanishes as the page settles.
-             An inline style rather than [hidden] because toggleByData reveals a
-             section with style.display = '', which [hidden] would survive. -->
         <div class="card-body" id="channel-form-body" style="display:none">
           <form id="channel-form" method="post">
             <div class="grid">

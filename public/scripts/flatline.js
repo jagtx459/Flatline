@@ -12,7 +12,7 @@ watchBanners();
 let groups = [];
 let actionGroupList = [];
 let endpoints = [];
-let loaded = false; // true once the live lists have arrived at least once
+let loaded = false; 
 
 // ---------- Flatline groups ----------
 
@@ -24,8 +24,8 @@ const groupFormSection = initCollapsible('flatline:group-form',
 const groupDirty = initDirtyNote($groupForm, document.getElementById('group-dirty'),
   document.getElementById('group-save-note'));
 
-/** action_group_ids of the group being edited — preserved as-is since that
- *  assignment is now managed from the Actions page, not this form. */
+/* action_group_ids of the group being edited — preserved as-is since that
+   assignment is now managed from the Actions page, not this form. */
 let editingGroupActionIds = [];
 
 function gField(name) {
@@ -186,8 +186,6 @@ const endpointForm = initEntityForm({
   dirty: formDirty,
   noun: 'Flatline endpoint',
   itemLabel: 'endpoint',
-  // This form's edit heading is just "Edit: NAME" — it is the page's primary
-  // form and the extra words crowd it.
   editLabel: '',
   api: endpointsApi,
   reset: syncTypeFields,

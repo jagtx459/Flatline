@@ -11,8 +11,7 @@ import { initBanners } from './banners.js';
 import { onServerChange } from './stream.js';
 
 initHeaderAuth();
-// This page fetches group states as part of its own payload, so it feeds the
-// banners rather than letting them fetch again — see render().
+
 const banners = initBanners();
 
 const RANGES = [
@@ -25,8 +24,6 @@ const RANGES = [
 
 const REFRESH_MS = 10_000;
 const ACTIVE_REFRESH_MS = 3_000;
-
-// How many rows each list shows before it starts scrolling.
 const PANEL_ROWS = 3;
 const EVENT_ROWS = 8;
 
@@ -38,14 +35,11 @@ const GROUP_BY_OPTIONS = [
 
 let rangeHours = Number(localStorage.getItem('flatline.range') ?? 24) || 24;
 if (!RANGES.some((r) => r.hours === rangeHours)) rangeHours = 24;
-// ?groupby=group|type makes a grouped view linkable; localStorage remembers otherwise.
 const groupByParam = new URLSearchParams(location.search).get('groupby');
 let groupBy = GROUP_BY_OPTIONS.some((o) => o.value === groupByParam)
   ? groupByParam
   : (localStorage.getItem('flatline.groupBy') ?? 'group');
 let data = null;
-// Whether `data` came from the server this page load or from a snapshot — a
-// half-populated view must not be saved back as one.
 let dataIsLive = false;
 
 const $filters = document.getElementById('filters');
@@ -57,11 +51,6 @@ async function refresh() {
   try {
     data = await getDashboard(rangeHours);
     dataIsLive = true;
-    // Here rather than in render(), which also runs on a resize and a grouping
-    // change: the banners' countdown anchors on the clock reading it is handed,
-    // so replaying an old payload into it would wind the countdown back up. It
-    // also keeps the snapshot below out of them, which is the point — an armed
-    // group must never be drawn one navigation out of date.
     banners.update(data.groups, data.now);
     render();
   } catch (err) {
@@ -144,8 +133,6 @@ function buildEndpointCards() {
     return;
   }
 
-  // Bucket the cards under section headings, keeping the endpoints' order.
-  // An endpoint in multiple Flatline groups appears once per group it's in.
   const sections = new Map();
   for (const ep of data.endpoints) {
     const keys = groupBy === 'group'
@@ -169,9 +156,7 @@ function buildEndpointCards() {
       el('span', { class: 'gh-count' }, down > 0 ? `${eps.length} endpoints · ${down} down` : `${eps.length} endpoints`)
     );
 
-    // The cards get their own container so collapsing touches only this
-    // section. Re-rendering the page here instead would empty the document for
-    // an instant, and the browser would throw away the scroll position.
+    // The cards get their own container 
     const body = el('div', { class: 'group-section' });
     if (isCollapsed) body.style.display = 'none';
     else for (const ep of eps) body.append(endpointCard(ep));
@@ -181,8 +166,6 @@ function buildEndpointCards() {
   }
 }
 
-// Which group sections are folded away, remembered per grouping mode so
-// "Flatline group" and "Check type" keep their own state.
 const COLLAPSED_KEY = 'flatline.collapsedSections';
 
 function collapsedSections() {
@@ -202,9 +185,6 @@ function toggleSection(key, heading, body, eps) {
 
   heading.setAttribute('aria-expanded', String(!nowCollapsed));
   body.style.display = nowCollapsed ? 'none' : '';
-  // Cards are built the first time the section is actually visible — a chart
-  // measured while hidden would come out the wrong width. The body is shown
-  // above, so by here they measure correctly.
   if (!nowCollapsed && !body.firstChild) {
     for (const ep of eps) body.append(endpointCard(ep));
     drawPendingCharts();
@@ -237,15 +217,12 @@ function endpointCard(ep) {
 
   const chartWrap = el('div', { class: 'chart-wrap' });
   card.append(chartWrap);
-  // The chart needs its rendered width, so it waits for the card to reach the
-  // document; whoever puts it there runs drawPendingCharts.
   pendingCharts.push([chartWrap, ep]);
 
   card.append(beatsStrip(ep));
   return card;
 }
 
-/** Charts built but not yet measured, queued by endpointCard. */
 const pendingCharts = [];
 
 /**
@@ -298,8 +275,6 @@ function beatsStrip(ep) {
   strip.addEventListener('pointerleave', hideTooltip);
 
   wrap.append(strip);
-  // The range selector drives the chart only; the strip is always the last
-  // N checks. Label it so that distinction is clear.
   wrap.append(el('div', { class: 'beats-caption' }, `last ${ep.recent.length} checks`));
   return wrap;
 }
@@ -490,15 +465,11 @@ const RUN_STATUS = {
   interrupted: { cls: 'disabled', label: 'INTERRUPTED' }
 };
 
-// 'pending' is a step further down its stage, behind a wait that has not been
-// held yet — it has not started, so it gets a mark of its own.
 const STEP_STATE_MARK = { pending: '·', running: '⋯', ok: '✓', failed: '✕', skipped: '⊘' };
 
 const PANEL_KEY = 'flatline.actionPanelCollapsed';
 
 function renderActionPanel() {
-  // Refreshes rebuild these lists from scratch; without this a poll would yank
-  // a scrolled list back to the top under the user.
   const scrolled = new Map([...$actionPanel.querySelectorAll('.row-list')]
     .map((l) => [l.dataset.list, l.scrollTop]));
 
@@ -613,16 +584,13 @@ async function startRun(group, btn) {
 
 function runListNodes() {
   const live = data.action_runs.filter((r) => r.status === 'running' || r.status === 'paused');
-  // Nothing executing: fall back to the recent history so the panel still says
-  // something useful about what these action groups last did.
   const shown = live.length ? live : data.action_runs.slice(0, 5);
 
   if (shown.length === 0) {
     return [el('div', { class: 'empty' },
       el('div', {}, 'Nothing has run yet. Runs appear here when a Flatline group triggers, or when you start one.'))];
   }
-
-  // The caption sits outside the list so it stays put while the runs scroll.
+ 
   const nodes = live.length === 0
     ? [el('div', { class: 'run-caption' }, 'Nothing running right now — most recent runs:')]
     : [];
@@ -651,8 +619,6 @@ function runRow(run) {
     el('span', {}, run.trigger === 'manual' ? 'started manually' : `triggered by "${run.trigger_detail}"`)
   ));
 
-  // The steps of a stage run at once, so this is the whole stage's progress,
-  // not a single "current" step.
   if (run.steps.length) {
     row.append(el('div', { class: 'run-steps' }, ...run.steps.map((s) =>
       el('span', { class: `run-step ${s.state}` }, `${STEP_STATE_MARK[s.state] ?? ''} ${s.name}`))));
@@ -723,7 +689,7 @@ function renderEvents() {
     el('h2', {}, 'Recent events'));
   header.addEventListener('click', () => {
     localStorage.setItem(EVENTS_KEY, collapsed ? '0' : '1');
-    renderEvents(); // this card only — a full render would reset the scroll position
+    renderEvents(); 
   });
   $events.append(header);
   if (collapsed) return;

@@ -49,11 +49,6 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
-/* Reserve the scrollbar's gutter everywhere, not only on the pages long enough
-   to need one. Without it the centred .container below sits ~8px further left on
-   a page that scrolls (Config) than on one that doesn't (Dashboard, Actions,
-   Flatline, whose forms start collapsed). Phones use overlay scrollbars, where
-   the gutter is zero-width and this does nothing. */
 html { scrollbar-gutter: stable; }
 body {
   background: var(--page);
@@ -84,8 +79,6 @@ header.site .brand {
   color: var(--text-primary);
 }
 header.site .brand img { height: 24px; width: auto; }
-/* Swap the wordmark to the dark-background variant, mirroring the palette logic
-   above (OS-dark unless forced light, or explicit dark). */
 header.site .brand .logo-dark { display: none; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .brand .logo-light { display: none; }
@@ -104,11 +97,7 @@ header.site .icon-link svg { width: 20px; height: 20px; display: block; }
 header.site button.icon-link { background: none; border: 0; padding: 0; cursor: pointer; }
 header.site .header-version { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
-/* ---- mobile header menu ----
-   Four nav tabs, the brand and the icons do not share one line on a phone, so
-   below the breakpoint at the foot of this file header.js moves the tabs and
-   the Log out button into this dropdown, behind the hamburger. The panel is
-   built on every page but stays hidden until the button is showing. */
+/* ---- mobile header menu ---- */
 header.site .hamburger { display: none; }
 header.site .header-menu {
   position: absolute;
@@ -125,8 +114,6 @@ header.site .header-menu {
 header.site .header-menu[hidden] { display: none; }
 header.site .header-menu nav { flex-direction: column; gap: 2px; }
 header.site .header-menu nav a { padding: 9px 12px; border-radius: 7px; }
-/* The header's underline marks the current tab across a row; stacked, it reads
-   as a divider instead, so the active item is filled rather than underlined. */
 header.site .header-menu nav a.active {
   border-bottom: none;
   padding-bottom: 9px;
@@ -135,8 +122,7 @@ header.site .header-menu nav a.active {
 header.site .header-menu .menu-sep { border-top: 1px solid var(--border); margin: 6px 4px; }
 header.site .header-menu .btn { width: 100%; padding: 8px 12px; }
 
-/* ---- sub-tabs (config page): one page's worth of cards split into panels,
-       styled to echo the header nav's underlined active item ---- */
+/* ---- sub-tabs (config page): ---- */
 .tabs {
   display: flex;
   gap: 2px;
@@ -159,14 +145,6 @@ header.site .header-menu .btn { width: 100%; padding: 8px 12px; }
 .tabs button.active { color: var(--text-primary); border-bottom-color: var(--accent); }
 .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-/* Which panel is open before initTabs loads. The markup opens General, so these
-   are needed only for the other two, and only until the deferred module runs —
-   theme-init.js stamps the root from localStorage and initTabs drops the stamp
-   the moment it takes over, after which `hidden` alone decides.
-
-   Naming the panels keeps an unrecognised stamp harmless: it matches nothing and
-   the markup's own choice stands, rather than hiding every panel and leaving the
-   page blank. The reveal ties with the hide on specificity and wins on order. */
 :root[data-tab-config="notifications"] [data-panel],
 :root[data-tab-config="relays"] [data-panel] { display: none; }
 :root[data-tab-config="notifications"] [data-panel="notifications"],
@@ -195,14 +173,7 @@ header.site .header-menu .btn { width: 100%; padding: 8px 12px; }
   color: var(--text-secondary);
 }
 
-/* ---- disclosure chevron ----
-   One treatment for everything that folds: card forms, the restore panel,
-   dashboard group headings and the setup-help blocks. The triangle always leads
-   the title at the same size and always rotates rather than swapping glyph, so
-   open/closed reads down a single straight left edge instead of being chased
-   across the row. Always a direct child of the element carrying aria-expanded —
-   the child combinator below is what keeps a nested panel's chevron from
-   following its parent's state. */
+/* ---- disclosure chevron ---- */
 .chevron {
   flex: none;
   color: var(--text-muted);
@@ -217,14 +188,8 @@ header.site .header-menu .btn { width: 100%; padding: 8px 12px; }
 
 /* ---- help popover ----
    The "?" beside a label holds the explanation that used to sit under the field
-   as a paragraph. Click to open, Escape or a click elsewhere to close (dom.js
-   initHelp). The popover resets the caps/tracking of whatever label it hangs
-   off, since .cap and .card-header both restyle their text. */
+   as a paragraph. */
 .help { position: relative; display: inline-block; vertical-align: middle; }
-/* A title carrying a help popover centres it against the text. vertical-align
-   has nothing to align to on an uppercase heading — there is no x-height — so
-   the button lands visibly low; making the title itself a flex row centres the
-   two against each other instead. */
 h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 .restore-title:has(> .help), .sub-head:has(> .help) {
   display: flex;
@@ -267,8 +232,7 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
   white-space: normal;
   cursor: auto;
 }
-/* Bridges the 6px gap under the button so moving the pointer down into the
-   popover does not cross bare page and dismiss it on the way. */
+
 .help-pop::before {
   content: "";
   position: absolute;
@@ -300,9 +264,6 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 .card-header h2 { margin: 0; flex: 1; }
 .card-body { margin-top: 12px; }
 
-/* Long lists get a fixed window instead of pushing the rest of the page down.
-   The height is measured in JS (capList) because the rows vary in height; only
-   a list that actually overflows gets the class. */
 .scroll-list {
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -310,12 +271,6 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 }
 
 /* ---- shutdown banner ---- */
-/* The banners arrive a round trip after the page paints, and they sit above
-   everything, so landing in a zero-height box shoved the whole page down as you
-   arrived on it. theme-init.js sets --banners-reserved from the height they had
-   on the page you left, holding the space open until the live ones fill it;
-   banners.js drops it the moment they do. flow-root so the last banner's margin
-   is counted in that height instead of collapsing out of it. */
 #banners {
   display: flow-root;
   min-height: var(--banners-reserved, 0px);
@@ -397,8 +352,6 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 .pill.unknown { color: var(--text-muted); }
 .pill.disabled .dot { background: var(--baseline); }
 .pill.disabled { color: var(--text-muted); }
-/* In progress — a restore holding while a host boots. Pulsed, because unlike
-   the states above this one is expected to change on its own. */
 .pill.working .dot { background: var(--status-warning); animation: pill-pulse 1.6s ease-in-out infinite; }
 .pill.working { color: var(--text-secondary); }
 @keyframes pill-pulse { 50% { opacity: 0.35; } }
@@ -425,9 +378,6 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 .endpoint-card .uptime { margin-left: auto; text-align: right; }
 .endpoint-card .uptime .value { font-size: 18px; font-weight: 650; }
 .endpoint-card .uptime .label { color: var(--text-muted); font-size: 11px; }
-
-/* A floor matching the chart height in dashboard.js, so a card is the same
-   height whether its chart has points to draw or is still collecting. */
 .chart-wrap { margin-top: 10px; min-height: 130px; }
 .chart-wrap svg { display: block; width: 100%; }
 
@@ -437,7 +387,6 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
   gap: 2px;
   margin-top: 10px;
   align-items: center;
-  /* align with the latency chart's plot area (padL / padR in dashboard.js) */
   padding-left: 44px;
   padding-right: 10px;
 }
@@ -451,7 +400,6 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 .beat.fail { background: var(--status-critical); }
 .beat:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
 .beats-label { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
-/* caption sits under the strip, aligned with the chart's plot area */
 .beats-caption {
   color: var(--text-muted);
   font-size: 10px;
@@ -498,21 +446,12 @@ h2:has(> .help), h3:has(> .help), .cap:has(> .help),
 /* ---- forms (config page) ---- */
 form .grid {
   display: grid;
-  /* min() so the last column left standing can shrink below the track floor
-     rather than overflowing it: auto-fill always lays down at least one track,
-     and on a phone a bare 200px/300px floor is wider than the card holding it,
-     which pushes the whole page sideways. */
   grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
   gap: 12px;
 }
 label.field { display: flex; flex-direction: column; }
 label.field .cap { display: block; color: var(--text-secondary); font-size: 12px; margin-bottom: 3px; }
-/* Rows with a secret field carry a long "· stored ✓ (leave blank to keep)"
-   caption once a value is saved. Widen every column in those rows equally so
-   the caption stays on one line and all inputs keep a consistent width. */
 form .grid:has(> label.field.secret) { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
-/* Belt-and-suspenders: if a caption still wraps (very narrow viewport), keep
-   inputs bottom-aligned across the row instead of letting one drop. */
 label.field > input, label.field > select, label.field > textarea { margin-top: auto; }
 input[type="text"], input[type="url"], input[type="number"], input[type="password"], select {
   width: 100%;
@@ -548,8 +487,6 @@ label.check .hint { color: var(--text-muted); font-size: 12px; }
   color: var(--status-critical);
   border: 1px solid var(--border);
 }
-/* Slightly-red fill for actions that run for real (vs. danger-ghost's plain
-   outline for destructive-but-reversible things like Delete). */
 .btn.danger-soft {
   background: color-mix(in srgb, var(--status-critical) 14%, var(--surface));
   color: var(--status-critical);
@@ -567,8 +504,7 @@ label.check .hint { color: var(--text-muted); font-size: 12px; }
 .form-actions .note { color: var(--status-good); font-size: 12px; }
 .form-actions .error { color: var(--status-critical); font-size: 12px; }
 
-/* "Unsaved changes" hint to the right of a form's buttons. Hidden while empty;
-   the amber dot only draws the eye once there's something to save. */
+/* "Unsaved changes" */
 .dirty-note {
   display: inline-flex;
   align-items: center;
@@ -633,14 +569,9 @@ table.endpoints tr:last-child td { border-bottom: none; }
 table.endpoints .mono { font-variant-numeric: tabular-nums; }
 table.endpoints .target-cell { color: var(--text-secondary); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* the Edit/Delete/… buttons a row's last cell carries (crud.js actionsCell) */
 .row-btns { display: inline-flex; gap: 6px; }
 
-/* Last activity while a restore is running. The phase wraps under the pill
-   rather than being cut off — it is the only sign anything is happening. */
 .restoring-cell { overflow: hidden; }
-/* The pill and the time wrap as units — the column is narrow, but "3m 46s"
-   must never be broken in half, nor spill over the buttons beside it. */
 .restoring-cell .elapsed { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
 .restoring-cell .time { white-space: nowrap; font-weight: 650; font-size: 12px; }
 .restoring-cell .phase {
@@ -651,8 +582,7 @@ table.endpoints .target-cell { color: var(--text-secondary); max-width: 260px; o
   overflow-wrap: anywhere;
 }
 
-/* Action targets table: fixed column widths so 8 columns of dense content
-   never force the table wider than the card (no horizontal scrollbar). */
+/* Action targets table: */
 table.target-table { table-layout: fixed; }
 table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 
@@ -703,7 +633,7 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
 }
 .check-scroll label.check { padding: 3px 0; }
 .kind-section { margin-top: 12px; }
-/* Collapsible "how to set up an account on the target" help inside a kind-section */
+
 .setup-help { margin: 0 0 12px; border: 1px solid var(--gridline); border-radius: 7px; }
 .setup-help > summary {
   cursor: pointer; list-style: none;
@@ -711,9 +641,6 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
   color: var(--text-secondary); font-size: 12.5px; font-weight: 600;
 }
 .setup-help > summary::-webkit-details-marker { display: none; }
-/* Same triangle, same size, same rotation as every other disclosure control —
-   a <details> cannot carry a .chevron child, so the shared treatment is
-   repeated here rather than shared by selector. */
 .setup-help > summary::before {
   content: "▸";
   display: inline-block;
@@ -733,8 +660,7 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
   padding: 8px 10px; margin: 0 0 8px; overflow-x: auto;
   font: 12px/1.6 ui-monospace, Consolas, monospace; color: var(--text-primary);
 }
-/* Restore sequence (ssh / winrm targets): wake -> wait for it to answer -> one
-   final step. Numbered rows because the order is the whole point. */
+
 .restore-panel {
   border: 1px solid var(--gridline);
   border-radius: 9px;
@@ -742,20 +668,13 @@ table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; }
   margin-top: 12px;
   background: var(--surface);
 }
-/* The panel folds away from its own header, reusing the card chevron. */
+
 .restore-panel > .card-header .restore-title { font-weight: 600; font-size: 13px; margin: 0; flex: 1; }
-/* What the restore does, in a few words, so a folded panel still says whether
-   one is configured at all. */
 .restore-panel > .card-header .restore-summary {
   flex: none; color: var(--text-muted); font-size: 12px; font-weight: 400;
 }
-/* A tick box with a "?" beside it: the label must not stretch across the row,
-   or the popover button lands somewhere far from what it explains. */
 .check-row { display: flex; align-items: center; gap: 6px; }
-/* A checkbox sharing a form .grid row with captioned inputs. Left to stretch it
-   centres itself against the caption as well and floats above the controls
-   beside it, so it drops to the bottom of the cell like they do (label.field's
-   margin-top: auto) and lifts by half an input's height to line up with them. */
+
 form .grid > .check-row { align-self: end; padding-bottom: 8px; }
 .restore-step { display: flex; gap: 10px; padding: 10px 0 2px; border-top: 1px dashed var(--gridline); margin-top: 10px; }
 .restore-step .restore-num {
@@ -763,7 +682,6 @@ form .grid > .check-row { align-self: end; padding-bottom: 8px; }
   color: var(--text-muted); font-variant-numeric: tabular-nums; font-weight: 600;
 }
 .restore-step .restore-body { flex: 1; min-width: 0; }
-/* a sentence with an input in the middle of it ("wait up to [ 300 ] seconds") */
 .restore-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-secondary); font-size: 12.5px; }
 .restore-inline input { width: 80px; padding: 4px 6px; }
 
@@ -798,7 +716,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .step-row .step-timeout { width: 70px; padding: 4px 6px; }
 .step-row .step-timeout-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 12px; }
 .step-row .step-btns { display: inline-flex; gap: 4px; }
-/* a wait step runs no command, so it reads quieter than the targets beside it */
 .step-row.wait { border-style: dashed; }
 .step-row.wait .step-name { font-weight: 400; color: var(--text-muted); }
 .step-add { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
@@ -813,7 +730,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   margin-bottom: 10px;
   background: var(--surface);
 }
-/* the gap between two stage cards, and how long it is held */
+
 .stage-wait {
   display: flex;
   align-items: center;
@@ -854,8 +771,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .empty .big { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
 
 /* ---- dashboard: action groups | action runs ---- */
-/* Equal halves: the two cards share the row's height so the split reads as one
-   band, whichever side has more in it. */
 .dash-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -907,7 +822,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .run-step.ok { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 45%, var(--border)); }
 .run-step.failed { color: var(--status-critical); border-color: color-mix(in srgb, var(--status-critical) 45%, var(--border)); }
 .run-step.skipped { color: var(--text-muted); border-style: dashed; }
-/* not started yet — it sits behind a wait further up its stage */
 .run-step.pending { color: var(--text-muted); opacity: 0.7; }
 .run-message { margin-top: 6px; color: var(--text-secondary); font-size: 12px; }
 .run-btns { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
@@ -923,13 +837,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .endpoint-card .uptime { margin-left: 0; }
 }
 
-/* ---- phones ----
-   All of a piece: a page far narrower than the content was laid out for. The
-   header nav folds into a menu, every table stops being a table, and the rows
-   that read as a sentence across one line wrap instead. The dashboard is
-   untouched — it is already a column of cards, and its own card headers already
-   wrap. The form grids are not here either; they size themselves (see
-   `form .grid`). */
+/* ---- mobile ui ---- */
 @media (max-width: 720px) {
   .container { padding: 0 14px 40px; }
 
@@ -937,17 +845,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   header.site .header-actions { gap: 13px; }
   header.site .hamburger { display: inline-flex; align-self: center; }
 
-  /* The config page's three sub-tabs are a shade wider than a phone. Scroll the
-     strip rather than the whole page; the buttons keep their own width so a
-     label never wraps mid-word. */
   .tabs { overflow-x: auto; scrollbar-width: none; }
   .tabs::-webkit-scrollbar { display: none; }
   .tabs button { flex: none; }
 
-  /* Each row becomes its own card: the header row goes away and every cell
-     prints its column's heading beside itself instead (renderTable stamps it on
-     as data-label). The last cell holds the buttons and has no heading, so it
-     is laid out full-width under a rule. */
   table.endpoints, table.endpoints tbody, table.endpoints tr { display: block; }
   table.endpoints { table-layout: auto; }
   table.endpoints thead, table.endpoints colgroup { display: none; }
@@ -977,17 +878,14 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  /* Columns that hold one clipped line across a wide table have the whole width
-     of the card here, so they wrap instead. */
+
   table.endpoints td.target-cell, table.endpoints td.truncate, table.endpoints td.restoring-cell {
     max-width: none;
     overflow: visible;
     white-space: normal;
     overflow-wrap: anywhere;
   }
-  /* The only cell with more than one line of its own: the pill, the elapsed
-     time and the phase have to keep stacking, so its label leads the block
-     rather than sitting beside it. */
+
   table.endpoints td.restoring-cell { display: block; }
   table.endpoints td.restoring-cell::before { display: block; width: auto; max-width: none; }
 
@@ -998,14 +896,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   }
   table.endpoints .row-btns, table.target-table .actions-cell { display: flex; flex-wrap: wrap; gap: 6px; }
 
-  /* iOS zooms in on a focused input whose text is under 16px and does not zoom
-     back out afterwards, which strands the page half a screen wide. */
   input[type="text"], input[type="url"], input[type="number"], input[type="password"],
   select, textarea { font-size: 16px; }
 
-  /* The step and stage builders read as a sentence across one line — the step's
-     name, how long it may take, and its buttons. Only the name is a full line's
-     worth on a phone, so the controls that trail it wrap under it. */
   .step-row { flex-wrap: wrap; }
   .step-row .step-name { flex: 1 0 100%; }
   .step-add { flex-wrap: wrap; }

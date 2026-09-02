@@ -25,40 +25,24 @@ import { onServerChange } from './stream.js';
 /** The stream is the fast path; this only catches what it missed (a dropped
  *  connection, a proxy that ate it). */
 const POLL_MS = 15_000;
-
-/** Where the space to hold open for the next page is left. */
 const RESERVE_KEY = 'flatline.banners.height';
 
-/**
- * Wires the page's #banners container, which every page that calls this carries.
- * Returns { update } — call it with the group states and the server clock they
- * were read at.
- */
 export function initBanners() {
   const container = document.getElementById('banners');
 
-  // Hand the next page the height to hold open while its own banners are in
-  // flight; theme-init.js reads it before that page paints.
   window.addEventListener('pagehide', () => {
     try {
       sessionStorage.setItem(RESERVE_KEY, String(container.offsetHeight));
     } catch {
-      // Unavailable (private mode). The next page reserves nothing and lurches
-      // the way it always did — no worse than not having tried.
     }
   });
 
-  /** Stop holding the reserved space: what is on the page now is the truth,
-   *  whether that is two banners or none. */
   function release() {
     document.documentElement.style.removeProperty('--banners-reserved');
   }
 
-  // Banners the user has cleared, by group and state. Kept in memory only: a
-  // dismissal hides a notice, it must never hide it for good.
   const dismissed = new Set();
-  // The server's clock and ours at the moment we last heard, so the countdown
-  // ticks against the server's deadline without inheriting any clock skew.
+
   let serverNow = 0;
   let fetchedAt = 0;
 
@@ -70,8 +54,6 @@ export function initBanners() {
     return `${mins}:${String(secs).padStart(2, '0')}`;
   }
 
-  // Runs only while a countdown is on screen, which is almost never — an idle
-  // page has no armed group and so nothing to tick.
   let ticker = null;
   function retime() {
     const counting = container.querySelector('[data-deadline]') !== null;
@@ -97,8 +79,6 @@ export function initBanners() {
     for (const g of groups) {
       if (!g.armed) continue;
 
-      // A group escalating from armed to triggered is a new notice, so clearing
-      // the countdown doesn't also swallow "TRIGGERED".
       const key = `${g.group_id}:${g.triggered ? 'triggered' : 'armed'}`;
       live.add(key);
       if (dismissed.has(key)) continue;
@@ -130,7 +110,7 @@ export function initBanners() {
       close.addEventListener('click', () => {
         dismissed.add(key);
         banner.remove();
-        retime(); // it may have been the last countdown on the page
+        retime(); 
       });
       banner.append(close);
 

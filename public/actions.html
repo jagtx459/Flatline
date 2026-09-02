@@ -58,8 +58,6 @@
     <div class="card">
       <div class="card-header" id="target-form-header">
         <span class="chevron">▸</span>
-        <!-- The title text is its own span so the script can rewrite it to
-             "Edit target: …" without taking the help button with it. -->
         <h2><span id="target-form-title">Add action target</span> <span class="help">
           <button type="button" class="help-btn" aria-expanded="false" aria-label="About action targets">?</button>
           <span class="help-pop" role="tooltip" hidden>
@@ -69,11 +67,6 @@
               a credential blank to keep the stored value.</p>
           </span></span></h2>
       </div>
-      <!-- Collapsed here as well as in initCollapsible, which only runs once the
-           deferred module has loaded — by which point this has already painted
-           open, and everything below it vanishes as the page settles. An inline
-           style rather than [hidden] because toggleByData reveals a section with
-           style.display = '', which [hidden] would survive. -->
       <div class="card-body" id="target-form-body" style="display:none">
       <form id="target-form" method="post">
         <div class="grid">
@@ -125,10 +118,6 @@ sudo chmod 440 /etc/sudoers.d/flatline
               </select>
             </label>
           </div>
-          <!-- Two capped columns: password and passphrase are mutually exclusive by auth
-               method, so only two of these three fields ever show. Capping each at 380px
-               keeps the "· stored ✓ (leave blank to keep)" caption on one line without
-               stretching the inputs full width. -->
           <div class="grid" style="margin-top:10px; grid-template-columns: repeat(2, minmax(0, 380px))">
             <label class="field"><span class="cap">Username</span><input type="text" name="ssh_username"
                 maxlength="2000" autocomplete="off"></label>
@@ -408,8 +397,7 @@ winrm enumerate winrm/config/Listener
           <!-- "2-step" — stored as auth_scheme 'login', since what it does is
                log in: a first request trades credentials for a per-session token,
                which the real request above then carries. -->
-          <div data-http="login" class="login-block" style="margin-top:12px">
-            <!-- A div, not a <p>, for the same reason as the Restore title. -->
+          <div data-http="login" class="login-block" style="margin-top:12px"> 
             <div class="sub-head">2-step auth <span class="help">
               <button type="button" class="help-btn" aria-expanded="false" aria-label="About 2-step auth">?</button>
               <span class="help-pop" role="tooltip" hidden>
@@ -561,16 +549,10 @@ Cookies        leave "send login cookies" ticked</pre>
           </label>
         </div>
 
-        <!-- ================= Restore =================
-             One panel, and the same three steps, whatever the target's kind.
-             What brings a target back is a choice of its own, not a consequence
-             of how it was shut down: each step below connects to the target
-             itself or somewhere else entirely. -->
+        <!-- ================= Restore ================= -->
         <div class="restore-panel">
           <div class="card-header" id="restore-header">
             <span class="chevron">▸</span>
-            <!-- A span, not a <p>: the help popover's paragraphs would close a
-                 <p> parent early and spill into the header. -->
             <span class="restore-title">Restore <span class="help">
               <button type="button" class="help-btn" aria-expanded="false" aria-label="About restore">?</button>
               <span class="help-pop" role="tooltip" hidden>
@@ -612,9 +594,6 @@ Cookies        leave "send login cookies" ticked</pre>
                   </span></span>
               </div>
 
-              <!-- 1. The restore itself. Only the methods that can bring
-                   something back from nothing are here: you cannot SSH into a
-                   machine that is off. A shell command is step 3's job. -->
               <div class="restore-step">
                 <span class="restore-num">1</span>
                 <div class="restore-body">
@@ -691,8 +670,7 @@ Cookies        leave "send login cookies" ticked</pre>
                     </div>
                     <p class="hint-row" id="relay-note" style="margin:6px 0 0"></p>
                   </div>
-
-                  <!-- The connection, when the restore brings its own -->
+       
                   <div id="restore-connection">
                     <div class="grid" style="margin-top:10px">
                       <label class="field" data-rk="k8s"><span class="cap">API URL</span>
@@ -745,7 +723,6 @@ Cookies        leave "send login cookies" ticked</pre>
                     </div>
                   </div>
 
-                  <!-- What the method actually does -->
                   <div data-rk="k8s" style="margin-top:10px">
                     <div class="check-row">
                       <label class="check">
@@ -807,7 +784,7 @@ Cookies        leave "send login cookies" ticked</pre>
                 </div>
               </div>
 
-              <!-- 2. Wait -->
+              <!-- Wait -->
               <div class="restore-step">
                 <span class="restore-num">2</span>
                 <div class="restore-body">
@@ -834,7 +811,7 @@ Cookies        leave "send login cookies" ticked</pre>
                 </div>
               </div>
 
-              <!-- 3. The optional post-restore action, run once step 1 is done. -->
+              <!-- post-restore action -->
               <div class="restore-step">
                 <span class="restore-num">3</span>
                 <div class="restore-body">
@@ -873,7 +850,6 @@ Cookies        leave "send login cookies" ticked</pre>
                     </label>
                   </div>
 
-                  <!-- The connection, when the action brings its own -->
                   <div id="post-restore-connection">
                     <div class="grid" style="margin-top:10px">
                       <label class="field" data-prk="ssh winrm"><span class="cap">Host</span>
@@ -948,8 +924,6 @@ Cookies        leave "send login cookies" ticked</pre>
                         <span>Use HTTPS (port 5986)</span>
                       </label>
                     </div>
-                    <!-- Shared by the http method and the winrm method's HTTPS
-                         transport — only one is ever the step's method. -->
                     <div id="post-restore-tls" data-prk="http winrm" style="margin-top:10px">
                       <label class="check">
                         <input type="checkbox" name="post_restore_insecure_tls">
@@ -962,7 +936,6 @@ Cookies        leave "send login cookies" ticked</pre>
                     </div>
                   </div>
 
-                  <!-- What the action actually does -->
                   <label class="field" data-prk="ssh winrm" style="margin-top:10px"><span class="cap">Command</span>
                     <input type="text" name="post_restore_command" maxlength="10000" placeholder="sudo systemctl start app">
                   </label>
