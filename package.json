@@ -16,7 +16,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^9.1.1",
     "ssh2": "^1.17.0",
     "yaml": "^2.9.0"
   },
